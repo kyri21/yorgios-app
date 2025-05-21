@@ -1,34 +1,78 @@
 import streamlit as st
 import json
 import locale
-import re
 import textwrap
+import re
 from datetime import date, datetime, timedelta
 import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from gspread.exceptions import SpreadsheetNotFound
+from gspread.exceptions import SpreadsheetNotFound, WorksheetNotFound
 import pytz
 from ics import Calendar, Event
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+from io import BytesIO
+from google.oauth2.service_account import Credentials
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import landscape, A4
+from reportlab.lib.units import cm
 
 # ———————————————————————————————
-# CONFIGURATION STREAMLIT
+# PDF – Fonction export Contrôle Hygiène
 # ———————————————————————————————
-st.set_page_config(page_title="Yorgios V1 – Épuré", layout="wide")
+def generate_contrôle_hygiene_pdf(temp_df, hygiene_df, haccp_df, date_debut, date_fin):
+    pdf_path = "/tmp/controle_hygiene.pdf"
+    c = canvas.Canvas(pdf_path, pagesize=landscape(A4))
+    width, height = landscape(A4)
 
+    c.setFont("Helvetica-Bold", 14)
+    c.drawCentredString(width / 2, height - 1.5 * cm, f"Export Contrôle Hygiène Yorgios")
+    c.setFont("Helvetica", 10)
+    c.drawCentredString(width / 2, height - 2.2 * cm, f"Période : {date_debut.strftime('%d/%m/%Y')} au {date_fin.strftime('%d/%m/%Y')}")
+
+    y = height - 3.5 * cm
+
+    def draw_table(title, dataframe, y_pos):
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(2 * cm, y_pos, title)
+        y_pos -= 0.5 * cm
+        c.setFont("Helvetica", 8)
+        for i, col in enumerate(dataframe.columns[:6]):
+            c.drawString((i + 1) * 3 * cm, y_pos, str(col)[:15])
+        y_pos -= 0.4 * cm
+        for row in dataframe.values[:15]:
+            for i, val in enumerate(row[:6]):
+                c.drawString((i + 1) * 3 * cm, y_pos, str(val)[:15])
+            y_pos -= 0.35 * cm
+        return y_pos - 0.7 * cm
+
+    if not temp_df.empty:
+        y = draw_table("🌡️ Températures relevées", temp_df, y)
+    if not hygiene_df.empty:
+        y = draw_table("🧼 Relevés hygiène", hygiene_df, y)
+    if not haccp_df.empty:
+        y = draw_table("📦 Produits retirés (HACCP)", haccp_df, y)
+
+    c.showPage()
+    c.save()
+    return pdf_path
+
+# ———————————————————————————————
+# CONFIG STREAMLIT
+# ———————————————————————————————
+st.set_page_config(page_title="Yorgios V1", layout="wide")
 try:
     locale.setlocale(locale.LC_TIME, 'fr_FR.UTF-8')
 except locale.Error:
     pass
 
 # ———————————————————————————————
-# AUTHENTIFICATION GOOGLE SHEETS
+# AUTHENTIFICATION GOOGLE
 # ———————————————————————————————
 def gsheets_client():
-    sa_info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
-    sa_info["private_key"] = sa_info["private_key"].replace("\\n", "\n")
+    sa_info = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]
     scopes = [
-        "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
         "https://www.googleapis.com/auth/drive.readonly"
@@ -37,43 +81,50 @@ def gsheets_client():
     return gspread.authorize(creds)
 
 gc = gsheets_client()
-# ———————————————————————————————
-# FALLBACK POUR OPEN_BY_KEY
-# ———————————————————————————————
-def open_sheet(key: str) -> gspread.Spreadsheet:
-    try:
-        return gc.open_by_key(key)
-    except SpreadsheetNotFound:
-        for sh in gc.openall():
-            if sh.id == key:
-                return sh
-        raise
+
+def read_txt_from_drive(file_name, folder_id="14Pa-svM3uF9JQtjKysP0-awxK0BDi35E"):
+    scopes = ["https://www.googleapis.com/auth/drive.readonly"]
+    creds = Credentials.from_service_account_info(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"], scopes=scopes)
+    service = build("drive", "v3", credentials=creds)
+
+    results = service.files().list(
+        q=f"name='{file_name}' and '{folder_id}' in parents",
+        fields="files(id, name)", pageSize=1
+    ).execute()
+    files = results.get("files", [])
+    if not files:
+        return None
+
+    file_id = files[0]["id"]
+    request = service.files().get_media(fileId=file_id)
+    fh = BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    return fh.getvalue().decode("utf-8")
 
 # ———————————————————————————————
-# IDENTIFIANTS SPREADSHEETS
+# ID des fichiers Sheets
 # ———————————————————————————————
 SHEET_COMMANDES_ID = "1cBP7iEeWK5whbHzoZAWUhq_HQ5OcAEjTBkUro2cmkoc"
-SHEET_HYGIENE_ID = "1XMYhh2CSIv1zyTtXKM4_ACEhW-6kXxoFi4ACzNhbuDE"
+SHEET_HYGIENE_ID   = "1XMYhh2CSIv1zyTtXKM4_ACEhW-6kXxoFi4ACzNhbuDE"
 SHEET_TEMP_ID      = "1e4hS6iawCa1IizhzY3xhskLy8Gj3todP3zzk38s7aq0"
 SHEET_PLANNING_ID  = "1OBYGNHtHdDB2jufKKjoAwq6RiiS_pnz4ta63sAM-t_0"
 SHEET_PRODUITS_ID  = "1FbRV4KgXyCwqwLqJkyq8cHZbo_BfB7kyyPP3pO53Snk"
 
 # ———————————————————————————————
-# OUVERTURE DES SPREADSHEETS / WORKSHEETS
+# Chargement feuilles
 # ———————————————————————————————
-ss_cmd        = open_sheet(SHEET_COMMANDES_ID)
+ss_cmd        = gc.open_by_key(SHEET_COMMANDES_ID)
 sheet_haccp   = ss_cmd.worksheet("Suivi HACCP")
 sheet_vitrine = ss_cmd.worksheet("Vitrine")
+ss_hygiene    = gc.open_by_key(SHEET_HYGIENE_ID)
+ss_temp       = gc.open_by_key(SHEET_TEMP_ID)
+ss_planning   = gc.open_by_key(SHEET_PLANNING_ID)
+ss_produits   = gc.open_by_key(SHEET_PRODUITS_ID)
+sheet_prod    = ss_produits.worksheet("Produits")
 
-ss_hygiene   = open_sheet(SHEET_HYGIENE_ID)
-ss_temp      = open_sheet(SHEET_TEMP_ID)
-ss_planning  = open_sheet(SHEET_PLANNING_ID)
-ss_produits  = open_sheet(SHEET_PRODUITS_ID)
-sheet_prod   = ss_produits.worksheet("Produits")
-
-# ———————————————————————————————
-# UTILITAIRES DE CHARGEMENT / SAUVEGARDE
-# ———————————————————————————————
 @st.cache_data(ttl=300)
 def load_df(_sh, ws_name):
     ws = _sh.worksheet(ws_name)
@@ -84,41 +135,34 @@ def save_df(sh, ws_name, df: pd.DataFrame):
     ws.clear()
     ws.update([df.columns.tolist()] + df.values.tolist())
 
-# ———————————————————————————————
-# LISTES UTILES
-# ———————————————————————————————
-produits_list = sorted(
-    set(p.strip().capitalize() for p in sheet_prod.col_values(1) if p.strip())
-)
+produits_list = sorted(set(p.strip().capitalize() for p in sheet_prod.col_values(1) if p.strip()))
 
 JOURS_FR = {
     "Monday": "Lundi", "Tuesday": "Mardi", "Wednesday": "Mercredi",
-    "Thursday": "Jeudi", "Friday": "Vendredi",
-    "Saturday": "Samedi", "Sunday": "Dimanche"
+    "Thursday": "Jeudi", "Friday": "Vendredi", "Saturday": "Samedi", "Sunday": "Dimanche"
 }
-
-# ———————————————————————————————
-# NAVIGATION PAR ONGLETS
-# ———————————————————————————————
 onglets = [
     "🌡️ Relevé des températures",
-    "🧊 Stockage Frigo",
     "🧼 Hygiène",
+    "🧊 Stockage Frigo",
     "📋 Protocoles",
     "📅 Planning",
-    "🖥️ Vitrine"
+    "🖥️ Vitrine",
+    "🧾 Contrôle Hygiène",
+    "🔗 Liens Google Sheets"
 ]
-choix = st.sidebar.radio("Navigation", onglets, key="onglet_actif")
+choix = st.sidebar.radio("Navigation", onglets)
 
-# === ONGLET : Relevé des températures ===
+# ——— ONGLET TEMPÉRATURES ———
 if choix == "🌡️ Relevé des températures":
     st.header("🌡️ Relevé des températures")
     jour = st.date_input("🗓️ Sélectionner la date", value=date.today())
     nom_ws = f"Semaine {jour.isocalendar().week} {jour.year}"
+
     try:
         ws = ss_temp.worksheet(nom_ws)
         st.markdown(f"🗓️ Données depuis **{nom_ws}**")
-    except gspread.exceptions.WorksheetNotFound:
+    except WorksheetNotFound:
         st.warning(f"⚠️ La feuille « {nom_ws} » est introuvable.")
         if st.button(f"➕ Créer « {nom_ws} » depuis Semaine 38"):
             model = ss_temp.worksheet("Semaine 38")
@@ -154,44 +198,7 @@ if choix == "🌡️ Relevé des températures":
         use_container_width=True
     )
 
-# === ONGLET : Stockage Frigo (vue matricielle) ===
-elif choix == "🧊 Stockage Frigo":
-    st.header("🧊 Stockage Frigo – Vue matricielle")
-    df_flat = load_df(ss_cmd, "Stockage Frigo")
-    pivot = (
-        df_flat
-        .pivot_table(index="article", columns="frigo", values="quantite", aggfunc="sum", fill_value=0)
-        .reset_index()
-    )
-    frigos = [c for c in pivot.columns if c != "article"]
-    edited = st.data_editor(
-        pivot,
-        num_rows="dynamic",
-        hide_index=True,
-        column_config={
-            "article": st.column_config.SelectboxColumn(
-                "Article",
-                options=sorted(pivot["article"].unique()),
-                free_text=True
-            ),
-            **{f: st.column_config.NumberColumn(f, min_value=0, step=1) for f in frigos}
-        },
-        key="stock_editor"
-    )
-    if st.button("✅ Enregistrer les modifications"):
-        rows = []
-        for _, row in edited.iterrows():
-            art = row["article"].strip()
-            if not art:
-                continue
-            for f in frigos:
-                q = int(row[f]) if pd.notna(row[f]) else 0
-                rows.append({"frigo": f, "article": art, "quantite": q})
-        save_df(ss_cmd, "Stockage Frigo", pd.DataFrame(rows))
-        st.success("🔄 Stock mis à jour !")
-        st.rerun()
-
-# === ONGLET : Hygiène ===
+# ——— ONGLET HYGIÈNE ———
 elif choix == "🧼 Hygiène":
     st.header("🧼 Relevé Hygiène – Aujourd’hui")
     typ = st.selectbox("📋 Type de tâches", ["Quotidien", "Hebdomadaire", "Mensuel"])
@@ -224,33 +231,13 @@ elif choix == "🧼 Hygiène":
             ws.update("A1", [df_hyg.columns.tolist()] + df_hyg.values.tolist())
             st.success("✅ Hygiène sauvegardée.")
 
-# === ONGLET : Protocoles ===
-elif choix == "📋 Protocoles":
-    st.header("📋 Protocoles opérationnels")
-    fichiers = {
-        "Arrivée": "protocoles_arrivee.txt",
-        "Fermeture": "protocoles_fermeture.txt",
-        "Temps calme": "protocoles_tempscalmes.txt",
-        "Stockage": "protocole_stockage.txt",
-        "Hygiène du personnel": "protocoles_hygiene du personnel.txt",
-        "Service du midi": "protocoles_midi.txt",
-        "Règles en stand": "protocoles_regles en stand.txt",
-        "Hygiène générale": "protocole_hygiene.txt"
-    }
-    choix_proto = st.selectbox("🧾 Choisir un protocole à consulter", list(fichiers))
-    try:
-        txt = open(fichiers[choix_proto], encoding="utf-8").read().replace("•", "\n\n•")
-        st.markdown(f"### 🗂️ {choix_proto}\n\n{textwrap.indent(txt, prefix='')}", unsafe_allow_html=True)
-    except FileNotFoundError:
-        st.error("⚠️ Fichier manquant. Vérifiez qu'il existe dans le dossier de l’application.")
-
-# === ONGLET : Planning ===
+# ——— ONGLET PLANNING ———
 elif choix == "📅 Planning":
     st.header("📅 Planning Google")
     try:
         titres = sorted(
             [w.title for w in ss_planning.worksheets() if w.title.lower().startswith("semaine")],
-            key=lambda x: int(re.search(r"\d+", x).group())
+            key=lambda x: int("".join(filter(str.isdigit, x)))
         )
         dt = st.date_input("📅 Choisir une date", value=date.today())
         nom_ws = f"Semaine {dt.isocalendar().week}"
@@ -298,7 +285,69 @@ elif choix == "📅 Planning":
     except Exception as e:
         st.error(f"❌ Erreur planning : {e}")
 
-# === ONGLET : Vitrine ===
+# ——— ONGLET STOCKAGE FRIGO ———
+elif choix == "🧊 Stockage Frigo":
+    st.header("🧊 Stockage Frigo – Vue matricielle")
+    df_flat = load_df(ss_cmd, "Stockage Frigo")
+    required_columns = {"article", "frigo", "quantite"}
+    if not required_columns.issubset(df_flat.columns):
+        st.error(f"❌ Colonnes manquantes : {required_columns - set(df_flat.columns)}")
+        st.stop()
+
+    pivot = (
+        df_flat
+        .pivot_table(index="article", columns="frigo", values="quantite", aggfunc="sum", fill_value=0)
+        .reset_index()
+    )
+    frigos = [c for c in pivot.columns if c != "article"]
+    edited = st.data_editor(
+        pivot,
+        num_rows="dynamic",
+        hide_index=True,
+        column_config={
+            "article": st.column_config.SelectboxColumn(
+                "Article",
+                options=sorted(pivot["article"].unique()),
+                free_text=True
+            ),
+            **{f: st.column_config.NumberColumn(f, min_value=0, step=1) for f in frigos}
+        },
+        key="stock_editor"
+    )
+    if st.button("✅ Enregistrer les modifications"):
+        rows = []
+        for _, row in edited.iterrows():
+            art = row["article"].strip()
+            if not art:
+                continue
+            for f in frigos:
+                q = int(row[f]) if pd.notna(row[f]) else 0
+                rows.append({"frigo": f, "article": art, "quantite": q})
+        save_df(ss_cmd, "Stockage Frigo", pd.DataFrame(rows))
+        st.success("🔄 Stock mis à jour !")
+        st.rerun()
+
+# ——— ONGLET PROTOCOLES ———
+elif choix == "📋 Protocoles":
+    st.header("📋 Protocoles opérationnels")
+    fichiers = {
+        "Arrivée": "protocoles_arrivee.txt",
+        "Fermeture": "protocoles_fermeture.txt",
+        "Temps calme": "protocoles_tempscalmes.txt",
+        "Stockage": "protocole_stockage.txt",
+        "Hygiène du personnel": "protocoles_hygiene du personnel.txt",
+        "Service du midi": "protocoles_midi.txt",
+        "Règles en stand": "protocoles_regles en stand.txt",
+        "Hygiène générale": "protocole_hygiene.txt"
+    }
+    choix_proto = st.selectbox("🧾 Choisir un protocole à consulter", list(fichiers))
+    txt = read_txt_from_drive(fichiers[choix_proto])
+    if txt:
+        st.markdown(f"### 🗂️ {choix_proto}\n\n{textwrap.indent(txt.replace('•', '• '), prefix='')}", unsafe_allow_html=True)
+    else:
+        st.error("⚠️ Fichier introuvable dans le dossier Google Drive.")
+
+# ——— ONGLET VITRINE ———
 elif choix == "🖥️ Vitrine":
     st.header("🖥️ Vitrine – Traçabilité HACCP")
     raw = sheet_vitrine.get_all_values()
@@ -306,10 +355,7 @@ elif choix == "🖥️ Vitrine":
     ids = list(range(2, 2 + len(data)))
     df = pd.DataFrame(data, columns=cols)
     df["_row"] = ids
-    df.columns = [
-        c.strip().lower().replace(" ", "_").replace("é", "e").replace("è", "e").replace("ê", "e")
-        for c in df.columns
-    ]
+    df.columns = [c.strip().lower().replace(" ", "_").replace("é", "e") for c in df.columns]
     actifs = df[df["date_retrait"] == ""].copy()
     archives = df[df["date_retrait"] != ""].copy()
     today = date.today()
@@ -321,15 +367,12 @@ elif choix == "🖥️ Vitrine":
         except:
             return ""
         diff = (d - today).days
-        if diff < 0:
+        if diff <= 0:
             return "background-color:#f8d7da"
-        if diff == 0:
-            return "background-color:#f8d7da"
-        if diff == 1:
+        elif diff == 1:
             return "background-color:#fff3cd"
-        if diff >= 2:
+        else:
             return "background-color:#d4edda"
-        return ""
 
     st.subheader("📝 Articles en vitrine (actifs)")
     if actifs.empty:
@@ -370,8 +413,87 @@ elif choix == "🖥️ Vitrine":
                 ""
             ]
             sheet_vitrine.append_row(row)
-            st.success(f"✅ {prod} ajouté en vitrine (ajouté le {date_ajout}).")
+            st.success(f"✅ {prod} ajouté en vitrine.")
             st.rerun()
+
+# ——— ONGLET CONTROLE HYGIENE ———
+elif choix == "🧾 Contrôle Hygiène":
+    st.header("🧾 Export Contrôle Hygiène / Température / HACCP")
+
+    date_debut = st.date_input("📆 Début de la période", value=date.today() - timedelta(days=7))
+    date_fin   = st.date_input("📆 Fin de la période", value=date.today())
+
+    if st.button("📥 Exporter les relevés PDF"):
+        st.info("⏳ Génération en cours...")
+
+        # Températures
+        temp_frames = []
+        for ws in ss_temp.worksheets():
+            if "Semaine" not in ws.title:
+                continue
+            raw = ws.get_all_values()
+            if len(raw) < 2: continue
+            df = pd.DataFrame(raw[1:], columns=raw[0])
+            for col in df.columns[1:]:
+                try:
+                    jour_str, moment = col.split()
+                    jour = datetime.strptime(jour_str, "%A").date()
+                    if date_debut <= jour <= date_fin:
+                        df_sub = df[[df.columns[0], col]].copy()
+                        df_sub.columns = ["Frigo", f"{col}"]
+                        temp_frames.append(df_sub)
+                except:
+                    continue
+
+        if temp_frames:
+            df_all_temp = pd.concat(temp_frames, axis=1)
+            st.subheader("🌡️ Températures")
+            st.dataframe(df_all_temp, use_container_width=True)
+
+        # Hygiène
+        st.subheader("🧼 Hygiène (quotidien)")
+        ws_hyg = ss_hygiene.worksheet("Quotidien")
+        raw = ws_hyg.get_all_values()
+        df_hyg = pd.DataFrame(raw[1:], columns=raw[0])
+        df_hyg["Date"] = pd.to_datetime(df_hyg["Date"], errors="coerce")
+        df_filtre = df_hyg[(df_hyg["Date"] >= pd.to_datetime(date_debut)) & (df_hyg["Date"] <= pd.to_datetime(date_fin))]
+        st.dataframe(df_filtre.fillna(""), use_container_width=True)
+
+        # HACCP
+        st.subheader("📦 Produits retirés (HACCP)")
+        raw = sheet_vitrine.get_all_values()
+        df = pd.DataFrame(raw[1:], columns=raw[0])
+        df["date_retrait"] = pd.to_datetime(df["date_retrait"], errors="coerce")
+        archives = df[(df["date_retrait"] >= pd.to_datetime(date_debut)) & (df["date_retrait"] <= pd.to_datetime(date_fin))]
+        if not archives.empty:
+            st.dataframe(archives, use_container_width=True)
+        else:
+            st.info("Aucun produit retiré sur la période.")
+
+        st.success("✅ Données prêtes pour impression ou export.")
+        
+        pdf_path = generate_contrôle_hygiene_pdf(df_all_temp, df_filtre, archives, date_debut, date_fin)
+        with open(pdf_path, "rb") as f:
+            st.download_button("📄 Télécharger le PDF", f, file_name="controle_hygiene.pdf")
+
+# ——— ONGLET LIENS GOOGLE SHEETS ———
+elif choix == "🔗 Liens Google Sheets":
+    st.header("🔗 Liens vers les Google Sheets utilisés")
+
+    sheets = {
+        "📦 Commandes + HACCP + Vitrine" : "https://docs.google.com/spreadsheets/d/1cBP7iEeWK5whbHzoZAWUhq_HQ5OcAEjTBkUro2cmkoc",
+        "🧼 Hygiène"                     : "https://docs.google.com/spreadsheets/d/1XMYhh2CSIv1zyTtXKM4_ACEhW-6kXxoFi4ACzNhbuDE",
+        "🌡️ Températures"               : "https://docs.google.com/spreadsheets/d/1e4hS6iawCa1IizhzY3xhskLy8Gj3todP3zzk38s7aq0",
+        "📅 Planning"                   : "https://docs.google.com/spreadsheets/d/1OBYGNHtHdDB2jufKKjoAwq6RiiS_pnz4ta63sAM-t_0",
+        "🛒 Liste Produits"             : "https://docs.google.com/spreadsheets/d/1FbRV4KgXyCwqwLqJkyq8cHZbo_BfB7kyyPP3pO53Snk"
+    }
+
+    for label, url in sheets.items():
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            st.markdown(f"**{label}**")
+        with col2:
+            st.link_button("🔗 Ouvrir", url)
 
 # ———————————————————————————————
 # PIED DE PAGE
