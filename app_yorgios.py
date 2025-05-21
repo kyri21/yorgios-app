@@ -71,7 +71,7 @@ except locale.Error:
 # AUTHENTIFICATION GOOGLE
 # ———————————————————————————————
 def gsheets_client():
-    sa_info = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]
+    sa_info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
@@ -84,7 +84,7 @@ gc = gsheets_client()
 
 def read_txt_from_drive(file_name, folder_id="14Pa-svM3uF9JQtjKysP0-awxK0BDi35E"):
     scopes = ["https://www.googleapis.com/auth/drive.readonly"]
-    creds = Credentials.from_service_account_info(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"], scopes=scopes)
+    creds = Credentials.from_service_account_info(json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]), scopes=scopes)
     service = build("drive", "v3", credentials=creds)
 
     results = service.files().list(
@@ -287,46 +287,90 @@ elif choix == "📅 Planning":
 
 # ——— ONGLET STOCKAGE FRIGO ———
 elif choix == "🧊 Stockage Frigo":
-    st.header("🧊 Stockage Frigo – Vue matricielle")
-    df_flat = load_df(ss_cmd, "Stockage Frigo")
-    required_columns = {"article", "frigo", "quantite"}
-    if not required_columns.issubset(df_flat.columns):
-        st.error(f"❌ Colonnes manquantes : {required_columns - set(df_flat.columns)}")
+    st.header("🧊 Gestion du Stock par Frigo")
+
+    # Chargement + nettoyage
+    df_stock = load_df(ss_cmd, "Stockage Frigo")
+    df_stock.columns = [c.strip().lower().replace(" ", "_") for c in df_stock.columns]
+
+    required = {"frigo", "article", "quantite", "dlc"}
+    if not required.issubset(df_stock.columns):
+        st.error(f"❌ Colonnes attendues manquantes : {required - set(df_stock.columns)}")
         st.stop()
 
-    pivot = (
-        df_flat
-        .pivot_table(index="article", columns="frigo", values="quantite", aggfunc="sum", fill_value=0)
-        .reset_index()
-    )
-    frigos = [c for c in pivot.columns if c != "article"]
+    df_stock["frigo"] = df_stock["frigo"].astype(str).str.strip().str.replace("\xa0", " ", regex=False)
+    df_stock["dlc"] = pd.to_datetime(df_stock["dlc"], errors="coerce")
+    frigos_dispo = sorted(df_stock["frigo"].dropna().unique())
+
+    frigo_select = st.selectbox("🧊 Choisir un frigo", frigos_dispo)
+    df_frigo = df_stock[df_stock["frigo"] == frigo_select].copy()
+
+    # 🔔 Alerte DLC
+    today = pd.Timestamp.today().normalize()
+    df_frigo["jours_restants"] = (df_frigo["dlc"] - today).dt.days
+    alertes = df_frigo[df_frigo["jours_restants"] <= 1]
+
+    if not alertes.empty:
+        st.warning("⚠️ Produits avec DLC proche ou dépassée :")
+        st.dataframe(alertes[["article", "quantite", "dlc"]], use_container_width=True)
+
+    # 🗑️ Option de vidage complet
+    if st.button(f"🗑️ Vider complètement {frigo_select}"):
+        if st.confirm(f"⚠️ Confirmer suppression de tous les articles de {frigo_select} ?"):
+            autres = df_stock[df_stock["frigo"] != frigo_select]
+            save_df(ss_cmd, "Stockage Frigo", autres)
+            st.success(f"✅ {frigo_select} vidé avec succès.")
+            st.rerun()
+
+    # Édition avec suppression par ligne
+    st.subheader(f"📋 Contenu de {frigo_select}")
+    df_frigo["supprimer"] = False  # colonne à cocher
     edited = st.data_editor(
-        pivot,
+        df_frigo[["article", "quantite", "dlc", "supprimer"]],
         num_rows="dynamic",
-        hide_index=True,
-        column_config={
-            "article": st.column_config.SelectboxColumn(
-                "Article",
-                options=sorted(pivot["article"].unique()),
-                free_text=True
-            ),
-            **{f: st.column_config.NumberColumn(f, min_value=0, step=1) for f in frigos}
-        },
-        key="stock_editor"
+        use_container_width=True,
+        key="editor_stock_frigo"
     )
-    if st.button("✅ Enregistrer les modifications"):
+
+    # ➕ Formulaire d’ajout
+    st.markdown("---")
+    st.subheader("➕ Ajouter un article")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        new_article = st.text_input("Article")
+    with col2:
+        new_qty = st.number_input("Quantité", min_value=0, step=1, value=0)
+    with col3:
+        new_dlc = st.date_input("DLC", value=date.today() + timedelta(days=3))
+
+    if st.button("✅ Sauvegarder"):
         rows = []
         for _, row in edited.iterrows():
-            art = row["article"].strip()
-            if not art:
-                continue
-            for f in frigos:
-                q = int(row[f]) if pd.notna(row[f]) else 0
-                rows.append({"frigo": f, "article": art, "quantite": q})
-        save_df(ss_cmd, "Stockage Frigo", pd.DataFrame(rows))
-        st.success("🔄 Stock mis à jour !")
+            if row.get("supprimer"):
+                continue  # sauter les lignes cochées
+            art = str(row["article"]).strip()
+            dlc = row["dlc"]
+            qty = int(row["quantite"]) if pd.notna(row["quantite"]) else 0
+            if art and pd.notna(dlc):
+                rows.append({
+                    "frigo": frigo_select,
+                    "article": art,
+                    "quantite": qty,
+                    "dlc": dlc.strftime("%Y-%m-%d")
+                })
+        # Ajouter la nouvelle ligne
+        if new_article.strip() and new_qty > 0:
+            rows.append({
+                "frigo": frigo_select,
+                "article": new_article.strip(),
+                "quantite": new_qty,
+                "dlc": new_dlc.strftime("%Y-%m-%d")
+            })
+        # Fusion + sauvegarde
+        autres = df_stock[df_stock["frigo"] != frigo_select]
+        save_df(ss_cmd, "Stockage Frigo", pd.concat([autres, pd.DataFrame(rows)], ignore_index=True))
+        st.success("✅ Stock mis à jour avec succès.")
         st.rerun()
-
 # ——— ONGLET PROTOCOLES ———
 elif choix == "📋 Protocoles":
     st.header("📋 Protocoles opérationnels")
@@ -343,7 +387,9 @@ elif choix == "📋 Protocoles":
     choix_proto = st.selectbox("🧾 Choisir un protocole à consulter", list(fichiers))
     txt = read_txt_from_drive(fichiers[choix_proto])
     if txt:
-        st.markdown(f"### 🗂️ {choix_proto}\n\n{textwrap.indent(txt.replace('•', '• '), prefix='')}", unsafe_allow_html=True)
+        st.markdown(f"### 🗂️ {choix_proto}")
+        txt_clean = txt.replace("\n", "").replace("•", "\n\n•").strip()
+        st.markdown(txt_clean, unsafe_allow_html=True)
     else:
         st.error("⚠️ Fichier introuvable dans le dossier Google Drive.")
 
