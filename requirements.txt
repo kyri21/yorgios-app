@@ -1,7 +1,9 @@
 streamlit
+pandas
 gspread
 oauth2client
-pandas
-openpyxl
-ics
 google-api-python-client
+google-auth
+google-auth-oauthlib
+ics
+reportlab
