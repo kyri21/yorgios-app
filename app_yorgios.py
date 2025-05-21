@@ -31,12 +31,12 @@ def gsheets_client():
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/drive.readonly"
     ]
     creds = ServiceAccountCredentials.from_json_keyfile_dict(sa_info, scopes)
     return gspread.authorize(creds)
 
 gc = gsheets_client()
-
 # ———————————————————————————————
 # FALLBACK POUR OPEN_BY_KEY
 # ———————————————————————————————
