@@ -194,13 +194,14 @@ choix = st.sidebar.radio("Navigation", onglets, key="onglet_actif")
 if choix == "🌡️ Relevé des températures":
     st.header("🌡️ Relevé des températures")
 
-    # 👉 Saisie de la date du relevé
+    # 1) Choix de la date
     jour = st.date_input(
         "🗓️ Sélectionner la date",
         value=date.today(),
         key="rt_jour"
     )
 
+    # 2) Ouvrir (ou créer) la feuille correspondante
     nom_ws = f"Semaine {jour.isocalendar().week} {jour.year}"
     try:
         ws = ss_temp.worksheet(nom_ws)
@@ -209,45 +210,57 @@ if choix == "🌡️ Relevé des températures":
         if st.button("➕ Créer la semaine", key="rt_create"):
             model = ss_temp.worksheet("Semaine 38")
             ss_temp.duplicate_sheet(source_sheet_id=model.id, new_sheet_name=nom_ws)
+            st.experimental_rerun()
         st.stop()
 
-    raw = ws.get_all_values()
-    if len(raw) < 2:
-        st.warning("⚠️ La feuille est vide ou mal formatée.")
-        st.stop()
+    # 3) Charger les données brutes + en-tête
+    raw       = ws.get_all_values()
+    header    = [h.strip() for h in raw[0]]
+    df_temp   = pd.DataFrame(raw[1:], columns=header)
+    frigos    = df_temp.iloc[:, 0].tolist()
 
-    df_temp = pd.DataFrame(raw[1:], columns=raw[0])
-    frigos   = df_temp.iloc[:, 0].tolist()
-
+    # 4) Choix Matin/Soir
     moment = st.selectbox(
         "🕒 Moment du relevé",
         ["Matin", "Soir"],
         key="rt_moment"
     )
 
-    # 👉 Formulaire unique
+    # 5) Formulaire de saisie
     with st.form("rt_form"):
         saisies = {
             f: st.text_input(f"Température {f}", key=f"rt_temp_{f}")
             for f in frigos
         }
         if st.form_submit_button("✅ Valider les relevés"):
-            # utilisation de weekday() pour obtenir le jour français
-            jours_fr_list = ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"]
-            col = f"{jours_fr_list[jour.weekday()]} {moment}"
-            if col not in df_temp.columns:
-                st.error(f"Colonne « {col} » introuvable.")
+            # construction du libellé recherché
+            jours_fr = ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"]
+            cible    = f"{jours_fr[jour.weekday()]} {moment}".strip()
+
+            # comparaison insensible à la casse
+            header_lower = [h.lower() for h in header]
+            if cible.lower() not in header_lower:
+                st.error(
+                    f"Colonne « {cible} » introuvable.\n"
+                    f"Colonnes disponibles : {', '.join(header)}"
+                )
             else:
+                # on récupère le vrai nom de colonne
+                col_reelle = header[header_lower.index(cible.lower())]
+                # on met à jour la df
                 for i, f in enumerate(frigos):
-                    df_temp.at[i, col] = saisies[f]
-                ws.update("A1", [df_temp.columns.tolist()] + df_temp.values.tolist())
+                    df_temp.at[i, col_reelle] = saisies[f]
+                # on ré-écrit tout (en gardant l'en-tête d'origine)
+                ws.update("A1", [header] + df_temp.values.tolist())
                 st.success("✅ Relevés sauvegardés.")
 
-    # 👉 Affichage coloré du tableau complet
+    # 6) Affichage complet coloré
     disp = df_temp.replace("", "⛔️")
     st.subheader("📊 Aperçu complet")
     st.dataframe(
-        disp.style.applymap(lambda v: "color:red;" if v == "⛔️" else "color:green;"),
+        disp.style.applymap(
+            lambda v: "color:red;" if v == "⛔️" else "color:green;"
+        ),
         use_container_width=True
     )
 # ——— ONGLET HYGIÈNE ———
@@ -343,20 +356,86 @@ elif choix == "📅 Planning":
 # ——— ONGLET STOCKAGE FRIGO ———
 elif choix == "🧊 Stockage Frigo":
     st.header("🧊 Gestion du Stock par Frigo")
-    # … chargement + éditeur …
+
+    # 1) Chargement et nettoyage
+    df_stock = load_df(ss_cmd, "Stockage Frigo")
+    df_stock.columns = [c.strip().lower().replace(" ", "_") for c in df_stock.columns]
+
+    required = {"frigo", "article", "quantite", "dlc"}
+    if not required.issubset(df_stock.columns):
+        st.error(f"❌ Colonnes attendues manquantes : {required - set(df_stock.columns)}")
+        st.stop()
+
+    df_stock["frigo"] = (
+        df_stock["frigo"]
+        .astype(str)
+        .str.strip()
+        .str.replace("\xa0", " ", regex=False)
+    )
+
+    # 2) Choix du frigo
+    frigos_dispo = sorted(df_stock["frigo"].dropna().unique())
+    frigo_select = st.selectbox(
+        "🧊 Choisir un frigo",
+        frigos_dispo,
+        key="sf_choose"
+    )
+
+    # 3) Affichage du contenu actuel
+    df_frigo = df_stock[df_stock["frigo"] == frigo_select].reset_index(drop=True)
+    st.subheader(f"📋 Contenu actuel de **{frigo_select}**")
+    if df_frigo.empty:
+        st.info("Aucun article dans ce frigo.")
+    else:
+        st.dataframe(
+            df_frigo[["article", "quantite", "dlc"]],
+            use_container_width=True
+        )
 
     st.markdown("---")
-    st.subheader("➕ Ajouter un article")
-    a,b,c = st.columns(3)
-    with a:
-        art = st.text_input("Article", key="sf_art")
-    with b:
-        qt  = st.number_input("Quantité", 0, step=1, key="sf_qt")
-    with c:
-        dlc_new = st.date_input("DLC", value=date.today()+timedelta(days=3), key="sf_dlc")
-    if st.button("✅ Sauvegarder", key="sf_save"):
-        # reconstruction rows…
-        st.success("✅ Stock MAJ"); st.experimental_rerun()
+
+    # 4) Formulaire d’ajout / mise à jour
+    st.subheader("➕ Ajouter ou mettre à jour un article")
+    with st.form("sf_form"):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            art = st.text_input("Article", key="sf_art")
+        with col2:
+            qty = st.number_input(
+                "Quantité",
+                min_value=1,
+                value=1,
+                step=1,
+                key="sf_qty"
+            )
+        with col3:
+            dlc_new = st.date_input(
+                "DLC",
+                value=date.today() + timedelta(days=3),
+                key="sf_new_dlc"
+            )
+
+        if st.form_submit_button("✅ Sauvegarder"):
+            # Prépare la nouvelle ligne
+            new_row = {
+                "frigo": frigo_select,
+                "article": art.strip(),
+                "quantite": int(qty),
+                "dlc": dlc_new.strftime("%Y-%m-%d")
+            }
+            # On retire l’ancienne version de cet article dans ce frigo
+            autres = df_stock[
+                ~(
+                    (df_stock["frigo"] == frigo_select)
+                    & (df_stock["article"].str.strip().str.lower() == art.strip().lower())
+                )
+            ]
+            df_to_save = pd.concat(
+                [autres, pd.DataFrame([new_row])],
+                ignore_index=True
+            )
+            save_df(ss_cmd, "Stockage Frigo", df_to_save)
+            st.success("✅ Stock mis à jour avec succès.")
 # ——— ONGLET PROTOCOLES ———
 elif choix == "📋 Protocoles":
     st.header("📋 Protocoles opérationnels")
