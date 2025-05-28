@@ -357,15 +357,9 @@ elif choix == "📅 Planning":
 elif choix == "🧊 Stockage Frigo":
     st.header("🧊 Gestion du Stock par Frigo")
 
-    # 1) Chargement et nettoyage
+    # 1) Chargement + nettoyage
     df_stock = load_df(ss_cmd, "Stockage Frigo")
     df_stock.columns = [c.strip().lower().replace(" ", "_") for c in df_stock.columns]
-
-    required = {"frigo", "article", "quantite", "dlc"}
-    if not required.issubset(df_stock.columns):
-        st.error(f"❌ Colonnes attendues manquantes : {required - set(df_stock.columns)}")
-        st.stop()
-
     df_stock["frigo"] = (
         df_stock["frigo"]
         .astype(str)
@@ -374,12 +368,8 @@ elif choix == "🧊 Stockage Frigo":
     )
 
     # 2) Choix du frigo
-    frigos_dispo = sorted(df_stock["frigo"].dropna().unique())
-    frigo_select = st.selectbox(
-        "🧊 Choisir un frigo",
-        frigos_dispo,
-        key="sf_choose"
-    )
+    frigos_dispo  = sorted(df_stock["frigo"].dropna().unique())
+    frigo_select = st.selectbox("🧊 Choisir un frigo", frigos_dispo, key="sf_choose")
 
     # 3) Affichage du contenu actuel
     df_frigo = df_stock[df_stock["frigo"] == frigo_select].reset_index(drop=True)
@@ -393,49 +383,50 @@ elif choix == "🧊 Stockage Frigo":
         )
 
     st.markdown("---")
+    st.subheader("➕ Ajouter plusieurs articles")
 
-    # 4) Formulaire d’ajout / mise à jour
-    st.subheader("➕ Ajouter ou mettre à jour un article")
-    with st.form("sf_form"):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            art = st.text_input("Article", key="sf_art")
-        with col2:
-            qty = st.number_input(
-                "Quantité",
-                min_value=1,
-                value=1,
-                step=1,
-                key="sf_qty"
-            )
-        with col3:
-            dlc_new = st.date_input(
-                "DLC",
-                value=date.today() + timedelta(days=3),
-                key="sf_new_dlc"
-            )
+    # 4) Initialisation de la liste en attente
+    if "pending_stock" not in st.session_state:
+        st.session_state.pending_stock = []
 
-        if st.form_submit_button("✅ Sauvegarder"):
-            # Prépare la nouvelle ligne
-            new_row = {
-                "frigo": frigo_select,
-                "article": art.strip(),
-                "quantite": int(qty),
-                "dlc": dlc_new.strftime("%Y-%m-%d")
-            }
-            # On retire l’ancienne version de cet article dans ce frigo
-            autres = df_stock[
-                ~(
-                    (df_stock["frigo"] == frigo_select)
-                    & (df_stock["article"].str.strip().str.lower() == art.strip().lower())
-                )
-            ]
-            df_to_save = pd.concat(
-                [autres, pd.DataFrame([new_row])],
-                ignore_index=True
-            )
+    # 5) Formulaire d’ajout
+    with st.form("sf_add_form", clear_on_submit=True):
+        art     = st.text_input("Article", key="sf_txt_article")
+        qty     = st.number_input("Quantité", min_value=1, value=1, step=1, key="sf_txt_qty")
+        dlc_new = st.date_input("DLC", value=date.today() + timedelta(days=3), key="sf_txt_dlc")
+        ajouter = st.form_submit_button("➕ Ajouter à la liste")
+
+    if ajouter:
+        st.session_state.pending_stock.append({
+            "article": art.strip(),
+            "quantite": int(qty),
+            "dlc": dlc_new.strftime("%Y-%m-%d")
+        })
+
+    # 6) Affichage de la liste en attente avec possibilité de suppression
+    if st.session_state.pending_stock:
+        st.subheader("📝 Articles en attente d’ajout")
+        for i, item in enumerate(st.session_state.pending_stock):
+            c1, c2 = st.columns([0.8, 0.2])
+            with c1:
+                st.write(f"• {item['article']} – Qté : {item['quantite']} – DLC : {item['dlc']}")
+            with c2:
+                if st.button("❌", key=f"sf_rm_{i}"):
+                    st.session_state.pending_stock.pop(i)
+
+        # 7) Validation finale
+        if st.button("✅ Valider les ajouts"):
+            # Prépare les nouvelles lignes
+            nouveaux = pd.DataFrame([
+                {"frigo": frigo_select, **it}
+                for it in st.session_state.pending_stock
+            ])
+            # Conserve l’existant sur ce frigo et ajoute les nouveaux
+            df_keep = df_stock[df_stock["frigo"] != frigo_select]
+            df_to_save = pd.concat([df_keep, df_frigo, nouveaux], ignore_index=True)
             save_df(ss_cmd, "Stockage Frigo", df_to_save)
-            st.success("✅ Stock mis à jour avec succès.")
+            st.success("✅ Nouveaux articles ajoutés au stock.")
+            st.session_state.pending_stock.clear()
 # ——— ONGLET PROTOCOLES ———
 elif choix == "📋 Protocoles":
     st.header("📋 Protocoles opérationnels")
