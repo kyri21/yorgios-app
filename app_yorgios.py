@@ -370,16 +370,31 @@ elif choix == "🧊 Stockage Frigo":
     frigos_dispo  = sorted(df_stock["frigo"].dropna().unique())
     frigo_select = st.selectbox("🧊 Choisir un frigo", frigos_dispo, key="sf_choose")
 
-    # 3) Affichage du contenu actuel
+    # 3) Affichage + suppression individuelle
     df_frigo = df_stock[df_stock["frigo"] == frigo_select].reset_index(drop=True)
     st.subheader(f"📋 Contenu actuel de **{frigo_select}**")
     if df_frigo.empty:
         st.info("Aucun article dans ce frigo.")
     else:
-        st.dataframe(
-            df_frigo[["article", "quantite", "dlc"]],
-            use_container_width=True
-        )
+        for i, row in df_frigo.iterrows():
+            c1, c2 = st.columns([0.8, 0.2])
+            with c1:
+                st.write(f"• {row['article']} – Qté : {row['quantite']} – DLC : {row['dlc']}")
+            with c2:
+                if st.button("🗑️", key=f"sf_del_exist_{i}"):
+                    # on retire la ligne i dans l'ensemble df_stock
+                    mask = ~(
+                        (df_stock["frigo"]    == frigo_select) &
+                        (df_stock["article"]  == row["article"])    &
+                        (df_stock["quantite"] == row["quantite"])   &
+                        (df_stock["dlc"]      == row["dlc"])
+                    )
+                    df_new = df_stock[mask].reset_index(drop=True)
+                    save_df(ss_cmd, "Stockage Frigo", df_new)
+                    st.success("✅ Article supprimé du stock.")
+                    # on met à jour localement pour affichage immédiat
+                    df_stock = df_new
+                    df_frigo = df_stock[df_stock["frigo"] == frigo_select].reset_index(drop=True)
 
     st.markdown("---")
     st.subheader("➕ Ajouter plusieurs articles")
@@ -393,73 +408,57 @@ elif choix == "🧊 Stockage Frigo":
         art     = st.text_input("Article", key="sf_txt_article")
         qty     = st.number_input("Quantité", min_value=1, value=1, step=1, key="sf_txt_qty")
         dlc_new = st.date_input("DLC", value=date.today() + timedelta(days=3), key="sf_txt_dlc")
-        ajouter = st.form_submit_button("➕ Ajouter à la liste")
+        if st.form_submit_button("➕ Ajouter à la liste"):
+            st.session_state.pending_stock.append({
+                "article":  art.strip(),
+                "quantite": int(qty),
+                "dlc":       dlc_new.strftime("%Y-%m-%d")
+            })
 
-    if ajouter:
-        st.session_state.pending_stock.append({
-            "article": art.strip(),
-            "quantite": int(qty),
-            "dlc": dlc_new.strftime("%Y-%m-%d")
-        })
-
-    # 6) Affichage de la liste en attente avec possibilité de suppression
+    # 6) Affichage + suppression dans la liste en attente
     if st.session_state.pending_stock:
         st.subheader("📝 Articles en attente d’ajout")
-        for i, item in enumerate(st.session_state.pending_stock):
+        for j, it in enumerate(st.session_state.pending_stock):
             c1, c2 = st.columns([0.8, 0.2])
             with c1:
-                st.write(f"• {item['article']} – Qté : {item['quantite']} – DLC : {item['dlc']}")
+                st.write(f"• {it['article']} – Qté : {it['quantite']} – DLC : {it['dlc']}")
             with c2:
-                if st.button("❌", key=f"sf_rm_{i}"):
-                    st.session_state.pending_stock.pop(i)
+                if st.button("❌", key=f"sf_rm_pending_{j}"):
+                    st.session_state.pending_stock.pop(j)
 
-        # 7) Validation finale
+        # 7) Validation finale – écriture dans la sheet
         if st.button("✅ Valider les ajouts"):
-            # Prépare les nouvelles lignes
             nouveaux = pd.DataFrame([
                 {"frigo": frigo_select, **it}
                 for it in st.session_state.pending_stock
             ])
-            # Conserve l’existant sur ce frigo et ajoute les nouveaux
-            df_keep = df_stock[df_stock["frigo"] != frigo_select]
-            df_to_save = pd.concat([df_keep, df_frigo, nouveaux], ignore_index=True)
-            save_df(ss_cmd, "Stockage Frigo", df_to_save)
+            df_keep    = df_stock[df_stock["frigo"] != frigo_select]
+            df_updated = pd.concat([df_keep, df_frigo, nouveaux], ignore_index=True)
+            save_df(ss_cmd, "Stockage Frigo", df_updated)
             st.success("✅ Nouveaux articles ajoutés au stock.")
             st.session_state.pending_stock.clear()
-# ——— ONGLET PROTOCOLES ———
-elif choix == "📋 Protocoles":
-    st.header("📋 Protocoles opérationnels")
-    fichiers = {
-        "Arrivée": "protocoles_arrivee.txt",
-        "Fermeture": "protocoles_fermeture.txt",
-        "Temps calme": "protocoles_tempscalmes.txt",
-        "Stockage": "protocole_stockage.txt",
-        "Hygiène du personnel": "protocoles_hygiene du personnel.txt",
-        "Service du midi": "protocoles_midi.txt",
-        "Règles en stand": "protocoles_regles en stand.txt",
-        "Hygiène générale": "protocole_hygiene.txt"
-    }
-    choix_proto = st.selectbox("🧾 Choisir un protocole à consulter", list(fichiers))
-    txt = read_txt_from_drive(fichiers[choix_proto])
-    if txt:
-        st.markdown(f"### 🗂️ {choix_proto}")
-        txt_clean = txt.replace("\n", "").replace("•", "\n\n•").strip()
-        st.markdown(txt_clean, unsafe_allow_html=True)
+            # Mise à jour immédiate de l’affichage
+            df_stock = df_updated
+            df_frigo = df_stock[df_stock["frigo"] == frigo_select].reset_index(drop=True)
+    
+    # 8) Ré-affichage final du contenu
+    st.markdown("---")
+    st.subheader(f"📋 Contenu mis à jour de **{frigo_select}**")
+    if df_frigo.empty:
+        st.info("Aucun article dans ce frigo.")
     else:
-        st.error("⚠️ Fichier introuvable dans le dossier Google Drive.")
-
+        st.table(df_frigo[["article","quantite","dlc"]])
 # ——— ONGLET VITRINE ———
 elif choix == "🖥️ Vitrine":
     st.header("🖥️ Vitrine – Traçabilité HACCP")
     today = date.today()
 
-    # 1) Formulaire d’ajout en haut
+    # ─── 1) Formulaire d’ajout ──────────────────────────────────────────
     with st.form("vt_form", clear_on_submit=True):
         da  = st.date_input("Date d’ajout", value=today, key="vt_da")
         pr  = st.selectbox("Produit", produits_list, key="vt_pr")
-        dfb = st.date_input("Date fabrication", value=today, key="vt_df")
+        dfb = st.date_input("Date de fabrication", value=today, key="vt_df")
         dl  = st.date_input("DLC", value=today + timedelta(days=3), key="vt_dl")
-
         if st.form_submit_button("✅ Ajouter"):
             ds  = da.strftime("%Y%m%d")
             ab  = pr[:3].upper()
@@ -473,7 +472,7 @@ elif choix == "🖥️ Vitrine":
             ])
             st.success(f"✅ {pr} ajouté (lot : {lot})")
 
-    # 2) Rechargement & normalisation du header
+    # ─── 2) Chargement + normalisation du header ────────────────────────
     import unicodedata
     raw        = sheet_vitrine.get_all_values()
     header_raw = raw[0]
@@ -485,47 +484,24 @@ elif choix == "🖥️ Vitrine":
                     .lower()
                     .replace(" ", "_"))
     cols = [normalize(c) for c in header_raw]
-    df   = pd.DataFrame(raw[1:], columns=cols)
 
-    # 3) Filtrage des actifs (date_retrait vide)
-    actifs = df[df.get("date_retrait", "") == ""].reset_index(drop=True)
+    # DataFrame avec row_num pour pointer la bonne ligne dans la sheet
+    df_raw = pd.DataFrame(raw[1:], columns=cols)
+    df_raw["row_num"] = list(range(2, 2 + len(df_raw)))
 
-    # 4) Calcul des jours restants
-    today_ts         = pd.Timestamp(today)
-    actifs["jr_rest"] = (
-        pd.to_datetime(actifs["dlc"], errors="coerce") - today_ts
-    ).dt.days
+    # Filtrage des actifs (date_retrait vide)
+    actifs = df_raw[df_raw["date_retrait"] == ""].reset_index(drop=True)
 
-    # 5) Affichage coloré
-    def colorer(row):
-        jr = actifs.at[row.name, "jr_rest"]
-        if jr <= 0:
-            color = "#f44336"  # rouge
-        elif jr == 1:
-            color = "#ff9800"  # orange
-        else:
-            color = "#8bc34a"  # vert
-        return [f"background-color: {color}"] * len(row)
-
-    st.subheader("📋 Articles en vitrine")
-    # on affiche toutes les colonnes sauf date_retrait et jr_rest
-    disp_cols = [c for c in cols if c not in ("date_retrait", "jr_rest")]
-    st.dataframe(
-        actifs[disp_cols]
-              .style
-              .apply(colorer, axis=1),
-        use_container_width=True
-    )
-
-    # 6) Retrait d’un article
+    # ─── 3) Suppression au premier clic ────────────────────────────────
     st.subheader("❌ Retirer un article")
-    for i, row in actifs.iterrows():
+    deleted = False
+    for _, row in actifs.iterrows():
         c1, c2 = st.columns([0.8, 0.2])
         with c1:
             st.write(f"• {row['produit']} – Lot `{row['numero_de_lot']}` – DLC {row['dlc']}")
         with c2:
-            if st.button("🗑️", key=f"vt_rem_{i}"):
-                cell_row    = i + 2  # +2 pour passer l’en-tête
+            if st.button("🗑️", key=f"vt_rem_{row['row_num']}"):
+                cell_row    = int(row["row_num"])
                 col_retrait = cols.index("date_retrait") + 1
                 sheet_vitrine.update_cell(
                     cell_row,
@@ -533,6 +509,42 @@ elif choix == "🖥️ Vitrine":
                     today.strftime("%Y-%m-%d")
                 )
                 st.success("✅ Article retiré")
+                deleted = True
+                break
+
+    # ─── 4) Si on a supprimé, on recharge les données ──────────────────
+    if deleted:
+        raw        = sheet_vitrine.get_all_values()
+        header_raw = raw[0]
+        cols = [normalize(c) for c in header_raw]
+        df_raw = pd.DataFrame(raw[1:], columns=cols)
+        df_raw["row_num"] = list(range(2, 2 + len(df_raw)))
+        actifs = df_raw[df_raw["date_retrait"] == ""].reset_index(drop=True)
+
+    # ─── 5) Calcul des jours restants & affichage coloré ───────────────
+    today_ts          = pd.Timestamp(today)
+    actifs["jr_rest"] = (
+        pd.to_datetime(actifs["dlc"], errors="coerce") - today_ts
+    ).dt.days
+
+    def colorer(r):
+        jr = actifs.loc[r.name, "jr_rest"]
+        if jr <= 0:
+            col = "#f44336"
+        elif jr == 1:
+            col = "#ff9800"
+        else:
+            col = "#8bc34a"
+        return [f"background-color: {col}"] * len(r)
+
+    st.subheader("📋 Articles en vitrine")
+    disp_cols = [c for c in cols if c not in ("date_retrait","row_num","jr_rest")]
+    st.dataframe(
+        actifs[disp_cols]
+              .style
+              .apply(colorer, axis=1),
+        use_container_width=True
+    )
 
 # ——— ONGLET RUPTURES ET COMMANDES ———
 elif choix == "🛎️ Ruptures & Commandes":
