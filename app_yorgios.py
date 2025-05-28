@@ -149,7 +149,6 @@ sheet_prod   = ss_produits.worksheet("Produits")
 # ———————————————————————————————
 # UTILITAIRES DE CHARGEMENT / SAUVEGARDE
 # ———————————————————————————————
-@st.cache_data(ttl=300)
 def load_df(_sh, ws_name):
     ws = _sh.worksheet(ws_name)
     return pd.DataFrame(ws.get_all_records())
