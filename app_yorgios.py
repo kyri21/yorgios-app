@@ -203,6 +203,7 @@ onglets = [
     "📋 Protocoles",
     "📅 Planning",
     "🖥️ Vitrine",
+    "🛎️ Ruptures & Commandes",
     "🧾 Contrôle Hygiène",
     "🔗 Liens Google Sheets"
 ]
