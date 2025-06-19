@@ -363,6 +363,45 @@ elif choix == "🧼 Hygiène":
                     del st.session_state[chk_key]
         except Exception as e:
             st.error(f"❌ Erreur lors de la mise à jour du Google Sheet : {e}")
+
+# ——— ONGLET PROTOCOLES ———
+elif choix == "📋 Protocoles":
+    st.header("📋 Protocoles opérationnels")
+
+    # Dictionnaire : nom affiché → nom du fichier sur Drive
+    fichiers = {
+        "Arrivée": "protocoles_arrivee.txt",
+        "Fermeture": "protocoles_fermeture.txt",
+        "Temps calme": "protocoles_tempscalmes.txt",
+        "Stockage": "protocole_stockage.txt",
+        "Hygiène du personnel": "protocoles_hygiene du personnel.txt",
+        "Service du midi": "protocoles_midi.txt",
+        "Règles en stand": "protocoles_regles en stand.txt",
+        "Hygiène générale": "protocole_hygiene.txt"
+    }
+
+    # Sélection
+    choix_proto = st.selectbox("🧾 Choisir un protocole à consulter", list(fichiers.keys()), key="select_proto")
+
+    # Lecture depuis Google Drive
+    try:
+        contenu = read_txt_from_drive(
+            file_name=fichiers[choix_proto],
+            folder_id="14Pa-svM3uF9JQtjKysP0-awxK0BDi35E"
+        )
+        if contenu is None:
+            st.error(f"⚠️ Le fichier « {fichiers[choix_proto]} » n’a pas été trouvé dans le dossier Drive.")
+        else:
+            # On remplace les puces et on affiche
+            texte = contenu.replace("•", "\n\n•")
+            st.markdown(
+                f"### 🗂️ {choix_proto}\n\n" +
+                textwrap.indent(texte, prefix=""),
+                unsafe_allow_html=True
+            )
+    except Exception as e:
+        st.error(f"❌ Impossible de charger « {choix_proto} » depuis Drive : {e}")
+
 # ——— ONGLET PLANNING ———
 elif choix == "📅 Planning":
     st.header("📅 Planning Google")
