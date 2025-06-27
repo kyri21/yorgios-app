@@ -449,25 +449,16 @@ elif choix == "📅 Planning":
 elif choix == "🧊 Stockage Frigo":
     st.header("🧊 Stockage Frigo")
 
-    # --- 1) Récapitulatif global (fix DLC None) ---
+    # 1) Chargement & préparation
     df_all = load_df(ss_cmd, "Stockage Frigo")
-    # uniformisation des noms de colonnes
     df_all.columns = [c.strip().lower().replace(" ", "_") for c in df_all.columns]
-
-    # conversion DLC en vraie date
-    df_all["dlc"] = pd.to_datetime(
-        df_all["dlc"],
-        dayfirst=True,
-        errors="coerce"
-    ).dt.date
-
-    # calcul des jours restants
+    df_all["dlc"] = pd.to_datetime(df_all["dlc"], dayfirst=True, errors="coerce").dt.date
     df_all["jours_restants"] = (
         pd.to_datetime(df_all["dlc"]) - pd.Timestamp.today().normalize()
     ).dt.days
 
+    # 2) Récapitulatif global
     st.subheader("📦 Tous les frigos")
-
     def bordure_color(d):
         if pd.isna(d):
             return ""
@@ -477,33 +468,28 @@ elif choix == "🧊 Stockage Frigo":
             return "border-left:4px solid #ffe5a1"   # jaune pastel
         return "border-left:4px solid #f7b2b7"       # rose tendre
 
-    # on n'affiche QUE les colonnes d'origine
-    display_df = df_all[["frigo", "article", "quantite", "dlc"]].copy()
-
-    # style bandeau latéral
+    display_df = df_all[["frigo", "article", "quantite", "dlc"]]
     styled = display_df.style.apply(
         lambda row: [bordure_color(df_all.loc[row.name, "jours_restants"])] * len(row),
         axis=1
     ).set_properties(**{"font-size": "0.9em"})
-
     st.dataframe(styled, use_container_width=True)
 
     st.markdown("---")
 
-    # --- 2) Sélecteur de frigo ---
+    # 3) Sélecteur de frigo
     frigos = ["Frigo 1", "Frigo 2", "Frigo 3", "Grand Frigo", "Chambre Froide"]
     choix_frigo = st.selectbox("🔍 Afficher un seul frigo :", frigos, key="sel_frigo")
-
-    df = df_all[df_all["frigo"] == choix_frigo].reset_index(drop=True)
+    df = df_all[df_all["frigo"] == choix_frigo].reset_index()
 
     st.subheader(f"📋 Contenu de « {choix_frigo} »")
     if df.empty:
         st.info("Aucun article dans ce frigo.")
     else:
-        for i, row in df.iterrows():
+        for _, row in df.iterrows():
             jr = row["jours_restants"]
             style = bordure_color(jr)
-            c1, c2 = st.columns([4, 1])
+            c1, c2, c3 = st.columns([4, 1, 1])
             with c1:
                 st.markdown(
                     f"<div style='{style}; padding:8px 12px; border-radius:4px;'>"
@@ -511,47 +497,66 @@ elif choix == "🧊 Stockage Frigo":
                     f"</div>",
                     unsafe_allow_html=True
                 )
+            # ❌ suppression
             with c2:
-                if st.button("❌", key=f"del_{choix_frigo}_{i}", help="Supprimer"):
-                    reste  = df.drop(i).reset_index(drop=True)
-                    autres = df_all[df_all["frigo"] != choix_frigo]
-                    df_save = pd.concat([autres, reste], ignore_index=True)
-                    save_df(ss_cmd, "Stockage Frigo", df_save)
+                if st.button("❌", key=f"del_{choix_frigo}_{row['index']}", help="Supprimer"):
+                    new_df = df_all.drop(row["index"])
+                    save_df(ss_cmd, "Stockage Frigo", new_df)
                     st.success("Article supprimé.")
-                    # le bouton supprime et la page se rafraîchira automatiquement
+            # 🔁 transfert
+            with c3:
+                if st.button("🔁", key=f"tf_{choix_frigo}_{row['index']}", help="Transférer"):
+                    st.session_state["to_transfer"] = row["index"]
+                    st.session_state["transfer_src"] = choix_frigo
 
-    # --- 3) Vidage complet ---
+    # 4) Transfert
+    if "to_transfer" in st.session_state:
+        st.markdown("---")
+        src = st.session_state["transfer_src"]
+        article = df_all.at[st.session_state["to_transfer"], "article"]
+        st.warning(f"🔁 Transfert de « {article} » depuis **{src}**")
+        dest = st.selectbox(
+            "Choisissez le frigo de destination",
+            [f for f in frigos if f != src],
+            key="dest_frigo"
+        )
+        if st.button("✅ Confirmer le transfert"):
+            df2 = load_df(ss_cmd, "Stockage Frigo")
+            df2.columns = [c.strip().lower().replace(" ", "_") for c in df2.columns]
+            df2.at[st.session_state["to_transfer"], "frigo"] = dest
+            save_df(ss_cmd, "Stockage Frigo", df2)
+            st.success("🔁 Transfert effectué !")
+            del st.session_state["to_transfer"]
+            del st.session_state["transfer_src"]
+
+    # 5) Vidage complet
     st.markdown("---")
     if st.button(f"🗑️ Vider complètement « {choix_frigo} »"):
-        autres = df_all[df_all["frigo"] != choix_frigo]
-        save_df(ss_cmd, "Stockage Frigo", autres)
+        df2 = df_all[df_all["frigo"] != choix_frigo]
+        save_df(ss_cmd, "Stockage Frigo", df2)
         st.success(f"Contenu de « {choix_frigo} » vidé.")
 
-    # --- 4) Formulaire d’ajout en bas ---
+    # 6) Formulaire d’ajout en bas
     st.markdown("---")
     st.subheader("➕ Ajouter un article")
     c1, c2, c3, c4 = st.columns([3, 1, 2, 1])
     art = c1.text_input("Article", key="add_art")
     qte = c2.number_input("Qté", min_value=1, value=1, key="add_qte")
-    dlc = c3.date_input("DLC", value=date.today() + timedelta(days=3), key="add_dlc")
+    dlc_in = c3.date_input("DLC", value=date.today() + timedelta(days=3), key="add_dlc")
     if c4.button("✅ Ajouter"):
         if not art.strip():
             st.error("Le nom de l’article est vide.")
         else:
-            anciens = df_all[df_all["frigo"] == choix_frigo].copy()
-            nouveaux = {
+            nouveau = {
                 "frigo":    choix_frigo,
                 "article":  art.strip(),
                 "quantite": qte,
-                "dlc":       dlc.strftime("%Y-%m-%d")
+                "dlc":       dlc_in.strftime("%Y-%m-%d")
             }
-            autres = df_all[df_all["frigo"] != choix_frigo]
-            df_save = pd.concat([autres, anciens, pd.DataFrame([nouveaux])], ignore_index=True)
-            save_df(ss_cmd, "Stockage Frigo", df_save)
+            df2 = pd.concat([df_all, pd.DataFrame([nouveau])], ignore_index=True)
+            save_df(ss_cmd, "Stockage Frigo", df2)
             st.success(f"« {art.strip()} » ajouté.")
-            # l'app se rafraîchira au prochain cycle de rendu automatiquement
-
-# ——— ONGLET VITRINE ———
+ 
 # ——— ONGLET VITRINE ———
 elif choix == "🖥️ Vitrine":
     st.header("🖥️ Vitrine – Traçabilité HACCP")
