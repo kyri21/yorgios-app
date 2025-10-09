@@ -10,15 +10,15 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from gspread.exceptions import SpreadsheetNotFound, WorksheetNotFound
 import pytz
-from ics import Calendar, Event
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
+# (googleapiclient supprimé)
 from io import BytesIO
-from google.oauth2.service_account import Credentials
+# (google.oauth2 supprimé)
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import landscape, A4
 from reportlab.lib.units import cm
 import urllib.parse
+import unicodedata
+import requests  # ➕ utilisé pour l’API Drive directe
 
 # ———————————————————————————————
 # FONCTION DE GÉNÉRATION DU PDF Contrôle Hygiène (pagination auto)
@@ -106,46 +106,71 @@ def open_sheet_retry(client, key, retries=3, delay=2):
                 st.stop()
 
 # ———————————————————————————————
-# LECTURE PROTOCOLES DRIVE
+# TOKEN & LECTURE PROTOCOLES DRIVE (sans googleapiclient)
 # ———————————————————————————————
+def _get_sa_token(scopes=None):
+    if scopes is None:
+        scopes = ["https://www.googleapis.com/auth/drive.readonly"]
+    sa_info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(sa_info, scopes)
+    # oauth2client: get_access_token() rafraîchit si besoin
+    return creds.get_access_token().access_token
+def _drive_q_escape(value: str) -> str:
+    # Échapper \ puis ' pour la syntaxe de requête Drive (v3)
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
 def read_txt_from_drive(file_name, folder_id="14Pa-svM3uF9JQtjKysP0-awxK0BDi35E"):
     """
     Récupère le contenu d’un fichier texte (.txt) ou d’un Google Docs
-    dans le dossier Drive donné et renvoie du texte brut.
+    dans le dossier Drive donné et renvoie du texte brut, via requêtes HTTP directes.
     """
-    scopes = ["https://www.googleapis.com/auth/drive.readonly"]
-    creds = Credentials.from_service_account_info(
-        json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]),
-        scopes=scopes
-    )
-    service = build("drive", "v3", credentials=creds)
+    token = _get_sa_token()
+    headers = {"Authorization": f"Bearer {token}"}
 
-    # On recherche le fichier (txt ou Docs) par nom
-    query = f"name='{file_name}' and '{folder_id}' in parents"
-    resp = service.files().list(q=query, fields="files(id, mimeType)", pageSize=1).execute()
-    items = resp.get("files", [])
+    # 1) Trouver le fichier par nom dans le dossier (sans f-string à l'intérieur)
+    name_q   = _drive_q_escape(str(file_name))
+    folder_q = _drive_q_escape(str(folder_id))
+    q = "name = '{name}' and '{folder}' in parents and trashed = false".format(
+        name=name_q, folder=folder_q
+    )
+    params = {"q": q, "fields": "files(id, mimeType)", "pageSize": 1}
+
+    resp = requests.get(
+        "https://www.googleapis.com/drive/v3/files",
+        headers=headers,
+        params=params,
+        timeout=30
+    )
+    if resp.status_code != 200:
+        return None
+
+    items = resp.json().get("files", [])
     if not items:
         return None
 
     file_id = items[0]["id"]
     mime    = items[0]["mimeType"]
 
-    # Choix de la méthode de download selon le type MIME
+    # 2) Télécharger en texte
     if mime == "text/plain":
-        request = service.files().get_media(fileId=file_id)
+        r = requests.get(
+            f"https://www.googleapis.com/drive/v3/files/{file_id}",
+            headers=headers,
+            params={"alt": "media"},
+            timeout=60
+        )
     else:
-        # Google Docs → export en plain text
-        request = service.files().export_media(
-            fileId=file_id, mimeType="text/plain"
+        r = requests.get(
+            f"https://www.googleapis.com/drive/v3/files/{file_id}/export",
+            headers=headers,
+            params={"mimeType": "text/plain"},
+            timeout=60
         )
 
-    fh = BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
+    if r.status_code != 200:
+        return None
 
-    return fh.getvalue().decode("utf-8")
+    return r.content.decode("utf-8", errors="replace")
 
 # ———————————————————————————————
 # IDS Google Sheets & CHARGEMENT via retry
@@ -155,9 +180,11 @@ SHEET_HYGIENE_ID   = "1phiQjSYqvHdVEqv7uAt8pitRE0NfKv4b1f4UUzUqbXQ"
 SHEET_TEMP_ID      = "1e4hS6iawCa1IizhzY3xhskLy8Gj3todP3zzk38s7aq0"
 SHEET_PLANNING_ID  = "1OBYGNHtHdDB2jufKKjoAwq6RiiS_pnz4ta63sAM-t_0"
 SHEET_PRODUITS_ID  = "1FbRV4KgXyCwqwLqJkyq8cHZbo_BfB7kyyPP3pO53Snk"
+# ➕ Responsables semaine (ajouté)
+SHEET_RESP_ID      = "1nWEel6nizI0LKC84uaBDyqTNg1hzwPSVdZw41YJaBV8"
 
-ss_cmd      = open_sheet_retry(gc, SHEET_COMMANDES_ID)
-sheet_haccp = ss_cmd.worksheet("Suivi HACCP")
+ss_cmd        = open_sheet_retry(gc, SHEET_COMMANDES_ID)
+sheet_haccp   = ss_cmd.worksheet("Suivi HACCP")
 sheet_vitrine = ss_cmd.worksheet("Vitrine")
 
 ss_hygiene  = open_sheet_retry(gc, SHEET_HYGIENE_ID)
@@ -165,6 +192,8 @@ ss_temp     = open_sheet_retry(gc, SHEET_TEMP_ID)
 ss_planning = open_sheet_retry(gc, SHEET_PLANNING_ID)
 ss_produits = open_sheet_retry(gc, SHEET_PRODUITS_ID)
 sheet_prod  = ss_produits.worksheet("Produits")
+# ➕ ouverture du sheet Responsables semaine
+ss_resp = open_sheet_retry(gc, SHEET_RESP_ID)
 
 # ———————————————————————————————
 # UTILITAIRES LECTURE / SAUVEGARDE
@@ -183,16 +212,263 @@ def save_df(sh, ws_name, df: pd.DataFrame):
     ws.update([df.columns.tolist()] + df.values.tolist())
 
 # ———————————————————————————————
-# Liste produits & JOURS_FR & NAV
+# LISTE PRODUITS & JOURS_FR & NAV
 # ———————————————————————————————
 produits_list = sorted(set(p.strip().capitalize() for p in sheet_prod.col_values(1) if p.strip()))
 JOURS_FR = {"Monday":"Lundi","Tuesday":"Mardi","Wednesday":"Mercredi","Thursday":"Jeudi","Friday":"Vendredi","Saturday":"Samedi","Sunday":"Dimanche"}
-onglets = ["🌡️ Relevé des températures","🧼 Hygiène","🧊 Stockage Frigo","📋 Protocoles","📅 Planning","🖥️ Vitrine","🛎️ Ruptures & Commandes","🧾 Contrôle Hygiène","🔗 Liens Google Sheets"]
+
+# ➕ insérer Dashboard en premier
+onglets = ["🏠 Dashboard","🌡️ Relevé des températures","🧼 Hygiène","🧊 Stockage Frigo","📋 Protocoles","📅 Planning","🖥️ Vitrine","🛎️ Ruptures & Commandes","🧾 Contrôle Hygiène","🔗 Liens Google Sheets"]
 choix = st.sidebar.radio("Navigation", onglets)
+
+# ———————————————————————————————
+# OUTILS COMMUNS VITRINE (alertes & normalisation)
+# ———————————————————————————————
+def normalize_col(c: str) -> str:
+    nfkd = unicodedata.normalize("NFKD", c)
+    return (nfkd.encode("ascii", "ignore").decode().strip().lower().replace(" ", "_"))
+
+def vitrine_df_norm_active():
+    raw = sheet_vitrine.get_all_values()
+    if not raw:
+        return pd.DataFrame(), []
+    header_raw = raw[0]
+    cols = [normalize_col(c) for c in header_raw]
+    df_raw = pd.DataFrame(raw[1:], columns=cols)
+    if "date_retrait" not in df_raw.columns:
+        df_raw["date_retrait"] = ""
+    actifs = df_raw[df_raw["date_retrait"] == ""].copy()
+    return actifs, cols
+
+def style_dlc_alert(df: pd.DataFrame):
+    # fond rouge #b71c1c, texte noir
+    def styler(_):
+        return ["background-color: #b71c1c; color: black;"] * len(df.columns)
+    return df.style.apply(styler, axis=1)
+
+def df_dlc_alerts():
+    actifs, cols = vitrine_df_norm_active()
+    if actifs.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    today_dt = pd.Timestamp(date.today())
+    # convertir DLC
+    if "dlc" in actifs.columns:
+        dlc = pd.to_datetime(actifs["dlc"], errors="coerce")
+    else:
+        return pd.DataFrame(), pd.DataFrame()
+    depassee = actifs[dlc < today_dt].copy()
+    dujour   = actifs[dlc == today_dt].copy()
+    # Garder colonnes utiles
+    drop_cols = [c for c in ["date_retrait"] if c in actifs.columns]
+    base_cols = [c for c in actifs.columns if c not in drop_cols]
+    return depassee[base_cols], dujour[base_cols]
+
+# ———————————————————————————————
+# DASHBOARD
+# ———————————————————————————————
+def _compose_responsable_from_row(row, candidates=("responsable","nom","nom_1","nom1","nom_2","nom2")) -> str | None:
+    """Construit 'Nom' ou 'Nom & Nom 2' selon les colonnes présentes et non vides (après normalisation)."""
+    names = []
+    for c in candidates:
+        if c in row.index:
+            v = str(row[c]).strip()
+            if v and v.lower() not in ("nan", "none"):
+                names.append(v)
+    if not names:
+        return None
+    # déduplication en conservant l’ordre
+    unique = []
+    for n in names:
+        if n not in unique:
+            unique.append(n)
+    return " & ".join(unique)
+
+def render_dashboard():
+    st.header("🏠 Dashboard")
+    today = date.today()
+    semaine_iso = today.isocalendar().week
+
+    # ——— Responsable de la semaine (plein écran en haut)
+    st.subheader("👤 Responsable de la semaine")
+    resp_nom = "—"
+    try:
+        # 1) Lecture du Google Sheet "Responsables semaine" (1ère feuille)
+        ws_resp = ss_resp.worksheets()[0]
+        raw = ws_resp.get_all_values()
+        if len(raw) >= 2:
+            # Normalisation des en-têtes
+            cols_norm = [normalize_col(c) for c in raw[0]]
+            df = pd.DataFrame(raw[1:], columns=cols_norm)
+
+            # Harmonisation éventuelle des noms de colonnes de dates
+            if "date_debut" not in df.columns and "debut" in df.columns:
+                df["date_debut"] = df["debut"]
+            if "date_fin" not in df.columns and "fin" in df.columns:
+                df["date_fin"] = df["fin"]
+
+            # ✦ Cas A : par n° de semaine
+            if "semaine" in df.columns and resp_nom == "—":
+                def _parse_week(v):
+                    m = re.search(r"\d+", str(v))
+                    return int(m.group()) if m else None
+                df["semaine_num"] = df["semaine"].apply(_parse_week)
+                row = df.loc[df["semaine_num"] == semaine_iso].head(1)
+                if not row.empty:
+                    who = _compose_responsable_from_row(
+                        row.iloc[0],
+                        candidates=("responsable","nom","nom_1","nom1","nom_2","nom2")
+                    )
+                    if who:
+                        resp_nom = who
+
+            # ✦ Cas B : par plage de dates (date_debut / date_fin + Nom / Nom 2)
+            if resp_nom == "—" and ("date_debut" in df.columns and "date_fin" in df.columns):
+                ddeb = pd.to_datetime(df["date_debut"], errors="coerce", dayfirst=True)
+                dfin = pd.to_datetime(df["date_fin"],   errors="coerce", dayfirst=True)
+                if ddeb.isna().mean() > 0.5 or dfin.isna().mean() > 0.5:
+                    ddeb = pd.to_datetime(df["date_debut"], errors="coerce")
+                    dfin = pd.to_datetime(df["date_fin"],   errors="coerce")
+                df = df.assign(date_debut=ddeb, date_fin=dfin)
+                ts = pd.to_datetime(today)
+                row = df[(df["date_debut"] <= ts) & (ts < df["date_fin"])].head(1)
+                if row.empty:
+                    row = df[(df["date_debut"] <= ts) & (ts <= df["date_fin"])].head(1)
+                if not row.empty:
+                    who = _compose_responsable_from_row(
+                        row.iloc[0],
+                        candidates=("nom","nom_1","nom1","nom_2","nom2","responsable")
+                    )
+                    if who:
+                        resp_nom = who
+    except Exception:
+        pass
+
+    # Fallback Planning si rien trouvé
+    if resp_nom == "—":
+        try:
+            titres = [w.title for w in ss_planning.worksheets() if w.title.lower().startswith("semaine")]
+            titres.sort(key=lambda x: int(re.search(r"\d+", x).group()))
+            target = f"Semaine {semaine_iso}"
+            if target not in titres and titres:
+                target = titres[-1]
+            if titres:
+                ws = ss_planning.worksheet(target)
+                raw = ws.get_all_values()
+                if len(raw) >= 2:
+                    df_pl = pd.DataFrame(raw[1:], columns=raw[0]).replace("", None)
+                    cols_lower = [c.lower() for c in df_pl.columns]
+                    if "responsable" in cols_lower and not df_pl["Responsable"].dropna().empty:
+                        resp_nom = str(df_pl["Responsable"].dropna().iloc[0])
+                    elif "manager" in cols_lower and not df_pl["Manager"].dropna().empty:
+                        resp_nom = str(df_pl["Manager"].dropna().iloc[0])
+        except Exception:
+            pass
+
+    st.info(f"**Responsable semaine {semaine_iso} :** {resp_nom}")
+
+    st.markdown("---")
+
+    # ——— Rappels Températures & Hygiène (côte à côte)
+    col_temp, col_hyg = st.columns(2)
+
+    # Températures – Aujourd’hui
+    with col_temp:
+        st.subheader("🌡️ Températures – Aujourd’hui")
+        candidates = [f"Semaine {semaine_iso} {today.year}", f"Semaine {semaine_iso}"]
+        ws_title = None
+        titres_all = [w.title for w in ss_temp.worksheets()]
+        for cand in candidates:
+            if cand in titres_all:
+                ws_title = cand
+                break
+        if ws_title is None:
+            semaines = [t for t in titres_all if t.lower().startswith("semaine")]
+            if semaines:
+                semaines.sort(key=lambda x: int(re.search(r"\d+", x).group()))
+                ws_title = semaines[-1]
+
+        if ws_title is None:
+            st.warning("Feuille températures introuvable.")
+        else:
+            ws = ss_temp.worksheet(ws_title)
+            raw = ws.get_all_values()
+            if len(raw) < 2:
+                st.warning("Feuille vide.")
+            else:
+                header = [h.strip() for h in raw[0]]
+                df = pd.DataFrame(raw[1:], columns=header)
+                jour_fr = ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"][today.weekday()]
+                target_cols = [h for h in header if re.match(rf"^{jour_fr}\s+(Matin|Soir)$", h, flags=re.I)]
+                if not target_cols:
+                    st.warning("Colonnes du jour absentes dans cette feuille.")
+                else:
+                    missing_cols = []
+                    for col in target_cols:
+                        series = df[col].astype(str)
+                        if (series.str.strip()=="").any():
+                            missing_cols.append(col)
+                    if not missing_cols:
+                        st.success("OK – toutes les valeurs du jour sont saisies.")
+                    else:
+                        st.error("À faire – colonnes incomplètes : " + ", ".join(missing_cols))
+
+    # Hygiène – Quotidien
+    with col_hyg:
+        st.subheader("🧼 Hygiène – Quotidien (Aujourd’hui)")
+        try:
+            wh = ss_hygiene.worksheet("Quotidien")
+            raw = wh.get_all_values()
+            if len(raw) < 2:
+                st.warning("Feuille Quotidien vide.")
+            else:
+                dfh = pd.DataFrame(raw[1:], columns=raw[0])
+                today_str = today.strftime("%Y-%m-%d")
+                if "Date" not in dfh.columns:
+                    st.warning("Colonne Date manquante.")
+                else:
+                    if today_str not in dfh["Date"].values:
+                        st.error("À faire – aucune ligne pour aujourd’hui.")
+                    else:
+                        idx = int(dfh.index[dfh["Date"] == today_str][0])
+                        cols = [c for c in dfh.columns if c != "Date"]
+                        not_ok = [c for c in cols if str(dfh.at[idx, c]).strip() != "✅"]
+                        if not not_ok:
+                            st.success("OK – toutes les cases sont cochées.")
+                        else:
+                            st.error(f"À faire – {len(not_ok)} case(s) restante(s).")
+                            with st.expander("Voir les cases manquantes"):
+                                st.write(", ".join(not_ok))
+        except Exception as e:
+            st.warning(f"Impossible de lire l’onglet Hygiène Quotidien : {e}")
+
+    st.markdown("---")
+
+    # ——— Alertes DLC (en dessous)
+    st.subheader("⚠️ Alertes DLC – Vitrine")
+    depassee, dujour = df_dlc_alerts()
+    cA, cB = st.columns(2)
+    with cA:
+        st.caption("DLC dépassées")
+        if depassee.empty:
+            st.success("RAS")
+        else:
+            st.dataframe(style_dlc_alert(depassee), use_container_width=True)
+    with cB:
+        st.caption("DLC du jour")
+        if dujour.empty:
+            st.success("RAS")
+        else:
+            st.dataframe(style_dlc_alert(dujour), use_container_width=True)
+# ———————————————————————————————
+# ONGLET : Dashboard
+# ———————————————————————————————
+if choix == "🏠 Dashboard":
+    render_dashboard()
+
 # ———————————————————————————————
 # ONGLET : Relevé des températures
 # ———————————————————————————————
-if choix == "🌡️ Relevé des températures":
+elif choix == "🌡️ Relevé des températures":
     st.header("🌡️ Relevé des températures")
 
     # 1) Choix de la date
@@ -233,11 +509,9 @@ if choix == "🌡️ Relevé des températures":
             for f in frigos
         }
         if st.form_submit_button("✅ Valider les relevés"):
-            # construction du libellé recherché
             jours_fr = ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"]
             cible    = f"{jours_fr[jour.weekday()]} {moment}".strip()
 
-            # comparaison insensible à la casse
             header_lower = [h.lower() for h in header]
             if cible.lower() not in header_lower:
                 st.error(
@@ -245,16 +519,12 @@ if choix == "🌡️ Relevé des températures":
                     f"Colonnes disponibles : {', '.join(header)}"
                 )
             else:
-                # on récupère le vrai nom de colonne
                 col_reelle = header[header_lower.index(cible.lower())]
-                # on met à jour la df
                 for i, f in enumerate(frigos):
                     df_temp.at[i, col_reelle] = saisies[f]
-                # on ré-écrit tout (en gardant l'en-tête d'origine)
                 ws.update("A1", [header] + df_temp.values.tolist())
                 st.success("✅ Relevés sauvegardés.")
 
-    # 6) Affichage complet coloré
     disp = df_temp.replace("", "⛔️")
     st.subheader("📊 Aperçu complet")
     st.dataframe(
@@ -263,18 +533,16 @@ if choix == "🌡️ Relevé des températures":
         ),
         use_container_width=True
     )
-# —————————————— ONGLET “🧼 Hygiène” ——————————————
+
+# —————————————— ONGLET “🧼 Hygiène” (inchangé) ——————————————
 elif choix == "🧼 Hygiène":
     st.header("🧼 Relevé Hygiène – Aujourd’hui")
     typ = st.selectbox("📋 Type de tâches", ["Quotidien", "Hebdomadaire", "Mensuel"], key="hyg_type")
 
-    # Clé unique pour stocker le DataFrame et l’index de la date du jour
     df_key  = f"df_hyg_{typ}"
     idx_key = f"df_hyg_idx_{typ}"
 
-    # 1) Si on n’a pas encore en session le DataFrame ou si on vient de changer de type
     if df_key not in st.session_state:
-        # 1.a) Charger la feuille depuis Google Sheets
         try:
             ws = ss_hygiene.worksheet(typ)
         except Exception as e:
@@ -288,7 +556,6 @@ elif choix == "🧼 Hygiène":
 
         df_hyg = pd.DataFrame(raw[1:], columns=raw[0])
 
-        # 1.b) Trouver ou créer la ligne du jour
         today_str = date.today().strftime("%Y-%m-%d")
         if today_str in df_hyg["Date"].values:
             idx = int(df_hyg.index[df_hyg["Date"] == today_str][0])
@@ -298,45 +565,34 @@ elif choix == "🧼 Hygiène":
             new_row["Date"] = today_str
             df_hyg = pd.concat([df_hyg, pd.DataFrame([new_row])], ignore_index=True)
 
-        # Stocker dans session_state
         st.session_state[df_key]  = df_hyg
         st.session_state[idx_key] = idx
 
-    # Récupérer de la session
     df_hyg = st.session_state[df_key]
     idx    = st.session_state[idx_key]
     today_str = date.today().strftime("%Y-%m-%d")
 
     st.subheader(f"✅ Cochez les tâches effectuées pour le {today_str}")
 
-    # 2) Afficher les checkboxes (mais ne PAS modifier Google Sheets à chaque clic)
-    #    On lit/écrit uniquement dans st.session_state["hyg_chk_{typ}_{col}"]
     checks = {}
     for col in df_hyg.columns[1:]:
         chk_key = f"hyg_chk_{typ}_{col}"
-        # Valeur initiale pour la checkbox
         if chk_key not in st.session_state:
             st.session_state[chk_key] = (str(df_hyg.at[idx, col]) == "✅")
         checks[col] = st.checkbox(col, value=st.session_state[chk_key], key=chk_key)
 
-    # 3) Bouton pour mettre à jour TOUT d’un coup
     if st.button("📅 Valider la journée"):
-        # 3.a) Mettre à jour le DataFrame en mémoire
         for col, val in checks.items():
             df_hyg.at[idx, col] = "✅" if val else ""
 
-        # 3.b) Reconstruire le tableau complet à envoyer
         nouvelle_feuille = [df_hyg.columns.tolist()] + df_hyg.values.tolist()
 
         try:
-            # On récupère encore la worksheet pour être sûr qu’elle n’a pas changé
             ws = ss_hygiene.worksheet(typ)
             ws.update("A1", nouvelle_feuille)
             st.success("✅ Hygiène mise à jour dans Google Sheets.")
-            # 3.c) Supprimer de session_state pour recharger au prochain passage
             del st.session_state[df_key]
             del st.session_state[idx_key]
-            # Optionnel : effacer aussi les keys des checkboxes (pour repartir à zéro)
             for col in df_hyg.columns[1:]:
                 chk_key = f"hyg_chk_{typ}_{col}"
                 if chk_key in st.session_state:
@@ -344,11 +600,10 @@ elif choix == "🧼 Hygiène":
         except Exception as e:
             st.error(f"❌ Erreur lors de la mise à jour du Google Sheet : {e}")
 
-# ——— ONGLET PROTOCOLES ———
+# ——— ONGLET PROTOCOLES (inchangé, mais lecture par API HTTP) ———
 elif choix == "📋 Protocoles":
     st.header("📋 Protocoles opérationnels")
 
-    # Dictionnaire : étiquette affichée → nom du fichier sur Drive
     fichiers = {
         "Arrivée":                 "protocoles_arrivee.txt",
         "Fermeture":               "protocoles_fermeture.txt",
@@ -361,14 +616,12 @@ elif choix == "📋 Protocoles":
         "TooGoodToGo":             "TooGoodToGo.txt"
     }
 
-    # Choix de l’utilisateur
     choix_proto = st.selectbox(
         "🧾 Choisir un protocole à consulter", 
         list(fichiers.keys()),
         key="select_proto"
     )
 
-    # Lecture et affichage
     try:
         contenu = read_txt_from_drive(
             file_name=fichiers[choix_proto],
@@ -377,7 +630,6 @@ elif choix == "📋 Protocoles":
         if contenu is None:
             st.error(f"⚠️ Le fichier « {fichiers[choix_proto]} » n’a pas été trouvé dans le dossier Drive.")
         else:
-            # On remplace les puces par des retours à la ligne
             texte = contenu.replace("•", "\n\n•")
             st.markdown(
                 f"### 🗂️ {choix_proto}\n\n" +
@@ -387,69 +639,16 @@ elif choix == "📋 Protocoles":
     except Exception as e:
         st.error(f"❌ Impossible de charger « {choix_proto} » depuis Drive : {e}")
 
-
-# ——— ONGLET PLANNING ———
+# ——— ONGLET PLANNING (désactivé / en construction) ———
 elif choix == "📅 Planning":
-    st.header("📅 Planning Google")
+    st.header("📅 Planning – en construction")
+    st.info("Cette page est temporairement mise de côté. Nous l’intégrerons une fois la ‘Planning app’ finalisée.")
+    st.caption("Le Dashboard continue de récupérer le « Responsable de la semaine » via le Google Sheet dédié / Planning existant.")
 
-    date_sel = st.date_input(
-        "📅 Choisir une date",
-        value=date.today(),
-        key="pl_date"
-    )
-
-    titres = [w.title for w in ss_planning.worksheets() if w.title.lower().startswith("semaine")]
-    titres.sort(key=lambda x: int(re.search(r"\d+", x).group()))
-
-    semaine_iso = date_sel.isocalendar().week
-    nom_ws = f"Semaine {semaine_iso}"
-    if nom_ws not in titres:
-        st.warning(f"⚠️ Feuille « {nom_ws} » introuvable. Dernière utilisée.")
-        nom_ws = titres[-1]
-
-    ws = ss_planning.worksheet(nom_ws)
-    raw = ws.get_all_values()
-    df_pl = pd.DataFrame(raw[1:], columns=raw[0]).replace("", None)
-
-    filt = st.selectbox(
-        "👤 Filtrer par prénom",
-        ["Tous"] + df_pl["Prenoms"].dropna().unique().tolist(),
-        key="pl_filter"
-    )
-
-    if filt == "Tous":
-        st.dataframe(df_pl, use_container_width=True)
-    else:
-        jours_col = raw[0][1:8]
-        jours_fr  = ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"]
-        ligne     = df_pl[df_pl["Prenoms"]==filt]
-        horaires  = (ligne.values.tolist()[0][1:8] if not ligne.empty else [""]*7)
-        horaires  = [h or "–" for h in horaires]
-        df_aff    = pd.DataFrame({"Jour":jours_fr,"Horaires":horaires})
-        st.dataframe(df_aff, use_container_width=True)
-
-        if st.button("📥 Télécharger .ics", key="pl_ics"):
-            cal = Calendar(); tz = pytz.timezone("Europe/Paris")
-            for i, cell in enumerate(horaires):
-                if cell == "–": continue
-                date_str = re.search(r"\d{2}/\d{2}/\d{4}", jours_col[i]).group()
-                dt = datetime.strptime(date_str,"%d/%m/%Y")
-                h0, h1 = cell.split(" à ")
-                start = tz.localize(datetime.combine(dt, datetime.strptime(h0, "%H:%M").time()))
-                end   = tz.localize(datetime.combine(dt, datetime.strptime(h1, "%H:%M").time()))
-                e = Event(); e.name = f"{filt} {h0}–{h1}"; e.begin=start; e.end=end
-                cal.events.add(e)
-            tmp = "/tmp/planning.ics"
-            with open(tmp,"w") as f: f.writelines(cal)
-            with open(tmp,"rb") as f:
-                st.download_button("Télécharger ICS", f, file_name=f"planning_{filt}.ics", key="pl_dl")
-            st.success("✅ Exporté.")
-
-# ——— ONGLET STOCKAGE FRIGO ———
+# ——— ONGLET STOCKAGE FRIGO (inchangé) ———
 elif choix == "🧊 Stockage Frigo":
     st.header("🧊 Stockage Frigo")
 
-    # 1) Chargement & préparation
     df_all = load_df(ss_cmd, "Stockage Frigo")
     df_all.columns = [c.strip().lower().replace(" ", "_") for c in df_all.columns]
     df_all["dlc"] = pd.to_datetime(df_all["dlc"], dayfirst=True, errors="coerce").dt.date
@@ -457,16 +656,15 @@ elif choix == "🧊 Stockage Frigo":
         pd.to_datetime(df_all["dlc"]) - pd.Timestamp.today().normalize()
     ).dt.days
 
-    # 2) Récapitulatif global
     st.subheader("📦 Tous les frigos")
     def bordure_color(d):
         if pd.isna(d):
             return ""
         if d > 1:
-            return "border-left:4px solid #a8d5ba"   # vert doux
+            return "border-left:4px solid #a8d5ba"
         if d == 1:
-            return "border-left:4px solid #ffe5a1"   # jaune pastel
-        return "border-left:4px solid #f7b2b7"       # rose tendre
+            return "border-left:4px solid #ffe5a1"
+        return "border-left:4px solid #f7b2b7"
 
     display_df = df_all[["frigo", "article", "quantite", "dlc"]]
     styled = display_df.style.apply(
@@ -477,7 +675,6 @@ elif choix == "🧊 Stockage Frigo":
 
     st.markdown("---")
 
-    # 3) Sélecteur de frigo
     frigos = ["Frigo 1", "Frigo 2", "Frigo 3", "Grand Frigo", "Chambre Froide"]
     choix_frigo = st.selectbox("🔍 Afficher un seul frigo :", frigos, key="sel_frigo")
     df = df_all[df_all["frigo"] == choix_frigo].reset_index()
@@ -497,19 +694,16 @@ elif choix == "🧊 Stockage Frigo":
                     f"</div>",
                     unsafe_allow_html=True
                 )
-            # ❌ suppression
             with c2:
                 if st.button("❌", key=f"del_{choix_frigo}_{row['index']}", help="Supprimer"):
                     new_df = df_all.drop(row["index"])
                     save_df(ss_cmd, "Stockage Frigo", new_df)
                     st.success("Article supprimé.")
-            # 🔁 transfert
             with c3:
                 if st.button("🔁", key=f"tf_{choix_frigo}_{row['index']}", help="Transférer"):
                     st.session_state["to_transfer"] = row["index"]
                     st.session_state["transfer_src"] = choix_frigo
 
-    # 4) Transfert
     if "to_transfer" in st.session_state:
         st.markdown("---")
         src = st.session_state["transfer_src"]
@@ -529,14 +723,12 @@ elif choix == "🧊 Stockage Frigo":
             del st.session_state["to_transfer"]
             del st.session_state["transfer_src"]
 
-    # 5) Vidage complet
     st.markdown("---")
     if st.button(f"🗑️ Vider complètement « {choix_frigo} »"):
         df2 = df_all[df_all["frigo"] != choix_frigo]
         save_df(ss_cmd, "Stockage Frigo", df2)
         st.success(f"Contenu de « {choix_frigo} » vidé.")
 
-    # 6) Formulaire d’ajout en bas
     st.markdown("---")
     st.subheader("➕ Ajouter un article")
     c1, c2, c3, c4 = st.columns([3, 1, 2, 1])
@@ -556,133 +748,108 @@ elif choix == "🧊 Stockage Frigo":
             df2 = pd.concat([df_all, pd.DataFrame([nouveau])], ignore_index=True)
             save_df(ss_cmd, "Stockage Frigo", df2)
             st.success(f"« {art.strip()} » ajouté.")
- 
-# ——— ONGLET VITRINE ———
+
+# ——— ONGLET VITRINE (corrigé) ———
 elif choix == "🖥️ Vitrine":
     st.header("🖥️ Vitrine – Traçabilité HACCP")
     today = date.today()
 
-    # ─── 1) Formulaire d’ajout ──────────────────────────────────────────
-    import unicodedata
+    # ─── 1) Formulaire d’ajout (ordre + DLC auto J+3 non-éditable) ───
     with st.form("vt_form", clear_on_submit=True):
-        da  = st.date_input("Date d’ajout", value=today, key="vt_da")
         pr  = st.selectbox("Produit", produits_list, key="vt_pr")
         dfb = st.date_input("Date de fabrication", value=today, key="vt_df")
-        dl  = st.date_input("DLC", value=today + timedelta(days=3), key="vt_dl")
+        # DLC dynamique J+3, non éditable
+        dlc_auto = dfb + timedelta(days=3)
+        st.text_input("DLC (auto J+3)", value=dlc_auto.strftime("%Y-%m-%d"), disabled=True, key="vt_dlc_ro")
+        da  = st.date_input("Date d’ajout", value=today, key="vt_da")
+
         if st.form_submit_button("✅ Ajouter"):
-            # on recharge la feuille pour récupérer les actifs
+            # Rechargement pour cohérence/doublons actifs
             raw        = sheet_vitrine.get_all_values()
-            header_raw = raw[0]
-            def normalize(c):
-                nfkd = unicodedata.normalize("NFKD", c)
-                return (nfkd.encode("ascii", "ignore")
-                             .decode()
-                             .strip()
-                             .lower()
-                             .replace(" ", "_"))
-            cols = [normalize(c) for c in header_raw]
-            df_raw = pd.DataFrame(raw[1:], columns=cols)
+            header_raw = raw[0] if raw else []
+            cols = [normalize_col(c) for c in header_raw] if header_raw else []
+            df_raw = pd.DataFrame(raw[1:], columns=cols) if raw else pd.DataFrame(columns=["produit","date_fab","date_retrait","dlc","date_ajout","numero_de_lot"])
+            if "date_retrait" not in df_raw.columns:
+                df_raw["date_retrait"] = ""
             df_raw["row_num"] = list(range(2, 2 + len(df_raw)))
             actifs = df_raw[df_raw["date_retrait"] == ""].reset_index(drop=True)
 
-            # format de la date de fabrication dans la feuille
             date_fab_str = dfb.strftime("%Y-%m-%d")
-            # contrôle de doublon sur nom + date_fab
-            if ((actifs["produit"] == pr) &
-                (actifs["date_fab"] == date_fab_str)).any():
+            if ((actifs.get("produit","")==pr) & (actifs.get("date_fab","")==date_fab_str)).any():
                 st.error(f"⛔ « {pr} » fabriqué le {dfb.strftime('%d/%m/%Y')} est déjà en vitrine.")
             else:
                 ds  = da.strftime("%Y%m%d")
                 ab  = pr[:3].upper()
                 seq = len(actifs) + 1
                 lot = f"{ds} {ab} {seq:02d}"
+                # écriture : date_ajout, produit, numero_de_lot, date_fab, dlc, date_retrait
                 sheet_vitrine.append_row([
                     ds,
                     pr,
                     lot,
                     date_fab_str,
-                    dl.strftime("%Y-%m-%d"),
-                    ""  # date_retrait vide
+                    dlc_auto.strftime("%Y-%m-%d"),
+                    ""  # retrait vide
                 ])
                 st.success(f"✅ « {pr} » ajouté (lot : {lot})")
 
-    # ─── 2) Chargement + normalisation du header ────────────────────────
-    raw        = sheet_vitrine.get_all_values()
-    header_raw = raw[0]
-    def normalize(c):
-        nfkd = unicodedata.normalize("NFKD", c)
-        return (nfkd.encode("ascii", "ignore")
-                     .decode()
-                     .strip()
-                     .lower()
-                     .replace(" ", "_"))
-    cols = [normalize(c) for c in header_raw]
-    df_raw = pd.DataFrame(raw[1:], columns=cols)
-    df_raw["row_num"] = list(range(2, 2 + len(df_raw)))
-
-    # ─── 3) Filtrage des actifs (date_retrait vide) ────────────────────
-    actifs = df_raw[df_raw["date_retrait"] == ""].reset_index(drop=True)
-
-    # ─── 4) Suppression au premier clic ────────────────────────────────
-    st.subheader("❌ Retirer un article")
-    deleted = False
-    for _, row in actifs.iterrows():
-        c1, c2 = st.columns([0.8, 0.2])
-        with c1:
-            st.write(f"• {row['produit']} – Lot `{row['numero_de_lot']}` – DLC {row['dlc']}")
-        with c2:
-            if st.button("🗑️", key=f"vt_rem_{row['row_num']}"):
-                cell_row    = int(row["row_num"])
-                col_retrait = cols.index("date_retrait") + 1
-                sheet_vitrine.update_cell(
-                    cell_row,
-                    col_retrait,
-                    today.strftime("%Y-%m-%d")
-                )
-                st.success("✅ Article retiré")
-                deleted = True
-                break
-
-    # ─── 5) Si on a supprimé, on recharge les données ──────────────────
-    if deleted:
-        raw        = sheet_vitrine.get_all_values()
-        header_raw = raw[0]
-        cols = [normalize(c) for c in header_raw]
-        df_raw = pd.DataFrame(raw[1:], columns=cols)
-        df_raw["row_num"] = list(range(2, 2 + len(df_raw)))
-        actifs = df_raw[df_raw["date_retrait"] == ""].reset_index(drop=True)
-
-    # ─── 6) Calcul des jours restants & affichage coloré ───────────────
-    today_ts          = pd.Timestamp(today)
-    actifs["jr_rest"] = (
-        pd.to_datetime(actifs["dlc"], errors="coerce") - today_ts
-    ).dt.days
-
-    def colorer(r):
-        jr = actifs.loc[r.name, "jr_rest"]
-        if jr <= 0:
-            col = "#f44336"
-        elif jr == 1:
-            col = "#ff9800"
+    # ─── 2) Alertes DLC (mêmes tableaux que Dashboard) ───
+    st.subheader("⚠️ Alertes DLC")
+    depassee, dujour = df_dlc_alerts()
+    cA, cB = st.columns(2)
+    with cA:
+        st.caption("DLC dépassées")
+        if depassee.empty:
+            st.success("RAS")
         else:
-            col = "#8bc34a"
-        return [f"background-color: {col}"] * len(r)
+            st.dataframe(style_dlc_alert(depassee), use_container_width=True)
+    with cB:
+        st.caption("DLC du jour")
+        if dujour.empty:
+            st.success("RAS")
+        else:
+            st.dataframe(style_dlc_alert(dujour), use_container_width=True)
 
-    st.subheader("📋 Articles en vitrine")
-    disp_cols = [c for c in cols if c not in ("date_retrait", "row_num", "jr_rest")]
-    st.dataframe(
-        actifs[disp_cols]
-              .style
-              .apply(colorer, axis=1),
-        use_container_width=True
-    )
+    # ─── 3) Liste des articles actifs + suppression 1 clic ───
+    st.subheader("📋 Articles actifs")
+    actifs, cols = vitrine_df_norm_active()
+    if actifs.empty:
+        st.info("Aucun article actif en vitrine.")
+    else:
+        for _, row in actifs.reset_index(drop=True).iterrows():
+            c1, c2 = st.columns([0.85, 0.15])
+            with c1:
+                parts = []
+                if "produit" in row: parts.append(f"**{row['produit']}**")
+                if "numero_de_lot" in row: parts.append(f"Lot `{row['numero_de_lot']}`")
+                if "date_fab" in row: parts.append(f"Fab {row['date_fab']}")
+                if "dlc" in row: parts.append(f"DLC {row['dlc']}")
+                st.markdown(" • ".join(parts))
+            with c2:
+                if st.button("🗑️ Retirer", key=f"vt_rem_{row.name}"):
+                    header = sheet_vitrine.row_values(1)
+                    cols_now = [normalize_col(c) for c in header]
+                    col_retrait_idx = cols_now.index("date_retrait") + 1 if "date_retrait" in cols_now else len(cols_now)+1
+                    raw_all = sheet_vitrine.get_all_values()
+                    if raw_all:
+                        df_all = pd.DataFrame(raw_all[1:], columns=[normalize_col(c) for c in raw_all[0]])
+                        mask = pd.Series([True]*len(df_all))
+                        if "numero_de_lot" in df_all.columns and "numero_de_lot" in row:
+                            mask &= (df_all["numero_de_lot"]==row.get("numero_de_lot",""))
+                        if "produit" in df_all.columns and "produit" in row:
+                            mask &= (df_all["produit"]==row.get("produit",""))
+                        idxs = df_all[mask].index.tolist()
+                        if idxs:
+                            cell_row = idxs[0] + 2  # + header
+                            sheet_vitrine.update_cell(cell_row, col_retrait_idx, date.today().strftime("%Y-%m-%d"))
+                            st.success("✅ Article retiré")
+                            st.rerun()
 
-# ——— ONGLET RUPTURES ET COMMANDES ———
+# ——— ONGLET RUPTURES ET COMMANDES (inchangé) ———
 elif choix == "🛎️ Ruptures & Commandes":
     st.header("🛎️ Ruptures & Commandes")
     st.write("Sélectionnez les produits en rupture et envoyez facilement la demande.")
 
-    # Multi-sélect des produits
     ruptures = st.multiselect(
         "Produits en rupture",
         options=produits_list,
@@ -694,7 +861,6 @@ elif choix == "🛎️ Ruptures & Commandes":
         help="Optionnel : précisez les quantités ou infos complémentaires"
     )
 
-    # Numéros à configurer dans st.secrets
     sms_num      = st.secrets.get("CONTACT_SMS", "")
     wa_num       = st.secrets.get("CONTACT_WHATSAPP", "")
 
@@ -718,17 +884,13 @@ elif choix == "🛎️ Ruptures & Commandes":
                 msg = "Rupture : " + ", ".join(ruptures)
                 if commentaire:
                     msg += f" ({commentaire})"
-                # wa_num sans '+' : "33123456789"
                 url = f"https://wa.me/{wa_num}?text={urllib.parse.quote(msg)}"
                 st.markdown(f"[➡️ Ouvrir WhatsApp]({url})")
 
-# ——— ONGLET CONTROLE HYGIENE ———
+# ——— ONGLET CONTROLE HYGIENE (inchangé) ———
 elif choix == "🧾 Contrôle Hygiène":
     st.header("🧾 Contrôle Hygiène – Visualisation & Export PDF")
 
-    # ───────────────────────────────────────────────────────────────────
-    # 1) Sélection de la période (toujours visible)
-    # ───────────────────────────────────────────────────────────────────
     date_debut = st.date_input(
         "📅 Date de début",
         value=date(2025, 5, 1),
@@ -740,16 +902,11 @@ elif choix == "🧾 Contrôle Hygiène":
         key="ch_fin"
     )
 
-    # Clés pour stocker les DataFrames dans session_state
     cle_temp = "ch_df_temp"
     cle_hyg  = "ch_df_hyg"
     cle_vit  = "ch_df_vit"
 
-    # ───────────────────────────────────────────────────────────────────
-    # 2) Bouton pour charger et stocker en session_state
-    # ───────────────────────────────────────────────────────────────────
     if st.button("🔄 Charger & Afficher les relevés"):
-        # ----- a) TEMPÉRATURES (toutes les feuilles 'Semaine X')
         list_temp = []
         for ws in ss_temp.worksheets():
             titre = ws.title.strip()
@@ -761,7 +918,6 @@ elif choix == "🧾 Contrôle Hygiène":
                 dfw["Semaine"] = titre
                 list_temp.append(dfw)
         df_all_temp = pd.concat(list_temp, ignore_index=True) if list_temp else pd.DataFrame()
-        # Filtrer sur la colonne "Date" (si elle existe)
         if "Date" in df_all_temp.columns:
             df_all_temp["Date"] = pd.to_datetime(df_all_temp["Date"], errors="coerce")
             mask_temp = (
@@ -770,7 +926,6 @@ elif choix == "🧾 Contrôle Hygiène":
             )
             df_all_temp = df_all_temp.loc[mask_temp].reset_index(drop=True)
 
-        # ----- b) HYGIÈNE (quotidien, hebdo, mensuel)
         list_hyg = []
         for nom in ["Quotidien", "Hebdomadaire", "Mensuel"]:
             try:
@@ -797,7 +952,6 @@ elif choix == "🧾 Contrôle Hygiène":
         else:
             df_filtre = pd.DataFrame()
 
-        # ----- c) VITRINE (filtrer sur "date_ajout")
         raw_vitrine = sheet_vitrine.get_all_records()
         if raw_vitrine:
             df_vit_full = pd.DataFrame(raw_vitrine)
@@ -815,18 +969,13 @@ elif choix == "🧾 Contrôle Hygiène":
         else:
             vitrine_df = pd.DataFrame()
 
-        # Stocker dans session_state
         st.session_state[cle_temp] = df_all_temp
         st.session_state[cle_hyg]  = df_filtre
         st.session_state[cle_vit]  = vitrine_df
 
-        # Effacer ancien PDF si existant
         if "pdf_hygiene_bytes" in st.session_state:
             del st.session_state["pdf_hygiene_bytes"]
 
-    # ───────────────────────────────────────────────────────────────────
-    # 3) Une fois chargé (ou si déjà en session), afficher les DataFrames
-    # ───────────────────────────────────────────────────────────────────
     if cle_temp in st.session_state and cle_hyg in st.session_state and cle_vit in st.session_state:
         df_all_temp = st.session_state[cle_temp]
         df_filtre   = st.session_state[cle_hyg]
@@ -850,12 +999,8 @@ elif choix == "🧾 Contrôle Hygiène":
         else:
             st.dataframe(vitrine_df, use_container_width=True)
 
-        # ───────────────────────────────────────────────────────────────────
-        # 4) Boutons pour générer et/ou télécharger le PDF (paginé)
-        # ───────────────────────────────────────────────────────────────────
         st.markdown("---")
 
-        # 4.a) Si on clique pour générer maintenant, on produit les octets du PDF
         if st.button("📤 Générer PDF Contrôle Hygiène"):
             try:
                 pdf_path = generate_controle_hygiene_pdf(
@@ -867,7 +1012,6 @@ elif choix == "🧾 Contrôle Hygiène":
             except Exception as e:
                 st.error(f"❌ Erreur lors de la génération du PDF : {e}")
 
-        # 4.b) Si un PDF a déjà été généré, afficher le bouton de téléchargement
         if "pdf_hygiene_bytes" in st.session_state:
             st.download_button(
                 "📄 Télécharger le PDF Contrôle Hygiène",
@@ -877,10 +1021,9 @@ elif choix == "🧾 Contrôle Hygiène":
             )
 
     else:
-        # Info utilisateur : il faut d'abord cliquer sur "Charger & Afficher"
         st.info("Cliquez sur « 🔄 Charger & Afficher les relevés » pour voir les données puis générer le PDF.")
 
-# ——— ONGLET LIENS GOOGLE SHEETS ———
+# ——— ONGLET LIENS GOOGLE SHEETS (inchangé) ———
 elif choix == "🔗 Liens Google Sheets":
     st.header("🔗 Liens vers les Google Sheets utilisés")
 
@@ -889,7 +1032,8 @@ elif choix == "🔗 Liens Google Sheets":
         "🧼 Hygiène"                     : "https://docs.google.com/spreadsheets/d/1XMYhh2CSIv1zyTtXKM4_ACEhW-6kXxoFi4ACzNhbuDE",
         "🌡️ Températures"               : "https://docs.google.com/spreadsheets/d/1e4hS6iawCa1IizhzY3xhskLy8Gj3todP3zzk38s7aq0",
         "📅 Planning"                   : "https://docs.google.com/spreadsheets/d/1OBYGNHtHdDB2jufKKjoAwq6RiiS_pnz4ta63sAM-t_0",
-        "🛒 Liste Produits"             : "https://docs.google.com/spreadsheets/d/1FbRV4KgXyCwqwLqJkyq8cHZbo_BfB7kyyPP3pO53Snk"
+        "🛒 Liste Produits"             : "https://docs.google.com/spreadsheets/d/1FbRV4KgXyCwqwLqJkyq8cHZbo_BfB7kyyPP3pO53Snk",
+        "👤 Responsables semaine"       : "https://docs.google.com/spreadsheets/d/1nWEel6nizI0LKC84uaBDyqTNg1hzwPSVdZw41YJaBV8"
     }
 
     for label, url in sheets.items():
@@ -900,7 +1044,7 @@ elif choix == "🔗 Liens Google Sheets":
             st.link_button("🔗 Ouvrir", url)
 
 # ———————————————————————————————
-# PIED DE PAGE
+# PIED DE PAGE (inchangé)
 # ———————————————————————————————
 st.markdown(
     """
