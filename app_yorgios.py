@@ -613,7 +613,8 @@ elif choix == "📋 Protocoles":
         "Service du midi":         "protocoles_midi.txt",
         "Règles en stand":         "protocoles_regles en stand.txt",
         "Hygiène générale":        "protocole_hygiene.txt",
-        "TooGoodToGo":             "TooGoodToGo.txt"
+        "TooGoodToGo":             "TooGoodToGo.txt",
+        "Produits Yorgios": "produits_yorgios.txt",
     }
 
     choix_proto = st.selectbox(
