@@ -67,6 +67,53 @@ def generate_controle_hygiene_pdf(temp_df, hygiene_df, vitrine_df, date_debut, d
     c.save()
     return pdf_path
 
+# 🔐 ———————————————————————————————————————————
+# Auth simple par mot de passe (stocké dans st.secrets["APP_PASSWORD"])
+# ——————————————————————————————————————————————
+def require_auth():
+    expected_pwd = st.secrets.get("APP_PASSWORD", "christelle").strip()
+
+    # Si le mot de passe n'est pas configuré dans les secrets, on bloque proprement
+    if not expected_pwd:
+        st.title("🔐 Accès restreint")
+        st.error(
+            "Mot de passe non configuré.\n"
+            "Ajoutez APP_PASSWORD dans vos secrets (Streamlit Cloud > Settings > Secrets)."
+        )
+        st.stop()
+
+    # Déjà authentifié pour cette session ?
+    if st.session_state.get("auth_ok", False):
+        # Bouton de déconnexion dans la sidebar
+        with st.sidebar:
+            st.caption("🔒 Accès privé")
+            if st.button("Se déconnecter"):
+                # On nettoie l'état et on relance
+                for k in list(st.session_state.keys()):
+                    del st.session_state[k]
+                st.rerun()
+        return  # Laisse l’app continuer normalement
+
+    # Formulaire de connexion
+    st.title("🔐 Accès réservé")
+    pwd = st.text_input("Mot de passe", type="password", placeholder="Entrez le mot de passe")
+
+    colA, colB = st.columns([1, 5])
+    with colA:
+        login = st.button("Se connecter", type="primary")
+
+    # Valider si clic ou entrée dans le champ
+    if login or (pwd and "last_try_pwd" not in st.session_state):
+        st.session_state["last_try_pwd"] = pwd
+        if pwd == expected_pwd:
+            st.session_state["auth_ok"] = True
+            st.rerun()
+        elif login:
+            st.error("Mot de passe incorrect.")
+
+    # Bloque l’app tant qu’on n’est pas connecté
+    st.stop()
+
 # ———————————————————————————————
 # CONFIGURATION STREAMLIT
 # ———————————————————————————————
@@ -75,6 +122,9 @@ try:
     locale.setlocale(locale.LC_TIME, 'fr_FR.UTF-8')
 except locale.Error:
     pass
+
+# 🔐 Bloque l’app tant que l’utilisateur n’est pas authentifié
+require_auth()   # ← ← ← AJOUTE CETTE LIGNE ICI
 
 # ———————————————————————————————
 # AUTHENTIFICATION GOOGLE SHEETS
@@ -90,6 +140,24 @@ def gsheets_client():
     return gspread.authorize(creds)
 
 gc = gsheets_client()
+
+# ———————————————————————————————
+# CACHES LECTURE SHEETS (accélère fortement le Dashboard)
+# ———————————————————————————————
+@st.cache_resource
+def _open_by_key_cached(key: str):
+    # garde un handle Spreadsheet en mémoire
+    return open_sheet_retry(gc, key)
+
+@st.cache_data(ttl=60)  # 60s : équilibre entre fraîcheur et vitesse
+def ws_values(key: str, title: str):
+    sh = _open_by_key_cached(key)
+    return sh.worksheet(title).get_all_values()
+
+@st.cache_data(ttl=300)
+def ws_titles(key: str):
+    sh = _open_by_key_cached(key)
+    return [w.title for w in sh.worksheets()]
 
 # ———————————————————————————————
 # RETRY POUR open_by_key
@@ -228,8 +296,9 @@ def normalize_col(c: str) -> str:
     nfkd = unicodedata.normalize("NFKD", c)
     return (nfkd.encode("ascii", "ignore").decode().strip().lower().replace(" ", "_"))
 
-def vitrine_df_norm_active():
-    raw = sheet_vitrine.get_all_values()
+def vitrine_df_norm_active(raw=None):
+    if raw is None:
+        raw = sheet_vitrine.get_all_values()
     if not raw:
         return pd.DataFrame(), []
     header_raw = raw[0]
@@ -240,28 +309,25 @@ def vitrine_df_norm_active():
     actifs = df_raw[df_raw["date_retrait"] == ""].copy()
     return actifs, cols
 
+def df_dlc_alerts(raw=None):
+    actifs, cols = vitrine_df_norm_active(raw)
+    if actifs.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    today_dt = pd.Timestamp(date.today())
+    if "dlc" not in actifs.columns:
+        return pd.DataFrame(), pd.DataFrame()
+    dlc = pd.to_datetime(actifs["dlc"], errors="coerce")
+    depassee = actifs[dlc < today_dt].copy()
+    dujour   = actifs[dlc == today_dt].copy()
+    drop_cols = [c for c in ["date_retrait"] if c in actifs.columns]
+    base_cols = [c for c in actifs.columns if c not in drop_cols]
+    return depassee[base_cols], dujour[base_cols]
+
 def style_dlc_alert(df: pd.DataFrame):
     # fond rouge #b71c1c, texte noir
     def styler(_):
         return ["background-color: #b71c1c; color: black;"] * len(df.columns)
     return df.style.apply(styler, axis=1)
-
-def df_dlc_alerts():
-    actifs, cols = vitrine_df_norm_active()
-    if actifs.empty:
-        return pd.DataFrame(), pd.DataFrame()
-    today_dt = pd.Timestamp(date.today())
-    # convertir DLC
-    if "dlc" in actifs.columns:
-        dlc = pd.to_datetime(actifs["dlc"], errors="coerce")
-    else:
-        return pd.DataFrame(), pd.DataFrame()
-    depassee = actifs[dlc < today_dt].copy()
-    dujour   = actifs[dlc == today_dt].copy()
-    # Garder colonnes utiles
-    drop_cols = [c for c in ["date_retrait"] if c in actifs.columns]
-    base_cols = [c for c in actifs.columns if c not in drop_cols]
-    return depassee[base_cols], dujour[base_cols]
 
 # ———————————————————————————————
 # DASHBOARD
@@ -293,8 +359,9 @@ def render_dashboard():
     resp_nom = "—"
     try:
         # 1) Lecture du Google Sheet "Responsables semaine" (1ère feuille)
-        ws_resp = ss_resp.worksheets()[0]
-        raw = ws_resp.get_all_values()
+        titles = ws_titles(SHEET_RESP_ID)
+        raw = ws_values(SHEET_RESP_ID, titles[0]) if titles else []
+
         if len(raw) >= 2:
             # Normalisation des en-têtes
             cols_norm = [normalize_col(c) for c in raw[0]]
@@ -376,7 +443,7 @@ def render_dashboard():
         st.subheader("🌡️ Températures – Aujourd’hui")
         candidates = [f"Semaine {semaine_iso} {today.year}", f"Semaine {semaine_iso}"]
         ws_title = None
-        titres_all = [w.title for w in ss_temp.worksheets()]
+        titres_all = ws_titles(SHEET_TEMP_ID)
         for cand in candidates:
             if cand in titres_all:
                 ws_title = cand
@@ -390,8 +457,7 @@ def render_dashboard():
         if ws_title is None:
             st.warning("Feuille températures introuvable.")
         else:
-            ws = ss_temp.worksheet(ws_title)
-            raw = ws.get_all_values()
+            raw = ws_values(SHEET_TEMP_ID, ws_title)
             if len(raw) < 2:
                 st.warning("Feuille vide.")
             else:
@@ -416,8 +482,7 @@ def render_dashboard():
     with col_hyg:
         st.subheader("🧼 Hygiène – Quotidien (Aujourd’hui)")
         try:
-            wh = ss_hygiene.worksheet("Quotidien")
-            raw = wh.get_all_values()
+            raw = ws_values(SHEET_HYGIENE_ID, "Quotidien")
             if len(raw) < 2:
                 st.warning("Feuille Quotidien vide.")
             else:
@@ -445,7 +510,8 @@ def render_dashboard():
 
     # ——— Alertes DLC (en dessous)
     st.subheader("⚠️ Alertes DLC – Vitrine")
-    depassee, dujour = df_dlc_alerts()
+    raw_vitrine = ws_values(SHEET_COMMANDES_ID, "Vitrine")
+    depassee, dujour = df_dlc_alerts(raw_vitrine)
     cA, cB = st.columns(2)
     with cA:
         st.caption("DLC dépassées")
@@ -613,8 +679,7 @@ elif choix == "📋 Protocoles":
         "Service du midi":         "protocoles_midi.txt",
         "Règles en stand":         "protocoles_regles en stand.txt",
         "Hygiène générale":        "protocole_hygiene.txt",
-        "TooGoodToGo":             "TooGoodToGo.txt",
-        "Produits Yorgios": "produits_yorgios.txt",
+        "TooGoodToGo":             "TooGoodToGo.txt"
     }
 
     choix_proto = st.selectbox(
