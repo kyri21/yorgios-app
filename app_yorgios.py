@@ -930,24 +930,29 @@ elif choix == "🛎️ Ruptures & Commandes":
 
     commentaire = st.text_area("📝 Commentaire / Quantités (optionnel)")
 
-    # Téléphones depuis secrets
+      # Téléphones depuis secrets
     sms_num = st.secrets.get("CONTACT_SMS", "")
     wa_num  = st.secrets.get("CONTACT_WHATSAPP", "")
 
-    # Construction du message unique (3 sections)
-    def _build_message(urgence_list, j2_list, surplus_list, note):
-        sections = []
-        if urgence_list:
-            sections.append("URGENCE : " + ", ".join(urgence_list))
-        if j2_list:
-            sections.append("Demande à J+2 : " + ", ".join(j2_list))
-        if surplus_list:
-            sections.append("Produit en trop — ne pas envoyer : " + ", ".join(surplus_list))
-        if note and note.strip():
-            sections.append("Commentaire : " + note.strip())
-        return "\n".join(sections) if sections else "Aucune sélection."
+    # 🔹 Entête du message (modifiable via secrets si tu veux)
+    header = st.secrets.get("RUPTURES_HEADER", "Commandes Corner")
 
-    msg = _build_message(urgence, j2, surplus, commentaire)
+    # Construction du message unique (3 sections + entête)
+    def _build_message(urgence_list, j2_list, surplus_list, note, header_text):
+        lines = [str(header_text).strip()]
+        if urgence_list:
+            lines.append("URGENCE : " + ", ".join(urgence_list))
+        if j2_list:
+            lines.append("Demande à J+2 : " + ", ".join(j2_list))
+        if surplus_list:
+            lines.append("Produit en trop — ne pas envoyer : " + ", ".join(surplus_list))
+        if note and note.strip():
+            lines.append("Commentaire : " + note.strip())
+        if len(lines) == 1:  # rien de sélectionné, garder l'entête + info
+            lines.append("Aucune sélection.")
+        return "\n".join(lines)
+
+    msg = _build_message(urgence, j2, surplus, commentaire, header)
 
     st.markdown("#### 📨 Aperçu du message")
     st.code(msg, language="text")
