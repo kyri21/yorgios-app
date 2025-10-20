@@ -911,7 +911,7 @@ elif choix == "🖥️ Vitrine":
                             st.success("✅ Article retiré")
                             st.rerun()
 
-# ——— ONGLET RUPTURES ET COMMANDES (avec priorités) ———
+# ——— ONGLET RUPTURES ET COMMANDES (avec priorités + header + feature flag WhatsApp) ———
 elif choix == "🛎️ Ruptures & Commandes":
     st.header("🛎️ Ruptures & Commandes")
     st.write("Sélectionnez les produits par niveau de priorité puis générez le message SMS / WhatsApp.")
@@ -930,14 +930,10 @@ elif choix == "🛎️ Ruptures & Commandes":
 
     commentaire = st.text_area("📝 Commentaire / Quantités (optionnel)")
 
-      # Téléphones depuis secrets
-    sms_num = st.secrets.get("CONTACT_SMS", "")
-    wa_num  = st.secrets.get("CONTACT_WHATSAPP", "")
-
-    # 🔹 Entête du message (modifiable via secrets si tu veux)
+    # Entête configurable (secret) + fallback
     header = st.secrets.get("RUPTURES_HEADER", "Commandes Corner")
 
-    # Construction du message unique (3 sections + entête)
+    # Construction du message (3 sections + entête)
     def _build_message(urgence_list, j2_list, surplus_list, note, header_text):
         lines = [str(header_text).strip()]
         if urgence_list:
@@ -948,7 +944,7 @@ elif choix == "🛎️ Ruptures & Commandes":
             lines.append("Produit en trop — ne pas envoyer : " + ", ".join(surplus_list))
         if note and note.strip():
             lines.append("Commentaire : " + note.strip())
-        if len(lines) == 1:  # rien de sélectionné, garder l'entête + info
+        if len(lines) == 1:
             lines.append("Aucune sélection.")
         return "\n".join(lines)
 
@@ -957,19 +953,32 @@ elif choix == "🛎️ Ruptures & Commandes":
     st.markdown("#### 📨 Aperçu du message")
     st.code(msg, language="text")
 
-    col1, col2 = st.columns(2)
-    with col1:
+    # --------- GESTION DES SECRETS / FEATURE FLAG WHATSAPP ----------
+    sms_num = str(st.secrets.get("CONTACT_SMS", "")).strip()
+    wa_num  = str(st.secrets.get("CONTACT_WHATSAPP", "")).strip()
+
+    # Interprétation robuste du flag (accepte true/1/yes/on)
+    wa_flag_str = str(st.secrets.get("SHOW_WHATSAPP", "")).strip().lower()
+    wa_flag = wa_flag_str in ("true", "1", "yes", "on")
+
+    # Le bouton WhatsApp s'affiche SEULEMENT si flag ON ET numéro présent
+    show_whatsapp = wa_flag and bool(wa_num)
+
+    cols = st.columns(2) if show_whatsapp else st.columns(1)
+
+    # --- Bouton SMS ---
+    with cols[0]:
         if st.button("📲 Générer SMS"):
             if not sms_num:
                 st.error("🚨 Configurez CONTACT_SMS dans vos secrets.")
             else:
                 url = f"sms:{sms_num}?&body={urllib.parse.quote(msg)}"
                 st.markdown(f"[➡️ Ouvrir SMS]({url})")
-    with col2:
-        if st.button("💬 Générer WhatsApp"):
-            if not wa_num:
-                st.error("🚨 Configurez CONTACT_WHATSAPP dans vos secrets.")
-            else:
+
+    # --- Bouton WhatsApp (affiché uniquement si autorisé) ---
+    if show_whatsapp:
+        with cols[1]:
+            if st.button("💬 Générer WhatsApp"):
                 url = f"https://wa.me/{wa_num}?text={urllib.parse.quote(msg)}"
                 st.markdown(f"[➡️ Ouvrir WhatsApp]({url})")
 
