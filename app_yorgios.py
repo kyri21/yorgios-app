@@ -911,24 +911,46 @@ elif choix == "🖥️ Vitrine":
                             st.success("✅ Article retiré")
                             st.rerun()
 
-# ——— ONGLET RUPTURES ET COMMANDES (inchangé) ———
+# ——— ONGLET RUPTURES ET COMMANDES (avec priorités) ———
 elif choix == "🛎️ Ruptures & Commandes":
     st.header("🛎️ Ruptures & Commandes")
-    st.write("Sélectionnez les produits en rupture et envoyez facilement la demande.")
+    st.write("Sélectionnez les produits par niveau de priorité puis générez le message SMS / WhatsApp.")
 
-    ruptures = st.multiselect(
-        "Produits en rupture",
-        options=produits_list,
-        help="Cochez un ou plusieurs produits à commander"
-    )
+    # Sélections par niveau
+    col_u, col_j2, col_surplus = st.columns(3)
+    with col_u:
+        urgence = st.multiselect("🔥 URGENCE", options=produits_list, key="rupt_urgence",
+                                 help="Produits à commander immédiatement.")
+    with col_j2:
+        j2 = st.multiselect("⏳ Demande à J+2", options=produits_list, key="rupt_j2",
+                            help="Produits à commander pour livraison sous 48h.")
+    with col_surplus:
+        surplus = st.multiselect("🟩 Produit en trop – ne pas envoyer", options=produits_list, key="rupt_surplus",
+                                 help="Trop de stock : merci de NE PAS ENVOYER.")
 
-    commentaire = st.text_area(
-        "Commentaire / Quantités",
-        help="Optionnel : précisez les quantités ou infos complémentaires"
-    )
+    commentaire = st.text_area("📝 Commentaire / Quantités (optionnel)")
 
-    sms_num      = st.secrets.get("CONTACT_SMS", "")
-    wa_num       = st.secrets.get("CONTACT_WHATSAPP", "")
+    # Téléphones depuis secrets
+    sms_num = st.secrets.get("CONTACT_SMS", "")
+    wa_num  = st.secrets.get("CONTACT_WHATSAPP", "")
+
+    # Construction du message unique (3 sections)
+    def _build_message(urgence_list, j2_list, surplus_list, note):
+        sections = []
+        if urgence_list:
+            sections.append("URGENCE : " + ", ".join(urgence_list))
+        if j2_list:
+            sections.append("Demande à J+2 : " + ", ".join(j2_list))
+        if surplus_list:
+            sections.append("Produit en trop — ne pas envoyer : " + ", ".join(surplus_list))
+        if note and note.strip():
+            sections.append("Commentaire : " + note.strip())
+        return "\n".join(sections) if sections else "Aucune sélection."
+
+    msg = _build_message(urgence, j2, surplus, commentaire)
+
+    st.markdown("#### 📨 Aperçu du message")
+    st.code(msg, language="text")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -936,20 +958,13 @@ elif choix == "🛎️ Ruptures & Commandes":
             if not sms_num:
                 st.error("🚨 Configurez CONTACT_SMS dans vos secrets.")
             else:
-                msg = "Rupture : " + ", ".join(ruptures)
-                if commentaire:
-                    msg += f" ({commentaire})"
                 url = f"sms:{sms_num}?&body={urllib.parse.quote(msg)}"
                 st.markdown(f"[➡️ Ouvrir SMS]({url})")
-
     with col2:
         if st.button("💬 Générer WhatsApp"):
             if not wa_num:
                 st.error("🚨 Configurez CONTACT_WHATSAPP dans vos secrets.")
             else:
-                msg = "Rupture : " + ", ".join(ruptures)
-                if commentaire:
-                    msg += f" ({commentaire})"
                 url = f"https://wa.me/{wa_num}?text={urllib.parse.quote(msg)}"
                 st.markdown(f"[➡️ Ouvrir WhatsApp]({url})")
 
