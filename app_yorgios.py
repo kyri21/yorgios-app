@@ -142,22 +142,38 @@ def gsheets_client():
 gc = gsheets_client()
 
 # ———————————————————————————————
-# CACHES LECTURE SHEETS (accélère fortement le Dashboard)
+# CACHES LECTURE SHEETS (accélère et fiabilise)
 # ———————————————————————————————
 @st.cache_resource
 def _open_by_key_cached(key: str):
-    # garde un handle Spreadsheet en mémoire
-    return open_sheet_retry(gc, key)
+    # ouverture résiliente
+    last_err = None
+    for i in range(3):
+        try:
+            return gc.open_by_key(key)
+        except Exception as e:
+            last_err = e
+            time.sleep(0.7 * (i + 1))
+    raise last_err
 
-@st.cache_data(ttl=60)  # 60s : équilibre entre fraîcheur et vitesse
+@st.cache_data(ttl=60)  # 60 s de fraîcheur
+def ws_titles(key: str):
+    sh = _open_by_key_cached(key)
+    return [w.title for w in sh.worksheets()]
+
+@st.cache_data(ttl=60)
 def ws_values(key: str, title: str):
     sh = _open_by_key_cached(key)
     return sh.worksheet(title).get_all_values()
 
-@st.cache_data(ttl=300)
-def ws_titles(key: str):
-    sh = _open_by_key_cached(key)
-    return [w.title for w in sh.worksheets()]
+def ws_values_safe(key: str, title: str, retries: int = 3, base_delay: float = 0.7):
+    for i in range(retries):
+        try:
+            return ws_values(key, title)
+        except Exception:
+            if i == retries - 1:
+                raise
+            time.sleep(base_delay * (i + 1))
 
 # ———————————————————————————————
 # RETRY POUR open_by_key
@@ -815,117 +831,220 @@ elif choix == "🧊 Stockage Frigo":
             save_df(ss_cmd, "Stockage Frigo", df2)
             st.success(f"« {art.strip()} » ajouté.")
 
-# ——— ONGLET VITRINE (corrigé) ———
+# ——— ONGLET VITRINE (formulaire simple + DLC auto J+3 + liste actifs + retrait 1 clic) ———
 elif choix == "🖥️ Vitrine":
-    st.header("🖥️ Vitrine – Traçabilité HACCP")
-    today = date.today()
+    st.header("🖥️ Vitrine")
 
-    # ─── 1) Formulaire d’ajout (ordre + DLC auto J+3 non-éditable) ───
-    with st.form("vt_form", clear_on_submit=True):
-        pr  = st.selectbox("Produit", produits_list, key="vt_pr")
-        dfb = st.date_input("Date de fabrication", value=today, key="vt_df")
-        # DLC dynamique J+3, non éditable
-        dlc_auto = dfb + timedelta(days=3)
-        st.text_input("DLC (auto J+3)", value=dlc_auto.strftime("%Y-%m-%d"), disabled=True, key="vt_dlc_ro")
-        da  = st.date_input("Date d’ajout", value=today, key="vt_da")
+    # === Lecture robuste de la feuille "Vitrine" ===
+    raw = ws_values_safe(SHEET_COMMANDES_ID, "Vitrine")
+    if not raw:
+        st.warning("Feuille Vitrine vide.")
+        st.stop()
 
-        if st.form_submit_button("✅ Ajouter"):
-            # Rechargement pour cohérence/doublons actifs
-            raw        = sheet_vitrine.get_all_values()
-            header_raw = raw[0] if raw else []
-            cols = [normalize_col(c) for c in header_raw] if header_raw else []
-            df_raw = pd.DataFrame(raw[1:], columns=cols) if raw else pd.DataFrame(columns=["produit","date_fab","date_retrait","dlc","date_ajout","numero_de_lot"])
-            if "date_retrait" not in df_raw.columns:
-                df_raw["date_retrait"] = ""
-            df_raw["row_num"] = list(range(2, 2 + len(df_raw)))
-            actifs = df_raw[df_raw["date_retrait"] == ""].reset_index(drop=True)
+    header_raw = raw[0]
+    cols_norm = [normalize_col(c) for c in header_raw]
+    rows = raw[1:]
+    df_all = pd.DataFrame(rows, columns=cols_norm)
 
-            date_fab_str = dfb.strftime("%Y-%m-%d")
-            if ((actifs.get("produit","")==pr) & (actifs.get("date_fab","")==date_fab_str)).any():
-                st.error(f"⛔ « {pr} » fabriqué le {dfb.strftime('%d/%m/%Y')} est déjà en vitrine.")
-            else:
-                ds  = da.strftime("%Y%m%d")
-                ab  = pr[:3].upper()
-                seq = len(actifs) + 1
-                lot = f"{ds} {ab} {seq:02d}"
-                # écriture : date_ajout, produit, numero_de_lot, date_fab, dlc, date_retrait
-                sheet_vitrine.append_row([
-                    ds,
-                    pr,
-                    lot,
-                    date_fab_str,
-                    dlc_auto.strftime("%Y-%m-%d"),
-                    ""  # retrait vide
-                ])
-                st.success(f"✅ « {pr} » ajouté (lot : {lot})")
+    # Ligne Google Sheets correspondante (2 = 1ère ligne de données)
+    df_all["__row__"] = range(2, 2 + len(df_all))
 
-    # ─── 2) Alertes DLC (mêmes tableaux que Dashboard) ───
+    # Colonnes attendues minimalement
+    for missing in ["produit", "date_fabrication", "dlc", "date_ajout", "date_retrait"]:
+        if missing not in df_all.columns:
+            df_all[missing] = ""
+
+    # === FORMULAIRE D'AJOUT ===
+    st.subheader("➕ Ajouter un produit en vitrine")
+
+    # Source liste produits si dispo, sinon fallback depuis la feuille
+    try:
+        options_produits = produits_list  # si déjà défini ailleurs
+    except Exception:
+        options_produits = sorted(
+            [p for p in df_all["produit"].dropna().unique().tolist() if str(p).strip()]
+        )
+
+    col1, col2, col3 = st.columns([2, 1, 1])
+
+    with col1:
+        choix_prod = st.selectbox("Produit (ou choisissez 'Autre')",
+                                  options=(["(Autre)"] + options_produits) if options_produits else ["(Autre)"])
+        if choix_prod == "(Autre)":
+            produit = st.text_input("Nom du produit")
+        else:
+            produit = choix_prod
+
+    with col2:
+        fab = st.date_input("Date de fabrication", value=date.today())
+
+    # DLC auto = J+3, non éditable
+    dlc_calc = fab + timedelta(days=3)
+    with col3:
+        st.text_input("DLC (auto J+3, non éditable)", value=dlc_calc.strftime("%Y-%m-%d"), disabled=True)
+
+    date_ajout = st.date_input("Date d’ajout (pour le lot si besoin)", value=date.today())
+
+    ok = st.button("Enregistrer en vitrine", type="primary", use_container_width=True)
+
+    if ok:
+        if not produit or not str(produit).strip():
+            st.error("Veuillez renseigner un nom de produit.")
+            st.stop()
+        try:
+            sh = _open_by_key_cached(SHEET_COMMANDES_ID)
+            ws = sh.worksheet("Vitrine")
+
+            # Prépare la ligne à insérer en respectant l’ordre du header d’origine
+            header_norm_map = {normalize_col(h): i for i, h in enumerate(header_raw)}
+            new_vals = [""] * len(header_raw)
+
+            def set_if_exists(key_norm, value):
+                idx = header_norm_map.get(key_norm)
+                if idx is not None:
+                    new_vals[idx] = value
+
+            set_if_exists("produit", str(produit).strip())
+            set_if_exists("date_fabrication", fab.isoformat())
+            set_if_exists("dlc", dlc_calc.isoformat())
+            set_if_exists("date_ajout", date_ajout.isoformat())
+            # date_retrait laissée vide
+
+            ws.append_row(new_vals, value_input_option="RAW")
+            st.success("Produit ajouté en vitrine.")
+            st.cache_data.clear()
+            st.rerun()
+        except Exception as e:
+            st.error(f"Échec de l’enregistrement : {e}")
+
+    st.markdown("---")
+
+    # === ALERTES DLC (sur les articles actifs) ===
     st.subheader("⚠️ Alertes DLC")
-    depassee, dujour = df_dlc_alerts()
+    # Actifs = pas de date_retrait
+    actifs = df_all[df_all["date_retrait"].astype(str).str.strip() == ""].copy()
+
+    if not actifs.empty and "dlc" in actifs.columns:
+        dlc_series = pd.to_datetime(actifs["dlc"], errors="coerce")
+        today_dt = pd.Timestamp(date.today())
+        depassee = actifs[dlc_series < today_dt].copy()
+        dujour   = actifs[dlc_series.dt.date == date.today()].copy()
+    else:
+        depassee = pd.DataFrame()
+        dujour   = pd.DataFrame()
+
     cA, cB = st.columns(2)
     with cA:
         st.caption("DLC dépassées")
         if depassee.empty:
             st.success("RAS")
         else:
-            st.dataframe(style_dlc_alert(depassee), use_container_width=True)
+            try:
+                st.dataframe(style_dlc_alert(depassee), use_container_width=True)
+            except Exception:
+                st.dataframe(depassee, use_container_width=True)
     with cB:
         st.caption("DLC du jour")
         if dujour.empty:
             st.success("RAS")
         else:
-            st.dataframe(style_dlc_alert(dujour), use_container_width=True)
+            try:
+                st.dataframe(style_dlc_alert(dujour), use_container_width=True)
+            except Exception:
+                st.dataframe(dujour, use_container_width=True)
 
-    # ─── 3) Liste des articles actifs + suppression 1 clic ───
-    st.subheader("📋 Articles actifs")
-    actifs, cols = vitrine_df_norm_active()
+    st.markdown("---")
+
+    # === LISTE DES ARTICLES ACTIFS + RETRAIT 1 CLIC ===
+    st.subheader("Articles actifs")
     if actifs.empty:
         st.info("Aucun article actif en vitrine.")
-    else:
-        for _, row in actifs.reset_index(drop=True).iterrows():
-            c1, c2 = st.columns([0.85, 0.15])
-            with c1:
-                parts = []
-                if "produit" in row: parts.append(f"**{row['produit']}**")
-                if "numero_de_lot" in row: parts.append(f"Lot `{row['numero_de_lot']}`")
-                if "date_fab" in row: parts.append(f"Fab {row['date_fab']}")
-                if "dlc" in row: parts.append(f"DLC {row['dlc']}")
-                st.markdown(" • ".join(parts))
-            with c2:
-                if st.button("🗑️ Retirer", key=f"vt_rem_{row.name}"):
-                    header = sheet_vitrine.row_values(1)
-                    cols_now = [normalize_col(c) for c in header]
-                    col_retrait_idx = cols_now.index("date_retrait") + 1 if "date_retrait" in cols_now else len(cols_now)+1
-                    raw_all = sheet_vitrine.get_all_values()
-                    if raw_all:
-                        df_all = pd.DataFrame(raw_all[1:], columns=[normalize_col(c) for c in raw_all[0]])
-                        mask = pd.Series([True]*len(df_all))
-                        if "numero_de_lot" in df_all.columns and "numero_de_lot" in row:
-                            mask &= (df_all["numero_de_lot"]==row.get("numero_de_lot",""))
-                        if "produit" in df_all.columns and "produit" in row:
-                            mask &= (df_all["produit"]==row.get("produit",""))
-                        idxs = df_all[mask].index.tolist()
-                        if idxs:
-                            cell_row = idxs[0] + 2  # + header
-                            sheet_vitrine.update_cell(cell_row, col_retrait_idx, date.today().strftime("%Y-%m-%d"))
-                            st.success("✅ Article retiré")
-                            st.rerun()
+        st.stop()
 
-# ——— ONGLET RUPTURES ET COMMANDES (avec priorités + header + feature flag WhatsApp) ———
+    # Position de la colonne 'date_retrait' (1-based) dans la feuille
+    try:
+        col_idx_retrait = [normalize_col(h) for h in header_raw].index("date_retrait") + 1
+    except ValueError:
+        st.error("Colonne 'date_retrait' introuvable dans la feuille Vitrine.")
+        st.stop()
+
+    # Tri par Produit (A→Z, insensible aux accents/majuscules), puis DLC croissante
+    def _norm_txt(x):
+        s = str(x or "").strip().lower()
+        try:
+            s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+        except Exception:
+            pass
+        return s
+
+    actifs["_prod_sort"] = actifs["produit"].map(_norm_txt) if "produit" in actifs.columns else ""
+    actifs["_dlc_dt"] = pd.to_datetime(actifs["dlc"], errors="coerce") if "dlc" in actifs.columns else pd.NaT
+    actifs = actifs.sort_values(by=["_prod_sort", "_dlc_dt"], na_position="last").drop(columns=["_prod_sort"], errors="ignore")
+
+    for _, r in actifs.iterrows():
+        produit_txt = str(r.get("produit", "")).strip()
+        lot_txt     = str(r.get("lot", "")).strip() if "lot" in actifs.columns else ""
+        fab_txt     = str(r.get("date_fabrication", "")).strip()
+        dlc_txt     = str(r.get("dlc", "")).strip()
+
+        line = f"**{produit_txt}**"
+        meta = []
+        if lot_txt:
+            meta.append(f"Lot {lot_txt}")
+        if fab_txt:
+            meta.append(f"Fab {fab_txt}")
+        if dlc_txt:
+            meta.append(f"DLC {dlc_txt}")
+        if meta:
+            line += " — " + " • ".join(meta)
+
+        c1, c2 = st.columns([8, 2])
+        with c1:
+            st.markdown(line)
+        with c2:
+            gs_row = int(r["__row__"])
+            if st.button("🗑️ Retirer", key=f"retirer-{gs_row}", use_container_width=True):
+                try:
+                    sh = _open_by_key_cached(SHEET_COMMANDES_ID)
+                    ws = sh.worksheet("Vitrine")
+                    ws.update_cell(gs_row, col_idx_retrait, date.today().isoformat())
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Impossible de retirer l’article (ligne {gs_row}) : {e}")
+
+# ——— ONGLET RUPTURES ET COMMANDES (priorités + header + feature flag WhatsApp) ———
 elif choix == "🛎️ Ruptures & Commandes":
     st.header("🛎️ Ruptures & Commandes")
     st.write("Sélectionnez les produits par niveau de priorité puis générez le message SMS / WhatsApp.")
 
+    # Liste produits (si non dispo ailleurs, fallback depuis Vitrine)
+    try:
+        options_produits = produits_list
+    except Exception:
+        try:
+            raw_vit = ws_values_safe(SHEET_COMMANDES_ID, "Vitrine")
+            if raw_vit and len(raw_vit) > 1:
+                cols = [normalize_col(c) for c in raw_vit[0]]
+                df_v = pd.DataFrame(raw_vit[1:], columns=cols)
+                options_produits = sorted(
+                    [p for p in df_v["produit"].dropna().unique().tolist() if str(p).strip()]
+                ) if "produit" in df_v.columns else []
+            else:
+                options_produits = []
+        except Exception:
+            options_produits = []
+
     # Sélections par niveau
     col_u, col_j2, col_surplus = st.columns(3)
     with col_u:
-        urgence = st.multiselect("🔥 URGENCE", options=produits_list, key="rupt_urgence",
+        urgence = st.multiselect("🔥 URGENCE", options=options_produits, key="rupt_urgence",
                                  help="Produits à commander immédiatement.")
     with col_j2:
-        j2 = st.multiselect("⏳ Demande à J+2", options=produits_list, key="rupt_j2",
-                            help="Produits à commander pour livraison sous 48h.")
+        j2 = st.multiselect("⏳ Demande à J+2", options=options_produits, key="rupt_j2",
+                            help="Produits à commander sous 48h.")
     with col_surplus:
-        surplus = st.multiselect("🟩 Produit en trop – ne pas envoyer", options=produits_list, key="rupt_surplus",
+        surplus = st.multiselect("🟩 Produit en trop – ne pas envoyer", options=options_produits, key="rupt_surplus",
                                  help="Trop de stock : merci de NE PAS ENVOYER.")
 
     commentaire = st.text_area("📝 Commentaire / Quantités (optionnel)")
