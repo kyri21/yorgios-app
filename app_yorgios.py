@@ -124,7 +124,7 @@ except locale.Error:
     pass
 
 # 🔐 Bloque l’app tant que l’utilisateur n’est pas authentifié
-require_auth()   # ← ← ← AJOUTE CETTE LIGNE ICI
+require_auth()
 
 # ———————————————————————————————
 # AUTHENTIFICATION GOOGLE SHEETS
@@ -199,6 +199,7 @@ def _get_sa_token(scopes=None):
     creds = ServiceAccountCredentials.from_json_keyfile_dict(sa_info, scopes)
     # oauth2client: get_access_token() rafraîchit si besoin
     return creds.get_access_token().access_token
+
 def _drive_q_escape(value: str) -> str:
     # Échapper \ puis ' pour la syntaxe de requête Drive (v3)
     return value.replace("\\", "\\\\").replace("'", "\\'")
@@ -296,13 +297,70 @@ def save_df(sh, ws_name, df: pd.DataFrame):
     ws.update([df.columns.tolist()] + df.values.tolist())
 
 # ———————————————————————————————
+# TEMPÉRATURES DE LIVRAISON cuisine → corner
+# ———————————————————————————————
+def get_livraison_temp_ws():
+    """Retourne la feuille 'Livraison Température' dans le fichier commandes/HACCP."""
+    try:
+        ws = ss_cmd.worksheet("Livraison Température")
+    except WorksheetNotFound:
+        ws = ss_cmd.add_worksheet("Livraison Température", rows=1000, cols=4)
+        ws.update(
+            "A1:D1",
+            [[
+                "Produit",
+                "Température départ (°C)",
+                "Horodatage départ",
+                "Température réception (°C)",
+            ]],
+        )
+    return ws
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_livraison_temp_df():
+    """
+    Charge la feuille 'Livraison Température' en conservant les valeurs
+    EXACTEMENT comme elles sont dans le sheet (texte) pour ne pas perdre
+    les virgules (2,7 -> 27, etc.).
+    """
+    ws = get_livraison_temp_ws()
+    values = ws.get_all_values()
+    if not values or len(values) < 2:
+        return pd.DataFrame(
+            columns=[
+                "Produit",
+                "Température départ (°C)",
+                "Horodatage départ",
+                "Température réception (°C)",
+            ]
+        )
+
+    header = values[0]
+    rows   = values[1:]
+    df = pd.DataFrame(rows, columns=header)
+
+    return df
+
+# ———————————————————————————————
 # LISTE PRODUITS & JOURS_FR & NAV
 # ———————————————————————————————
 produits_list = sorted(set(p.strip().capitalize() for p in sheet_prod.col_values(1) if p.strip()))
 JOURS_FR = {"Monday":"Lundi","Tuesday":"Mardi","Wednesday":"Mercredi","Thursday":"Jeudi","Friday":"Vendredi","Saturday":"Samedi","Sunday":"Dimanche"}
 
-# ➕ insérer Dashboard en premier
-onglets = ["🏠 Dashboard","🌡️ Relevé des températures","🧼 Hygiène","🧊 Stockage Frigo","📋 Protocoles","📅 Planning","🖥️ Vitrine","🛎️ Ruptures & Commandes","🧾 Contrôle Hygiène","🔗 Liens Google Sheets"]
+# ➕ insérer Dashboard en premier + nouvel onglet Température livraison
+onglets = [
+    "🏠 Dashboard",
+    "🌡️ Relevé des températures",
+    "🚚 Température livraison",
+    "🧼 Hygiène",
+    "🧊 Stockage Frigo",
+    "📋 Protocoles",
+    "📅 Planning",
+    "🖥️ Vitrine",
+    "🛎️ Ruptures & Commandes",
+    "🧾 Contrôle Hygiène",
+    "🔗 Liens Google Sheets",
+]
 choix = st.sidebar.radio("Navigation", onglets)
 
 # ———————————————————————————————
@@ -368,7 +426,7 @@ def _compose_responsable_from_row(row, candidates=("responsable","nom","nom_1","
 def render_dashboard():
     st.header("🏠 Dashboard")
     today = date.today()
-    semaine_iso = today.isocalendar().week
+    iso_year, semaine_iso, _ = today.isocalendar()
 
     # ——— Responsable de la semaine (plein écran en haut)
     st.subheader("👤 Responsable de la semaine")
@@ -457,7 +515,7 @@ def render_dashboard():
     # Températures – Aujourd’hui
     with col_temp:
         st.subheader("🌡️ Températures – Aujourd’hui")
-        candidates = [f"Semaine {semaine_iso} {today.year}", f"Semaine {semaine_iso}"]
+        candidates = [f"Semaine {semaine_iso} {iso_year}", f"Semaine {semaine_iso}"]
         ws_title = None
         titres_all = ws_titles(SHEET_TEMP_ID)
         for cand in candidates:
@@ -541,6 +599,7 @@ def render_dashboard():
             st.success("RAS")
         else:
             st.dataframe(style_dlc_alert(dujour), use_container_width=True)
+
 # ———————————————————————————————
 # ONGLET : Dashboard
 # ———————————————————————————————
@@ -548,7 +607,7 @@ if choix == "🏠 Dashboard":
     render_dashboard()
 
 # ———————————————————————————————
-# ONGLET : Relevé des températures
+# ONGLET : Relevé des températures (chambre froide / frigos)
 # ———————————————————————————————
 elif choix == "🌡️ Relevé des températures":
     st.header("🌡️ Relevé des températures")
@@ -560,8 +619,9 @@ elif choix == "🌡️ Relevé des températures":
         key="rt_jour"
     )
 
-    # 2) Ouvrir (ou créer) la feuille correspondante
-    nom_ws = f"Semaine {jour.isocalendar().week} {jour.year}"
+    # 2) Ouvrir (ou créer) la feuille correspondante (année ISO)
+    iso_year, iso_week, _ = jour.isocalendar()
+    nom_ws = f"Semaine {iso_week} {iso_year}"
     try:
         ws = ss_temp.worksheet(nom_ws)
     except WorksheetNotFound:
@@ -615,6 +675,213 @@ elif choix == "🌡️ Relevé des températures":
         ),
         use_container_width=True
     )
+
+# ———————————————————————————————
+# ONGLET : Température livraison cuisine → corner
+# ———————————————————————————————
+elif choix == "🚚 Température livraison":
+    st.header("🚚 Température de livraison (cuisine → corner)")
+    st.caption("Saisir les températures au départ cuisine, puis compléter la réception au corner.")
+
+    # ———————————————————————————————
+    # 1) SAISIE RAPIDE DES TEMPÉRATURES DE DÉPART (CUISINE)
+    # ———————————————————————————————
+    if not produits_list:
+        st.error("Impossible de charger la liste des produits Yorgios.")
+    else:
+        produits_choisis = st.multiselect(
+            "Produits à contrôler au départ (cuisine)",
+            options=produits_list,
+            key="liv_prods_multi",
+            help="Tape quelques lettres pour filtrer rapidement.",
+        )
+
+        if produits_choisis:
+            with st.form("form_livraison_batch"):
+                lignes = []
+                st.markdown("#### Relevés départ (cuisine)")
+                for i, prod in enumerate(produits_choisis):
+                    c1, c2, c3 = st.columns([3, 2, 2])
+                    with c1:
+                        st.markdown(f"**{prod}**")
+                    with c2:
+                        t_dep = st.text_input(
+                            "Départ (°C)",
+                            key=f"liv_dep_{i}",
+                            label_visibility="collapsed",
+                            placeholder="ex : 3,5",
+                        )
+                    with c3:
+                        t_rec = st.text_input(
+                            "Réception (°C)",
+                            key=f"liv_rec_{i}",
+                            label_visibility="collapsed",
+                            placeholder="optionnel (si connu)",
+                        )
+                    lignes.append((prod, t_dep, t_rec))
+
+                submitted = st.form_submit_button("✅ Enregistrer tous les relevés de départ")
+
+            if submitted:
+                horodatage = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                lignes_a_ecrire = []
+
+                for prod, t_dep_str, t_rec_str in lignes:
+                    t_dep_str = (t_dep_str or "").strip().replace(" ", "")
+                    t_rec_str = (t_rec_str or "").strip().replace(" ", "")
+
+                    # on ignore les lignes sans température de départ
+                    if not t_dep_str:
+                        continue
+
+                    # normalise en texte avec virgule (2,1) pour éviter les soucis de décimales
+                    dep_txt = t_dep_str.replace(".", ",")
+                    if not re.match(r"^-?\d+(,\d+)?$", dep_txt):
+                        st.error(f"Température départ invalide pour « {prod} » (valeur : {t_dep_str}). Utilise par ex. 3,5")
+                        st.stop()
+
+                    rec_txt = ""
+                    if t_rec_str:
+                        rec_txt_tmp = t_rec_str.replace(".", ",")
+                        if not re.match(r"^-?\d+(,\d+)?$", rec_txt_tmp):
+                            st.error(f"Température réception invalide pour « {prod} » (valeur : {t_rec_str}). Utilise par ex. 3,5")
+                            st.stop()
+                        rec_txt = rec_txt_tmp
+
+                    # on stocke les températures en TEXTE (avec virgule) dans le sheet
+                    lignes_a_ecrire.append([prod, dep_txt, horodatage, rec_txt])
+
+                if not lignes_a_ecrire:
+                    st.error("Aucune ligne complète à enregistrer (remplis au moins les températures départ).")
+                else:
+                    try:
+                        ws_lt = get_livraison_temp_ws()
+                        for row in lignes_a_ecrire:
+                            ws_lt.append_row(row, value_input_option="USER_ENTERED")
+                        load_livraison_temp_df.clear()
+                        st.success(f"{len(lignes_a_ecrire)} relevé(s) de livraison enregistré(s).")
+                    except Exception as e:
+                        st.error(f"Erreur lors de l’enregistrement dans Google Sheets : {e}")
+
+    # ———————————————————————————————
+    # 2) COMPLÉTER LES TEMPÉRATURES DE RÉCEPTION (CORNER)
+    # ———————————————————————————————
+    st.markdown("---")
+    st.subheader("Compléter les températures de réception (corner)")
+
+    df_liv = load_livraison_temp_df()
+    if df_liv.empty:
+        st.info("Aucun relevé de livraison pour l’instant.")
+    else:
+        # Conversion de l’horodatage pour filtrer sur aujourd’hui
+        if "Horodatage départ" in df_liv.columns:
+            df_liv["Horodatage départ"] = pd.to_datetime(
+                df_liv["Horodatage départ"], errors="coerce"
+            )
+        else:
+            st.warning("Colonne 'Horodatage départ' manquante dans le sheet Livraison Température.")
+            df_liv["Horodatage départ"] = pd.NaT
+
+        # Numéro de ligne Google Sheets (2 = 1ère ligne de données)
+        df_liv["__row__"] = range(2, 2 + len(df_liv))
+
+        col_recep = "Température réception (°C)"
+        if col_recep not in df_liv.columns:
+            st.warning(f"Colonne « {col_recep} » introuvable dans le sheet Livraison Température.")
+            df_edit = pd.DataFrame()
+        else:
+            mask_no_recep = df_liv[col_recep].astype(str).str.strip().isin(["", "nan", "None"])
+            today_dt = date.today()
+            mask_today = df_liv["Horodatage départ"].dt.date == today_dt
+            df_edit = df_liv[mask_no_recep & mask_today].copy()
+
+        if df_edit.empty:
+            st.info("Aucune livraison du jour à compléter (toutes les températures de réception sont saisies ou aucune livraison enregistrée aujourd’hui).")
+        else:
+            # Trier par heure de départ la plus récente
+            df_edit = df_edit.sort_values("Horodatage départ", ascending=False)
+
+            with st.form("form_livraison_recep"):
+                updates = []
+
+                st.caption("Complète uniquement la colonne réception (°C) pour les livraisons du jour.")
+                for _, row in df_edit.iterrows():
+                    produit = str(row.get("Produit", ""))
+                    t_dep   = row.get("Température départ (°C)", "")
+                    h_dep   = row.get("Horodatage départ", pd.NaT)
+                    h_txt   = h_dep.strftime("%H:%M") if pd.notna(h_dep) else ""
+
+                    c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
+                    with c1:
+                        st.markdown(f"**{produit}**")
+                    with c2:
+                        st.markdown(f"Départ : `{t_dep}` °C")
+                    with c3:
+                        st.markdown(f"Départ : {h_txt}")
+                    with c4:
+                        inp = st.text_input(
+                            "Réception (°C)",
+                            key=f"liv_recep_{int(row['__row__'])}",
+                            label_visibility="collapsed",
+                            placeholder="ex : 3,8",
+                            value="",
+                        )
+                        updates.append((int(row["__row__"]), produit, inp))
+
+                submitted_recep = st.form_submit_button("✅ Enregistrer les températures de réception")
+
+            if submitted_recep:
+                try:
+                    ws_lt = get_livraison_temp_ws()
+                    headers = ws_lt.row_values(1)
+                    try:
+                        col_idx_recep = headers.index(col_recep) + 1
+                    except ValueError:
+                        # fallback : 4ème colonne si le nom a été modifié
+                        col_idx_recep = 4
+
+                    n_ok = 0
+                    for row_idx, prod, val_str in updates:
+                        val_str = (val_str or "").strip().replace(" ", "")
+                        if not val_str:
+                            continue  # on ignore les lignes non remplies
+
+                        rec_txt = val_str.replace(".", ",")
+                        if not re.match(r"^-?\d+(,\d+)?$", rec_txt):
+                            st.error(f"Valeur de réception invalide pour « {prod} » : {val_str}. Utilise par ex. 3,8")
+                            st.stop()
+
+                        # on stocke la valeur avec virgule en texte
+                        ws_lt.update_cell(row_idx, col_idx_recep, rec_txt)
+                        n_ok += 1
+
+                    if n_ok > 0:
+                        load_livraison_temp_df.clear()
+                        st.success(f"{n_ok} température(s) de réception enregistrée(s).")
+                    else:
+                        st.info("Aucune valeur de réception renseignée, rien à enregistrer.")
+                except Exception as e:
+                    st.error(f"Erreur lors de la mise à jour des températures de réception : {e}")
+
+    # ———————————————————————————————
+    # 3) HISTORIQUE (OPTIONNEL, POUR CONSULTATION UNIQUEMENT)
+    # ———————————————————————————————
+    st.markdown("---")
+    afficher_hist = st.checkbox("Afficher l’historique complet des relevés de livraison", value=False)
+    if afficher_hist:
+        df_liv_full = load_livraison_temp_df()
+        st.subheader("Historique des relevés de livraison")
+        if df_liv_full.empty:
+            st.info("Aucun relevé de température de livraison pour l’instant.")
+        else:
+            if "Horodatage départ" in df_liv_full.columns:
+                df_liv_full["Horodatage départ"] = pd.to_datetime(
+                    df_liv_full["Horodatage départ"], errors="coerce"
+                )
+                df_liv_full = df_liv_full.sort_values(
+                    "Horodatage départ", ascending=False
+                ).reset_index(drop=True)
+            st.dataframe(df_liv_full, use_container_width=True)
 
 # —————————————— ONGLET “🧼 Hygiène” (inchangé) ——————————————
 elif choix == "🧼 Hygiène":
@@ -1101,7 +1368,7 @@ elif choix == "🛎️ Ruptures & Commandes":
                 url = f"https://wa.me/{wa_num}?text={urllib.parse.quote(msg)}"
                 st.markdown(f"[➡️ Ouvrir WhatsApp]({url})")
 
-# ——— ONGLET CONTROLE HYGIENE (inchangé) ———
+# ——— ONGLET CONTROLE HYGIENE (avec ajout Température livraison) ———
 elif choix == "🧾 Contrôle Hygiène":
     st.header("🧾 Contrôle Hygiène – Visualisation & Export PDF")
 
@@ -1119,8 +1386,10 @@ elif choix == "🧾 Contrôle Hygiène":
     cle_temp = "ch_df_temp"
     cle_hyg  = "ch_df_hyg"
     cle_vit  = "ch_df_vit"
+    cle_liv  = "ch_df_liv"
 
     if st.button("🔄 Charger & Afficher les relevés"):
+        # Températures frigos
         list_temp = []
         for ws in ss_temp.worksheets():
             titre = ws.title.strip()
@@ -1140,6 +1409,7 @@ elif choix == "🧾 Contrôle Hygiène":
             )
             df_all_temp = df_all_temp.loc[mask_temp].reset_index(drop=True)
 
+        # Hygiène
         list_hyg = []
         for nom in ["Quotidien", "Hebdomadaire", "Mensuel"]:
             try:
@@ -1166,6 +1436,7 @@ elif choix == "🧾 Contrôle Hygiène":
         else:
             df_filtre = pd.DataFrame()
 
+        # Vitrine
         raw_vitrine = sheet_vitrine.get_all_records()
         if raw_vitrine:
             df_vit_full = pd.DataFrame(raw_vitrine)
@@ -1183,17 +1454,43 @@ elif choix == "🧾 Contrôle Hygiène":
         else:
             vitrine_df = pd.DataFrame()
 
+        # Températures de livraison
+        try:
+            df_liv = load_livraison_temp_df()
+            if not df_liv.empty and "Horodatage départ" in df_liv.columns:
+                df_liv["Horodatage départ"] = pd.to_datetime(
+                    df_liv["Horodatage départ"], errors="coerce"
+                )
+                start_ts = pd.to_datetime(date_debut)
+                end_ts = pd.to_datetime(date_fin) + pd.Timedelta(days=1)
+                mask_liv = (
+                    (df_liv["Horodatage départ"] >= start_ts) &
+                    (df_liv["Horodatage départ"] < end_ts)
+                )
+                df_liv = df_liv.loc[mask_liv].reset_index(drop=True)
+            else:
+                df_liv = pd.DataFrame()
+        except Exception:
+            df_liv = pd.DataFrame()
+
         st.session_state[cle_temp] = df_all_temp
         st.session_state[cle_hyg]  = df_filtre
         st.session_state[cle_vit]  = vitrine_df
+        st.session_state[cle_liv]  = df_liv
 
         if "pdf_hygiene_bytes" in st.session_state:
             del st.session_state["pdf_hygiene_bytes"]
 
-    if cle_temp in st.session_state and cle_hyg in st.session_state and cle_vit in st.session_state:
+    if (
+        cle_temp in st.session_state and
+        cle_hyg in st.session_state and
+        cle_vit in st.session_state and
+        cle_liv in st.session_state
+    ):
         df_all_temp = st.session_state[cle_temp]
         df_filtre   = st.session_state[cle_hyg]
         vitrine_df  = st.session_state[cle_vit]
+        df_liv      = st.session_state[cle_liv]
 
         st.markdown("### 🌡️ Relevés Températures (Vue complète)")
         if df_all_temp.empty:
@@ -1212,6 +1509,12 @@ elif choix == "🧾 Contrôle Hygiène":
             st.warning("Aucun article en vitrine pour la période sélectionnée.")
         else:
             st.dataframe(vitrine_df, use_container_width=True)
+
+        st.markdown("### 🚚 Températures de livraison (Vue complète)")
+        if df_liv.empty:
+            st.warning("Aucun relevé de température de livraison sur la période sélectionnée.")
+        else:
+            st.dataframe(df_liv, use_container_width=True)
 
         st.markdown("---")
 
@@ -1264,7 +1567,7 @@ st.markdown(
     """
     <hr style="margin-top:40px; margin-bottom:10px">
     <p style="text-align:center; font-size:12px;">
-        Application Yorgios • Développée avec ❤️ & Demis
+        Application Yorgios • Développée avec ❤️ par Demis
     </p>
     """,
     unsafe_allow_html=True
