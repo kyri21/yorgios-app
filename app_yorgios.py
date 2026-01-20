@@ -67,10 +67,22 @@ def generate_controle_hygiene_pdf(temp_df, hygiene_df, vitrine_df, date_debut, d
     c.save()
     return pdf_path
 
+# Flag d'activation de l'auth (piloté par les secrets)
+# Dans les secrets : AUTH_ENABLED = "true" ou "false"
+AUTH_ENABLED = str(st.secrets.get("AUTH_ENABLED", "true")).strip().lower() in ("true", "1", "yes", "on")
+
 # 🔐 ———————————————————————————————————————————
 # Auth simple par mot de passe (stocké dans st.secrets["APP_PASSWORD"])
 # ——————————————————————————————————————————————
 def require_auth():
+    """
+    Si AUTH_ENABLED = false dans les secrets → pas de mot de passe.
+    Si AUTH_ENABLED = true               → écran de login classique.
+    """
+    # 🔓 Auth désactivée → on laisse passer directement
+    if not AUTH_ENABLED:
+        return
+
     expected_pwd = st.secrets.get("APP_PASSWORD", "christelle").strip()
 
     # Si le mot de passe n'est pas configuré dans les secrets, on bloque proprement
