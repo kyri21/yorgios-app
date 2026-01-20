@@ -296,6 +296,30 @@ def save_df(sh, ws_name, df: pd.DataFrame):
     ws.clear()
     ws.update([df.columns.tolist()] + df.values.tolist())
 
+# === Objectifs CA : lecture de la feuille "objectifs" (europoseidon_liaison) ===
+@st.cache_data(ttl=600)
+def load_objectifs_df():
+    """
+    Lit la feuille 'objectifs' (ou 'Objectifs') dans le fichier europoseidon_liaison.
+    Retourne un DataFrame avec l'en-tête de la 1ère ligne.
+    """
+    try:
+        try:
+            ws = ss_cmd.worksheet("objectifs")
+        except WorksheetNotFound:
+            ws = ss_cmd.worksheet("Objectifs")
+    except WorksheetNotFound:
+        return pd.DataFrame()
+
+    values = ws.get_all_values()
+    if not values or len(values) < 2:
+        return pd.DataFrame()
+
+    header = values[0]
+    rows   = values[1:]
+    df = pd.DataFrame(rows, columns=header)
+    return df
+
 # ———————————————————————————————
 # TEMPÉRATURES DE LIVRAISON cuisine → corner
 # ———————————————————————————————
@@ -347,7 +371,7 @@ def load_livraison_temp_df():
 produits_list = sorted(set(p.strip().capitalize() for p in sheet_prod.col_values(1) if p.strip()))
 JOURS_FR = {"Monday":"Lundi","Tuesday":"Mardi","Wednesday":"Mercredi","Thursday":"Jeudi","Friday":"Vendredi","Saturday":"Samedi","Sunday":"Dimanche"}
 
-# ➕ insérer Dashboard en premier + nouvel onglet Température livraison
+# ➕ insérer Dashboard en premier + nouvel onglet Température livraison + Objectifs CA
 onglets = [
     "🏠 Dashboard",
     "🌡️ Relevé des températures",
@@ -355,6 +379,7 @@ onglets = [
     "🧼 Hygiène",
     "🧊 Stockage Frigo",
     "📋 Protocoles",
+    "📊 Objectifs Chiffres d'affaires",
     "📅 Planning",
     "🖥️ Vitrine",
     "🛎️ Ruptures & Commandes",
@@ -987,6 +1012,66 @@ elif choix == "📋 Protocoles":
             )
     except Exception as e:
         st.error(f"❌ Impossible de charger « {choix_proto} » depuis Drive : {e}")
+
+# ——— ONGLET OBJECTIFS CHIFFRES D’AFFAIRES (consultation) ———
+elif choix == "📊 Objectifs Chiffres d'affaires":
+    st.header("📊 Objectifs Chiffres d'affaires")
+
+    df_obj = load_objectifs_df()
+    if df_obj.empty:
+        st.info("La feuille 'objectifs' est vide ou introuvable dans le fichier europoseidon_liaison.")
+    else:
+        # On identifie les colonnes
+        cols = list(df_obj.columns)
+
+        col_mois = cols[0] if cols else None  # "Objectif valeur" (mois dessous)
+        col_ht = "HT" if "HT" in cols else (cols[1] if len(cols) > 1 else None)
+        col_res = None
+        for c in cols:
+            if "result" in c.lower():
+                col_res = c
+                break
+        if col_res is None and len(cols) > 2:
+            col_res = cols[2]
+
+        if not (col_mois and col_ht and col_res):
+            st.error("Impossible d’identifier les colonnes Mois / HT / Résultat dans la feuille 'objectifs'.")
+        else:
+            # Conversion des montants en float
+            def _to_float(x):
+                s = str(x or "").strip()
+                if not s:
+                    return None
+                s = s.replace(" ", "")
+                s = s.replace(",", ".")
+                s = re.sub(r"[^0-9.\-]", "", s)
+                try:
+                    return float(s)
+                except ValueError:
+                    return None
+
+            df_obj["_ht_val"] = df_obj[col_ht].apply(_to_float)
+            df_obj["_res_val"] = df_obj[col_res].apply(_to_float)
+
+            def _prime(row):
+                ht = row["_ht_val"]
+                res = row["_res_val"]
+                if ht is None or res is None:
+                    return ""
+                # ✅ si le résultat atteint ou dépasse l'objectif, sinon ❌
+                return "✅" if res >= ht else "❌"
+
+            df_obj["Prime"] = df_obj.apply(_prime, axis=1)
+
+            df_aff = pd.DataFrame({
+                "Mois": df_obj[col_mois],
+                "Objectif HT": df_obj[col_ht],
+                "Résultat": df_obj[col_res],
+                "Prime": df_obj["Prime"],
+            })
+
+            st.caption("✅ = objectif atteint ou dépassé • ❌ = objectif non atteint (Résultat < Objectif HT)")
+            st.dataframe(df_aff, use_container_width=True)
 
 # ——— ONGLET PLANNING (désactivé / en construction) ———
 elif choix == "📅 Planning":
