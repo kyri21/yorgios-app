@@ -10,15 +10,33 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from gspread.exceptions import SpreadsheetNotFound, WorksheetNotFound
 import pytz
-# (googleapiclient supprimé)
 from io import BytesIO
-# (google.oauth2 supprimé)
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import landscape, A4
 from reportlab.lib.units import cm
 import urllib.parse
 import unicodedata
-import requests  # ➕ utilisé pour l’API Drive directe
+import requests  # API HTTP Drive (txt + upload photo)
+
+# ———————————————————————————————
+# FONCTIONS UTILITAIRES GÉNÉRALES
+# ———————————————————————————————
+def normalize_text_no_accents(s: str) -> str:
+    if not isinstance(s, str):
+        s = str(s or "")
+    s = s.strip().lower()
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    return s
+
+def normalize_col(c: str) -> str:
+    nfkd = unicodedata.normalize("NFKD", c)
+    return (
+        nfkd.encode("ascii", "ignore")
+        .decode()
+        .strip()
+        .lower()
+        .replace(" ", "_")
+    )
 
 # ———————————————————————————————
 # FONCTION DE GÉNÉRATION DU PDF Contrôle Hygiène (pagination auto)
@@ -68,7 +86,6 @@ def generate_controle_hygiene_pdf(temp_df, hygiene_df, vitrine_df, date_debut, d
     return pdf_path
 
 # Flag d'activation de l'auth (piloté par les secrets)
-# Dans les secrets : AUTH_ENABLED = "true" ou "false"
 AUTH_ENABLED = str(st.secrets.get("AUTH_ENABLED", "true")).strip().lower() in ("true", "1", "yes", "on")
 
 # 🔐 ———————————————————————————————————————————
@@ -79,13 +96,11 @@ def require_auth():
     Si AUTH_ENABLED = false dans les secrets → pas de mot de passe.
     Si AUTH_ENABLED = true               → écran de login classique.
     """
-    # 🔓 Auth désactivée → on laisse passer directement
     if not AUTH_ENABLED:
         return
 
     expected_pwd = st.secrets.get("APP_PASSWORD", "christelle").strip()
 
-    # Si le mot de passe n'est pas configuré dans les secrets, on bloque proprement
     if not expected_pwd:
         st.title("🔐 Accès restreint")
         st.error(
@@ -94,19 +109,15 @@ def require_auth():
         )
         st.stop()
 
-    # Déjà authentifié pour cette session ?
     if st.session_state.get("auth_ok", False):
-        # Bouton de déconnexion dans la sidebar
         with st.sidebar:
             st.caption("🔒 Accès privé")
             if st.button("Se déconnecter"):
-                # On nettoie l'état et on relance
                 for k in list(st.session_state.keys()):
                     del st.session_state[k]
                 st.rerun()
-        return  # Laisse l’app continuer normalement
+        return
 
-    # Formulaire de connexion
     st.title("🔐 Accès réservé")
     pwd = st.text_input("Mot de passe", type="password", placeholder="Entrez le mot de passe")
 
@@ -114,7 +125,6 @@ def require_auth():
     with colA:
         login = st.button("Se connecter", type="primary")
 
-    # Valider si clic ou entrée dans le champ
     if login or (pwd and "last_try_pwd" not in st.session_state):
         st.session_state["last_try_pwd"] = pwd
         if pwd == expected_pwd:
@@ -123,11 +133,10 @@ def require_auth():
         elif login:
             st.error("Mot de passe incorrect.")
 
-    # Bloque l’app tant qu’on n’est pas connecté
     st.stop()
 
 # ———————————————————————————————
-# CONFIGURATION STREAMLIT
+# CONFIG STREAMLIT
 # ———————————————————————————————
 st.set_page_config(page_title="Yorgios V1", layout="wide")
 try:
@@ -135,7 +144,6 @@ try:
 except locale.Error:
     pass
 
-# 🔐 Bloque l’app tant que l’utilisateur n’est pas authentifié
 require_auth()
 
 # ———————————————————————————————
@@ -154,11 +162,10 @@ def gsheets_client():
 gc = gsheets_client()
 
 # ———————————————————————————————
-# CACHES LECTURE SHEETS (accélère et fiabilise)
+# CACHES LECTURE SHEETS
 # ———————————————————————————————
 @st.cache_resource
 def _open_by_key_cached(key: str):
-    # ouverture résiliente
     last_err = None
     for i in range(3):
         try:
@@ -168,7 +175,7 @@ def _open_by_key_cached(key: str):
             time.sleep(0.7 * (i + 1))
     raise last_err
 
-@st.cache_data(ttl=60)  # 60 s de fraîcheur
+@st.cache_data(ttl=60)
 def ws_titles(key: str):
     sh = _open_by_key_cached(key)
     return [w.title for w in sh.worksheets()]
@@ -202,29 +209,22 @@ def open_sheet_retry(client, key, retries=3, delay=2):
                 st.stop()
 
 # ———————————————————————————————
-# TOKEN & LECTURE PROTOCOLES DRIVE (sans googleapiclient)
+# TOKEN & LECTURE PROTOCOLES DRIVE
 # ———————————————————————————————
 def _get_sa_token(scopes=None):
     if scopes is None:
         scopes = ["https://www.googleapis.com/auth/drive.readonly"]
     sa_info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
     creds = ServiceAccountCredentials.from_json_keyfile_dict(sa_info, scopes)
-    # oauth2client: get_access_token() rafraîchit si besoin
     return creds.get_access_token().access_token
 
 def _drive_q_escape(value: str) -> str:
-    # Échapper \ puis ' pour la syntaxe de requête Drive (v3)
     return value.replace("\\", "\\\\").replace("'", "\\'")
 
 def read_txt_from_drive(file_name, folder_id="14Pa-svM3uF9JQtjKysP0-awxK0BDi35E"):
-    """
-    Récupère le contenu d’un fichier texte (.txt) ou d’un Google Docs
-    dans le dossier Drive donné et renvoie du texte brut, via requêtes HTTP directes.
-    """
     token = _get_sa_token()
     headers = {"Authorization": f"Bearer {token}"}
 
-    # 1) Trouver le fichier par nom dans le dossier (sans f-string à l'intérieur)
     name_q   = _drive_q_escape(str(file_name))
     folder_q = _drive_q_escape(str(folder_id))
     q = "name = '{name}' and '{folder}' in parents and trashed = false".format(
@@ -248,7 +248,6 @@ def read_txt_from_drive(file_name, folder_id="14Pa-svM3uF9JQtjKysP0-awxK0BDi35E"
     file_id = items[0]["id"]
     mime    = items[0]["mimeType"]
 
-    # 2) Télécharger en texte
     if mime == "text/plain":
         r = requests.get(
             f"https://www.googleapis.com/drive/v3/files/{file_id}",
@@ -269,16 +268,70 @@ def read_txt_from_drive(file_name, folder_id="14Pa-svM3uF9JQtjKysP0-awxK0BDi35E"
 
     return r.content.decode("utf-8", errors="replace")
 
+def upload_livraison_photo(uploaded_file, produit: str, horodatage):
+    """
+    Téléverse une photo de réception dans le dossier Drive dédié.
+    Retourne un lien partageable.
+    """
+    if uploaded_file is None:
+        return ""
+    if not LIVRAISON_PHOTO_FOLDER_ID:
+        st.warning("Dossier Drive pour les photos de livraison non configuré (LIVRAISON_PHOTO_FOLDER_ID).")
+        return ""
+    try:
+        token = _get_sa_token(scopes=["https://www.googleapis.com/auth/drive"])
+        headers = {"Authorization": f"Bearer {token}"}
+
+        if isinstance(horodatage, datetime):
+            ts = horodatage.strftime("%Y%m%d-%H%M%S")
+        else:
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+        base_name = f"{produit}-{ts}".strip().replace(" ", "_")
+        base_name = re.sub(r"[^A-Za-z0-9._-]", "_", base_name)
+
+        mime_type = getattr(uploaded_file, "type", None) or "image/jpeg"
+        metadata = {
+            "name": base_name,
+            "parents": [LIVRAISON_PHOTO_FOLDER_ID],
+        }
+        files = {
+            "metadata": ("metadata", json.dumps(metadata), "application/json; charset=UTF-8"),
+            "file": (base_name, uploaded_file.getvalue(), mime_type),
+        }
+
+        resp = requests.post(
+            "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+            headers=headers,
+            files=files,
+            timeout=60,
+        )
+        if resp.status_code not in (200, 201):
+            st.warning(f"Échec de l’upload de la photo pour {produit} ({resp.status_code}).")
+            return ""
+
+        file_id = resp.json().get("id")
+        if not file_id:
+            return ""
+        return f"https://drive.google.com/file/d/{file_id}/view?usp=drivesdk"
+    except Exception as e:
+        st.warning(f"Impossible de téléverser la photo pour {produit} : {e}")
+        return ""
+
 # ———————————————————————————————
-# IDS Google Sheets & CHARGEMENT via retry
+# IDS Google Sheets & CHARGEMENT
 # ———————————————————————————————
 SHEET_COMMANDES_ID = "1cBP7iEeWK5whbHzoZAWUhq_HQ5OcAEjTBkUro2cmkoc"
 SHEET_HYGIENE_ID   = "1phiQjSYqvHdVEqv7uAt8pitRE0NfKv4b1f4UUzUqbXQ"
 SHEET_TEMP_ID      = "1e4hS6iawCa1IizhzY3xhskLy8Gj3todP3zzk38s7aq0"
 SHEET_PLANNING_ID  = "1OBYGNHtHdDB2jufKKjoAwq6RiiS_pnz4ta63sAM-t_0"
 SHEET_PRODUITS_ID  = "1FbRV4KgXyCwqwLqJkyq8cHZbo_BfB7kyyPP3pO53Snk"
-# ➕ Responsables semaine (ajouté)
 SHEET_RESP_ID      = "1nWEel6nizI0LKC84uaBDyqTNg1hzwPSVdZw41YJaBV8"
+
+LIVRAISON_PHOTO_FOLDER_ID = st.secrets.get(
+    "LIVRAISON_PHOTO_FOLDER_ID",
+    "1EF9JPKr8XV4XDlHm_rFhpbYofDkBvv5V"
+).strip()
 
 ss_cmd        = open_sheet_retry(gc, SHEET_COMMANDES_ID)
 sheet_haccp   = ss_cmd.worksheet("Suivi HACCP")
@@ -289,11 +342,10 @@ ss_temp     = open_sheet_retry(gc, SHEET_TEMP_ID)
 ss_planning = open_sheet_retry(gc, SHEET_PLANNING_ID)
 ss_produits = open_sheet_retry(gc, SHEET_PRODUITS_ID)
 sheet_prod  = ss_produits.worksheet("Produits")
-# ➕ ouverture du sheet Responsables semaine
-ss_resp = open_sheet_retry(gc, SHEET_RESP_ID)
+ss_resp     = open_sheet_retry(gc, SHEET_RESP_ID)
 
 # ———————————————————————————————
-# UTILITAIRES LECTURE / SAUVEGARDE
+# UTILITAIRES STOCKAGE FRIGO
 # ———————————————————————————————
 def load_df(sh, ws_name):
     return pd.DataFrame(sh.worksheet(ws_name).get_all_records())
@@ -308,13 +360,9 @@ def save_df(sh, ws_name, df: pd.DataFrame):
     ws.clear()
     ws.update([df.columns.tolist()] + df.values.tolist())
 
-# === Objectifs CA : lecture de la feuille "objectifs" (europoseidon_liaison) ===
+# === Objectifs CA ===
 @st.cache_data(ttl=600)
 def load_objectifs_df():
-    """
-    Lit la feuille 'objectifs' (ou 'Objectifs') dans le fichier europoseidon_liaison.
-    Retourne un DataFrame avec l'en-tête de la 1ère ligne.
-    """
     try:
         try:
             ws = ss_cmd.worksheet("objectifs")
@@ -333,80 +381,166 @@ def load_objectifs_df():
     return df
 
 # ———————————————————————————————
-# TEMPÉRATURES DE LIVRAISON cuisine → corner
+# PRODUITS + DÉNOMINATION GEP
+# ———————————————————————————————
+def _norm_gep_key(s: str) -> str:
+    s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode("ascii")
+    return s.strip().lower()
+
+try:
+    produits_records = sheet_prod.get_all_records()
+    df_produits = pd.DataFrame(produits_records)
+except Exception:
+    df_produits = pd.DataFrame()
+
+if not df_produits.empty:
+    cols_norm = {normalize_col(c): c for c in df_produits.columns}
+
+    col_nom = None
+    for key in ("produit", "nom_produit", "produit_yorgios"):
+        if key in cols_norm:
+            col_nom = cols_norm[key]
+            break
+
+    col_gep = None
+    for key in ("denomination_gep", "denomination_gep_", "gep", "categorie_gep"):
+        if key in cols_norm:
+            col_gep = cols_norm[key]
+            break
+
+    if col_nom:
+        df_produits["__nom__"] = df_produits[col_nom].astype(str).str.strip()
+    else:
+        df_produits["__nom__"] = ""
+
+    if col_gep:
+        df_produits["__gep__"] = df_produits[col_gep].astype(str).str.strip()
+    else:
+        df_produits["__gep__"] = ""
+else:
+    df_produits = pd.DataFrame(columns=["__nom__", "__gep__"])
+
+PROD_GEP_MAPPING = {
+    row["__nom__"]: row["__gep__"]
+    for _, row in df_produits.iterrows()
+    if str(row.get("__nom__", "")).strip() and str(row.get("__gep__", "")).strip()
+}
+
+produits_gep_list = sorted(PROD_GEP_MAPPING.keys())
+
+try:
+    produits_list = sorted(set(p.strip() for p in sheet_prod.col_values(1) if p.strip()))
+except Exception:
+    produits_list = sorted(PROD_GEP_MAPPING.keys())
+
+livraison_produits_list = produits_gep_list if produits_gep_list else produits_list
+
+GEP_RULES = {
+    "viande hachee":       {"min": 0.0, "max": 2.0, "max_tol": 3.0},
+    "viande":              {"min": 0.0, "max": 3.0, "max_tol": 5.0},
+    "lait":                {"min": 0.0, "max": 4.0, "max_tol": 6.0},
+    "plat cuisine":        {"min": 0.0, "max": 3.0, "max_tol": 5.0},
+    "plat cuisine frais":  {"min": 0.0, "max": 3.0, "max_tol": 5.0},
+    "patisserie":          {"min": 0.0, "max": 3.0, "max_tol": 5.0},
+    "patisserie fraiche":  {"min": 0.0, "max": 3.0, "max_tol": 5.0},
+    "legume":              {"min": 0.0, "max": 8.0, "max_tol": 10.0},
+    "legumes":             {"min": 0.0, "max": 8.0, "max_tol": 10.0},
+    "poisson":             {"min": 0.0, "max": 2.0, "max_tol": 3.0},
+}
+
+def get_gep_rule(denom_gep: str):
+    key = _norm_gep_key(denom_gep)
+    return GEP_RULES.get(key)
+
+def parse_temp_to_float(temp_str: str):
+    if not isinstance(temp_str, str):
+        temp_str = str(temp_str or "")
+    temp_str = temp_str.replace(" ", "").replace(",", ".")
+    try:
+        return float(temp_str)
+    except ValueError:
+        return None
+
+def compute_reception_result(temp_recep_txt: str, denomination_gep: str) -> str:
+    t = parse_temp_to_float(temp_recep_txt)
+    if t is None:
+        return ""
+    rule = get_gep_rule(denomination_gep)
+    if not rule:
+        return ""
+    return "✅ Accepté" if t <= rule["max_tol"] else "❌ Refusé"
+
+# ———————————————————————————————
+# TEMPÉRATURES DE LIVRAISON (sheet)
 # ———————————————————————————————
 def get_livraison_temp_ws():
-    """Retourne la feuille 'Livraison Température' dans le fichier commandes/HACCP."""
+    headers_target = [
+        "Produit",
+        "Température départ (°C)",
+        "Horodatage départ",
+        "Température réception (°C)",
+        "Dénomination GEP",
+        "Résultat réception",
+        "Lien photo",
+    ]
     try:
         ws = ss_cmd.worksheet("Livraison Température")
     except WorksheetNotFound:
-        ws = ss_cmd.add_worksheet("Livraison Température", rows=1000, cols=4)
-        ws.update(
-            "A1:D1",
-            [[
-                "Produit",
-                "Température départ (°C)",
-                "Horodatage départ",
-                "Température réception (°C)",
-            ]],
-        )
+        ws = ss_cmd.add_worksheet("Livraison Température", rows=1000, cols=len(headers_target))
+        ws.update("A1", [headers_target])
+        return ws
+
+    try:
+        existing = ws.get_all_values()
+        if not existing:
+            ws.update("A1", [headers_target])
+            return ws
+
+        current_header = existing[0]
+        if current_header != headers_target:
+            new_header = headers_target
+            new_values = [new_header]
+            for row in existing[1:]:
+                row = row + [""] * (len(new_header) - len(row))
+                new_values.append(row[: len(new_header)])
+            ws.clear()
+            ws.update("A1", new_values)
+    except Exception:
+        pass
+
     return ws
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_livraison_temp_df():
-    """
-    Charge la feuille 'Livraison Température' en conservant les valeurs
-    EXACTEMENT comme elles sont dans le sheet (texte) pour ne pas perdre
-    les virgules (2,7 -> 27, etc.).
-    """
     ws = get_livraison_temp_ws()
     values = ws.get_all_values()
-    if not values or len(values) < 2:
-        return pd.DataFrame(
-            columns=[
+
+    if not values:
+        header = ws.row_values(1)
+        if not header:
+            header = [
                 "Produit",
                 "Température départ (°C)",
                 "Horodatage départ",
                 "Température réception (°C)",
+                "Dénomination GEP",
+                "Résultat réception",
+                "Lien photo",
             ]
-        )
+        return pd.DataFrame(columns=header)
+
+    if len(values) == 1:
+        header = values[0]
+        return pd.DataFrame(columns=header)
 
     header = values[0]
     rows   = values[1:]
     df = pd.DataFrame(rows, columns=header)
-
     return df
 
 # ———————————————————————————————
-# LISTE PRODUITS & JOURS_FR & NAV
+# VITRINE – OUTILS COMMUNS
 # ———————————————————————————————
-produits_list = sorted(set(p.strip().capitalize() for p in sheet_prod.col_values(1) if p.strip()))
-JOURS_FR = {"Monday":"Lundi","Tuesday":"Mardi","Wednesday":"Mercredi","Thursday":"Jeudi","Friday":"Vendredi","Saturday":"Samedi","Sunday":"Dimanche"}
-
-# ➕ insérer Dashboard en premier + nouvel onglet Température livraison + Objectifs CA
-onglets = [
-    "🏠 Dashboard",
-    "🌡️ Relevé des températures",
-    "🚚 Température livraison",
-    "🧼 Hygiène",
-    "🧊 Stockage Frigo",
-    "📋 Protocoles",
-    "📊 Objectifs Chiffres d'affaires",
-    "📅 Planning",
-    "🖥️ Vitrine",
-    "🛎️ Ruptures & Commandes",
-    "🧾 Contrôle Hygiène",
-    "🔗 Liens Google Sheets",
-]
-choix = st.sidebar.radio("Navigation", onglets)
-
-# ———————————————————————————————
-# OUTILS COMMUNS VITRINE (alertes & normalisation)
-# ———————————————————————————————
-def normalize_col(c: str) -> str:
-    nfkd = unicodedata.normalize("NFKD", c)
-    return (nfkd.encode("ascii", "ignore").decode().strip().lower().replace(" ", "_"))
-
 def vitrine_df_norm_active(raw=None):
     if raw is None:
         raw = sheet_vitrine.get_all_values()
@@ -435,7 +569,6 @@ def df_dlc_alerts(raw=None):
     return depassee[base_cols], dujour[base_cols]
 
 def style_dlc_alert(df: pd.DataFrame):
-    # fond rouge #b71c1c, texte noir
     def styler(_):
         return ["background-color: #b71c1c; color: black;"] * len(df.columns)
     return df.style.apply(styler, axis=1)
@@ -443,8 +576,12 @@ def style_dlc_alert(df: pd.DataFrame):
 # ———————————————————————————————
 # DASHBOARD
 # ———————————————————————————————
+JOURS_FR = {
+    "Monday":"Lundi","Tuesday":"Mardi","Wednesday":"Mercredi",
+    "Thursday":"Jeudi","Friday":"Vendredi","Saturday":"Samedi","Sunday":"Dimanche"
+}
+
 def _compose_responsable_from_row(row, candidates=("responsable","nom","nom_1","nom1","nom_2","nom2")) -> str | None:
-    """Construit 'Nom' ou 'Nom & Nom 2' selon les colonnes présentes et non vides (après normalisation)."""
     names = []
     for c in candidates:
         if c in row.index:
@@ -453,7 +590,6 @@ def _compose_responsable_from_row(row, candidates=("responsable","nom","nom_1","
                 names.append(v)
     if not names:
         return None
-    # déduplication en conservant l’ordre
     unique = []
     for n in names:
         if n not in unique:
@@ -465,26 +601,22 @@ def render_dashboard():
     today = date.today()
     iso_year, semaine_iso, _ = today.isocalendar()
 
-    # ——— Responsable de la semaine (plein écran en haut)
+    # Responsable de la semaine
     st.subheader("👤 Responsable de la semaine")
     resp_nom = "—"
     try:
-        # 1) Lecture du Google Sheet "Responsables semaine" (1ère feuille)
         titles = ws_titles(SHEET_RESP_ID)
         raw = ws_values(SHEET_RESP_ID, titles[0]) if titles else []
 
         if len(raw) >= 2:
-            # Normalisation des en-têtes
             cols_norm = [normalize_col(c) for c in raw[0]]
             df = pd.DataFrame(raw[1:], columns=cols_norm)
 
-            # Harmonisation éventuelle des noms de colonnes de dates
             if "date_debut" not in df.columns and "debut" in df.columns:
                 df["date_debut"] = df["debut"]
             if "date_fin" not in df.columns and "fin" in df.columns:
                 df["date_fin"] = df["fin"]
 
-            # ✦ Cas A : par n° de semaine
             if "semaine" in df.columns and resp_nom == "—":
                 def _parse_week(v):
                     m = re.search(r"\d+", str(v))
@@ -499,7 +631,6 @@ def render_dashboard():
                     if who:
                         resp_nom = who
 
-            # ✦ Cas B : par plage de dates (date_debut / date_fin + Nom / Nom 2)
             if resp_nom == "—" and ("date_debut" in df.columns and "date_fin" in df.columns):
                 ddeb = pd.to_datetime(df["date_debut"], errors="coerce", dayfirst=True)
                 dfin = pd.to_datetime(df["date_fin"],   errors="coerce", dayfirst=True)
@@ -521,7 +652,6 @@ def render_dashboard():
     except Exception:
         pass
 
-    # Fallback Planning si rien trouvé
     if resp_nom == "—":
         try:
             titres = [w.title for w in ss_planning.worksheets() if w.title.lower().startswith("semaine")]
@@ -546,10 +676,9 @@ def render_dashboard():
 
     st.markdown("---")
 
-    # ——— Rappels Températures & Hygiène (côte à côte)
+    # Températures & Hygiène
     col_temp, col_hyg = st.columns(2)
 
-    # Températures – Aujourd’hui
     with col_temp:
         st.subheader("🌡️ Températures – Aujourd’hui")
         candidates = [f"Semaine {semaine_iso} {iso_year}", f"Semaine {semaine_iso}"]
@@ -589,7 +718,6 @@ def render_dashboard():
                     else:
                         st.error("À faire – colonnes incomplètes : " + ", ".join(missing_cols))
 
-    # Hygiène – Quotidien
     with col_hyg:
         st.subheader("🧼 Hygiène – Quotidien (Aujourd’hui)")
         try:
@@ -619,7 +747,6 @@ def render_dashboard():
 
     st.markdown("---")
 
-    # ——— Alertes DLC (en dessous)
     st.subheader("⚠️ Alertes DLC – Vitrine")
     raw_vitrine = ws_values(SHEET_COMMANDES_ID, "Vitrine")
     depassee, dujour = df_dlc_alerts(raw_vitrine)
@@ -638,25 +765,42 @@ def render_dashboard():
             st.dataframe(style_dlc_alert(dujour), use_container_width=True)
 
 # ———————————————————————————————
+# NAVIGATION
+# ———————————————————————————————
+onglets = [
+    "🏠 Dashboard",
+    "🌡️ Relevé des températures",
+    "🚚 Température livraison",
+    "🧼 Hygiène",
+    "🧊 Stockage Frigo",
+    "📋 Protocoles",
+    "📊 Objectifs Chiffres d'affaires",
+    "📅 Planning",
+    "🖥️ Vitrine",
+    "🛎️ Ruptures & Commandes",
+    "🧾 Contrôle Hygiène",
+    "🔗 Liens Google Sheets",
+]
+choix = st.sidebar.radio("Navigation", onglets)
+
+# ———————————————————————————————
 # ONGLET : Dashboard
 # ———————————————————————————————
 if choix == "🏠 Dashboard":
     render_dashboard()
 
 # ———————————————————————————————
-# ONGLET : Relevé des températures (chambre froide / frigos)
+# ONGLET : Relevé des températures
 # ———————————————————————————————
 elif choix == "🌡️ Relevé des températures":
     st.header("🌡️ Relevé des températures")
 
-    # 1) Choix de la date
     jour = st.date_input(
         "🗓️ Sélectionner la date",
         value=date.today(),
         key="rt_jour"
     )
 
-    # 2) Ouvrir (ou créer) la feuille correspondante (année ISO)
     iso_year, iso_week, _ = jour.isocalendar()
     nom_ws = f"Semaine {iso_week} {iso_year}"
     try:
@@ -668,20 +812,17 @@ elif choix == "🌡️ Relevé des températures":
             ss_temp.duplicate_sheet(source_sheet_id=model.id, new_sheet_name=nom_ws)
         st.stop()
 
-    # 3) Charger les données brutes + en-tête
     raw       = ws.get_all_values()
     header    = [h.strip() for h in raw[0]]
     df_temp   = pd.DataFrame(raw[1:], columns=header)
     frigos    = df_temp.iloc[:, 0].tolist()
 
-    # 4) Choix Matin/Soir
     moment = st.selectbox(
         "🕒 Moment du relevé",
         ["Matin", "Soir"],
         key="rt_moment"
     )
 
-    # 5) Formulaire de saisie
     with st.form("rt_form"):
         saisies = {
             f: st.text_input(f"Température {f}", key=f"rt_temp_{f}")
@@ -718,209 +859,361 @@ elif choix == "🌡️ Relevé des températures":
 # ———————————————————————————————
 elif choix == "🚚 Température livraison":
     st.header("🚚 Température de livraison (cuisine → corner)")
-    st.caption("Saisir les températures au départ cuisine, puis compléter la réception au corner.")
+    st.caption("Saisir les températures au départ (cuisine) ou à réception (corner), selon le poste.")
 
-    # ———————————————————————————————
-    # 1) SAISIE RAPIDE DES TEMPÉRATURES DE DÉPART (CUISINE)
-    # ———————————————————————————————
-    if not produits_list:
-        st.error("Impossible de charger la liste des produits Yorgios.")
-    else:
-        produits_choisis = st.multiselect(
-            "Produits à contrôler au départ (cuisine)",
-            options=produits_list,
-            key="liv_prods_multi",
-            help="Tape quelques lettres pour filtrer rapidement.",
+    mode_liv = st.radio(
+        "Lieu d’utilisation",
+        ["Cuisine – départ", "Corner – réception"],
+        horizontal=True,
+        key="liv_mode"
+    )
+
+    # ——————————— MODE CUISINE : UNIQUEMENT FORMULAIRE DE DÉPART, SANS GOOGLE SHEETS ———————————
+    if mode_liv == "Cuisine – départ":
+        st.subheader("Produits à contrôler au départ (cuisine)")
+        st.caption(
+            "Choisissez un produit dans la liste, saisissez la température de départ, "
+            "cliquez sur « ➕ Ajouter ». Une fois tous les produits saisis, "
+            "cliquez sur « ✅ Enregistrer les relevés de départ » pour envoyer vers Google Sheets."
         )
 
-        if produits_choisis:
-            with st.form("form_livraison_batch"):
-                lignes = []
-                st.markdown("#### Relevés départ (cuisine)")
-                for i, prod in enumerate(produits_choisis):
-                    c1, c2, c3 = st.columns([3, 2, 2])
-                    with c1:
-                        st.markdown(f"**{prod}**")
-                    with c2:
-                        t_dep = st.text_input(
-                            "Départ (°C)",
-                            key=f"liv_dep_{i}",
-                            label_visibility="collapsed",
-                            placeholder="ex : 3,5",
-                        )
-                    with c3:
-                        t_rec = st.text_input(
-                            "Réception (°C)",
-                            key=f"liv_rec_{i}",
-                            label_visibility="collapsed",
-                            placeholder="optionnel (si connu)",
-                        )
-                    lignes.append((prod, t_dep, t_rec))
+        if not livraison_produits_list:
+            st.error("Impossible de charger la liste des produits Yorgios avec Dénomination GEP.")
+        else:
+            # Buffer local tant que rien n’est envoyé
+            if "liv_depart_buffer" not in st.session_state:
+                st.session_state["liv_depart_buffer"] = []
 
-                submitted = st.form_submit_button("✅ Enregistrer tous les relevés de départ")
+            col1, col2, col3 = st.columns([2, 1, 1])
+            with col1:
+                prod = st.selectbox(
+                    "Produit",
+                    options=[""] + livraison_produits_list,
+                    key="liv_depart_prod"
+                )
+            with col2:
+                # pas de key → pas d’erreur session_state, champ vidé à chaque rerun
+                temp_dep = st.text_input(
+                    "Température départ (°C)",
+                    value="",
+                    placeholder="ex : 3,8"
+                )
+            with col3:
+                add_clicked = st.button("➕ Ajouter", key="liv_depart_add")
 
-            if submitted:
-                horodatage = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                lignes_a_ecrire = []
+            if add_clicked:
+                prod_clean = str(prod or "").strip()
+                temp_str_raw = str(temp_dep or "").strip().replace(" ", "")
+                dep_txt = temp_str_raw.replace(".", ",")
 
-                for prod, t_dep_str, t_rec_str in lignes:
-                    t_dep_str = (t_dep_str or "").strip().replace(" ", "")
-                    t_rec_str = (t_rec_str or "").strip().replace(" ", "")
-
-                    # on ignore les lignes sans température de départ
-                    if not t_dep_str:
-                        continue
-
-                    # normalise en texte avec virgule (2,1) pour éviter les soucis de décimales
-                    dep_txt = t_dep_str.replace(".", ",")
-                    if not re.match(r"^-?\d+(,\d+)?$", dep_txt):
-                        st.error(f"Température départ invalide pour « {prod} » (valeur : {t_dep_str}). Utilise par ex. 3,5")
-                        st.stop()
-
-                    rec_txt = ""
-                    if t_rec_str:
-                        rec_txt_tmp = t_rec_str.replace(".", ",")
-                        if not re.match(r"^-?\d+(,\d+)?$", rec_txt_tmp):
-                            st.error(f"Température réception invalide pour « {prod} » (valeur : {t_rec_str}). Utilise par ex. 3,5")
-                            st.stop()
-                        rec_txt = rec_txt_tmp
-
-                    # on stocke les températures en TEXTE (avec virgule) dans le sheet
-                    lignes_a_ecrire.append([prod, dep_txt, horodatage, rec_txt])
-
-                if not lignes_a_ecrire:
-                    st.error("Aucune ligne complète à enregistrer (remplis au moins les températures départ).")
+                if not prod_clean:
+                    st.error("Choisissez un produit avant d’ajouter.")
+                elif not temp_str_raw:
+                    st.error("Saisissez la température de départ.")
+                elif not re.match(r"^-?\d+(,\d+)?$", dep_txt):
+                    st.error("Température de départ invalide. Exemple attendu : 3,8")
                 else:
+                    st.session_state["liv_depart_buffer"].append(
+                        {
+                            "Produit": prod_clean,
+                            "Température départ (°C)": dep_txt,
+                        }
+                    )
+                    st.success(f"Ligne ajoutée : {prod_clean} ({dep_txt}°C)")
+
+            buffer = st.session_state["liv_depart_buffer"]
+
+            if buffer:
+                st.markdown("#### Lignes en attente d’enregistrement")
+                df_buffer = pd.DataFrame(buffer)
+                st.table(df_buffer)
+
+                # Rappels GEP pour les produits déjà saisis
+                produits_buf = sorted({entry["Produit"] for entry in buffer})
+                with st.expander("ℹ️ Rappels GEP et seuils de températures pour les produits saisis"):
+                    for p in produits_buf:
+                        denom = PROD_GEP_MAPPING.get(p, "")
+                        rule = get_gep_rule(denom) if denom else None
+                        if denom and rule:
+                            st.write(
+                                f"- **{p}** → {denom} : "
+                                f"{rule['min']}°C à {rule['max']}°C "
+                                f"(max tolérée {rule['max_tol']}°C)"
+                            )
+                        elif denom:
+                            st.write(f"- **{p}** → {denom}")
+                        else:
+                            st.write(f"- **{p}** : catégorie GEP non trouvée dans la liste produits.")
+
+                if st.button("✅ Enregistrer les relevés de départ", key="liv_depart_save"):
                     try:
                         ws_lt = get_livraison_temp_ws()
-                        for row in lignes_a_ecrire:
-                            ws_lt.append_row(row, value_input_option="USER_ENTERED")
-                        load_livraison_temp_df.clear()
-                        st.success(f"{len(lignes_a_ecrire)} relevé(s) de livraison enregistré(s).")
+                        headers = ws_lt.row_values(1)
+                        horodatage = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                        lignes = []
+                        recap_rows = []
+                        for entry in buffer:
+                            prod_clean = entry["Produit"]
+                            dep_txt = entry["Température départ (°C)"]
+
+                            denom = PROD_GEP_MAPPING.get(prod_clean, "")
+                            row_dict = {
+                                "Produit": prod_clean,
+                                "Température départ (°C)": dep_txt,
+                                "Horodatage départ": horodatage,
+                                "Dénomination GEP": denom,
+                                "Température réception (°C)": "",
+                                "Résultat réception": "",
+                                "Lien photo": "",
+                            }
+                            lignes.append([str(row_dict.get(h, "")) for h in headers])
+
+                            rule = get_gep_rule(denom) if denom else None
+                            recap_rows.append(
+                                {
+                                    "Produit": prod_clean,
+                                    "Dénomination GEP": denom or "(non trouvée)",
+                                    "Température départ (°C)": dep_txt,
+                                    "Plage cible (°C)": (
+                                        f"{rule['min']} à {rule['max']} (tol. {rule['max_tol']})"
+                                        if rule else "-"
+                                    ),
+                                }
+                            )
+
+                        if not lignes:
+                            st.error("Aucune ligne à enregistrer. Ajoutez au moins un produit.")
+                        else:
+                            ws_lt.append_rows(lignes, value_input_option="USER_ENTERED")
+                            load_livraison_temp_df.clear()
+                            st.success(f"{len(lignes)} relevé(s) de départ enregistrés dans Google Sheets.")
+
+                            if recap_rows:
+                                st.markdown("#### Récapitulatif des catégories GEP et seuils")
+                                st.dataframe(
+                                    pd.DataFrame(recap_rows),
+                                    use_container_width=True
+                                )
+
+                            # on vide le buffer une fois que tout est envoyé
+                            st.session_state["liv_depart_buffer"] = []
                     except Exception as e:
                         st.error(f"Erreur lors de l’enregistrement dans Google Sheets : {e}")
+            else:
+                st.info("Aucune ligne en attente. Ajoutez un produit et une température pour commencer.")
 
-    # ———————————————————————————————
-    # 2) COMPLÉTER LES TEMPÉRATURES DE RÉCEPTION (CORNER)
-    # ———————————————————————————————
-    st.markdown("---")
-    st.subheader("Compléter les températures de réception (corner)")
+    # ——————————— MODE CORNER : RÉCEPTION + TABLEAU JOUR + HISTORIQUE ———————————
+    else:  # Corner – réception
+        st.subheader("À compléter au corner – livraisons du jour sans température de réception")
 
-    df_liv = load_livraison_temp_df()
-    if df_liv.empty:
-        st.info("Aucun relevé de livraison pour l’instant.")
-    else:
-        # Conversion de l’horodatage pour filtrer sur aujourd’hui
-        if "Horodatage départ" in df_liv.columns:
-            df_liv["Horodatage départ"] = pd.to_datetime(
-                df_liv["Horodatage départ"], errors="coerce"
-            )
+        df_liv = load_livraison_temp_df()
+        if df_liv.empty:
+            st.info("Aucune livraison à compléter pour l’instant.")
         else:
-            st.warning("Colonne 'Horodatage départ' manquante dans le sheet Livraison Température.")
-            df_liv["Horodatage départ"] = pd.NaT
-
-        # Numéro de ligne Google Sheets (2 = 1ère ligne de données)
-        df_liv["__row__"] = range(2, 2 + len(df_liv))
-
-        col_recep = "Température réception (°C)"
-        if col_recep not in df_liv.columns:
-            st.warning(f"Colonne « {col_recep} » introuvable dans le sheet Livraison Température.")
-            df_edit = pd.DataFrame()
-        else:
-            mask_no_recep = df_liv[col_recep].astype(str).str.strip().isin(["", "nan", "None"])
-            today_dt = date.today()
-            mask_today = df_liv["Horodatage départ"].dt.date == today_dt
-            df_edit = df_liv[mask_no_recep & mask_today].copy()
-
-        if df_edit.empty:
-            st.info("Aucune livraison du jour à compléter (toutes les températures de réception sont saisies ou aucune livraison enregistrée aujourd’hui).")
-        else:
-            # Trier par heure de départ la plus récente
-            df_edit = df_edit.sort_values("Horodatage départ", ascending=False)
-
-            with st.form("form_livraison_recep"):
-                updates = []
-
-                st.caption("Complète uniquement la colonne réception (°C) pour les livraisons du jour.")
-                for _, row in df_edit.iterrows():
-                    produit = str(row.get("Produit", ""))
-                    t_dep   = row.get("Température départ (°C)", "")
-                    h_dep   = row.get("Horodatage départ", pd.NaT)
-                    h_txt   = h_dep.strftime("%H:%M") if pd.notna(h_dep) else ""
-
-                    c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
-                    with c1:
-                        st.markdown(f"**{produit}**")
-                    with c2:
-                        st.markdown(f"Départ : `{t_dep}` °C")
-                    with c3:
-                        st.markdown(f"Départ : {h_txt}")
-                    with c4:
-                        inp = st.text_input(
-                            "Réception (°C)",
-                            key=f"liv_recep_{int(row['__row__'])}",
-                            label_visibility="collapsed",
-                            placeholder="ex : 3,8",
-                            value="",
-                        )
-                        updates.append((int(row["__row__"]), produit, inp))
-
-                submitted_recep = st.form_submit_button("✅ Enregistrer les températures de réception")
-
-            if submitted_recep:
-                try:
-                    ws_lt = get_livraison_temp_ws()
-                    headers = ws_lt.row_values(1)
-                    try:
-                        col_idx_recep = headers.index(col_recep) + 1
-                    except ValueError:
-                        # fallback : 4ème colonne si le nom a été modifié
-                        col_idx_recep = 4
-
-                    n_ok = 0
-                    for row_idx, prod, val_str in updates:
-                        val_str = (val_str or "").strip().replace(" ", "")
-                        if not val_str:
-                            continue  # on ignore les lignes non remplies
-
-                        rec_txt = val_str.replace(".", ",")
-                        if not re.match(r"^-?\d+(,\d+)?$", rec_txt):
-                            st.error(f"Valeur de réception invalide pour « {prod} » : {val_str}. Utilise par ex. 3,8")
-                            st.stop()
-
-                        # on stocke la valeur avec virgule en texte
-                        ws_lt.update_cell(row_idx, col_idx_recep, rec_txt)
-                        n_ok += 1
-
-                    if n_ok > 0:
-                        load_livraison_temp_df.clear()
-                        st.success(f"{n_ok} température(s) de réception enregistrée(s).")
-                    else:
-                        st.info("Aucune valeur de réception renseignée, rien à enregistrer.")
-                except Exception as e:
-                    st.error(f"Erreur lors de la mise à jour des températures de réception : {e}")
-
-    # ———————————————————————————————
-    # 3) HISTORIQUE (OPTIONNEL, POUR CONSULTATION UNIQUEMENT)
-    # ———————————————————————————————
-    st.markdown("---")
-    afficher_hist = st.checkbox("Afficher l’historique complet des relevés de livraison", value=False)
-    if afficher_hist:
-        df_liv_full = load_livraison_temp_df()
-        st.subheader("Historique des relevés de livraison")
-        if df_liv_full.empty:
-            st.info("Aucun relevé de température de livraison pour l’instant.")
-        else:
-            if "Horodatage départ" in df_liv_full.columns:
-                df_liv_full["Horodatage départ"] = pd.to_datetime(
-                    df_liv_full["Horodatage départ"], errors="coerce"
+            if "Horodatage départ" not in df_liv.columns:
+                st.warning("Colonne 'Horodatage départ' manquante dans le sheet Livraison Température.")
+                df_edit_corner = pd.DataFrame()
+            else:
+                df_liv["Horodatage départ"] = pd.to_datetime(
+                    df_liv["Horodatage départ"], errors="coerce"
                 )
-                df_liv_full = df_liv_full.sort_values(
-                    "Horodatage départ", ascending=False
-                ).reset_index(drop=True)
-            st.dataframe(df_liv_full, use_container_width=True)
+                df_liv["__row__"] = range(2, 2 + len(df_liv))
 
-# —————————————— ONGLET “🧼 Hygiène” (inchangé) ——————————————
+                today_dt = date.today()
+                mask_today = df_liv["Horodatage départ"].dt.date == today_dt
+
+                col_recep = "Température réception (°C)"
+                if col_recep not in df_liv.columns:
+                    st.warning(f"Colonne « {col_recep} » introuvable dans le sheet Livraison Température.")
+                    df_edit_corner = pd.DataFrame()
+                else:
+                    mask_no_recep = df_liv[col_recep].astype(str).str.strip().isin(["", "nan", "None"])
+                    df_edit_corner = df_liv[mask_today & mask_no_recep].copy()
+
+            if df_edit_corner.empty:
+                st.success("Toutes les températures de réception du jour sont saisies ✅.")
+            else:
+                df_edit_corner = df_edit_corner.sort_values("Horodatage départ", ascending=False)
+
+                with st.form("form_livraison_recep"):
+                    updates = []
+                    st.caption("Pour chaque ligne, renseigne la température à réception et, si besoin, ajoute une photo preuve.")
+
+                    for _, row in df_edit_corner.iterrows():
+                        produit = str(row.get("Produit", ""))
+                        t_dep = row.get("Température départ (°C)", "")
+                        h_dep = row.get("Horodatage départ", pd.NaT)
+                        h_txt = h_dep.strftime("%H:%M") if pd.notna(h_dep) else ""
+                        denom = row.get("Dénomination GEP", "") or PROD_GEP_MAPPING.get(produit, "")
+                        rule = GEP_RULES.get(_norm_gep_key(denom)) if denom else None
+
+                        key_suffix = int(row["__row__"])
+
+                        with st.expander(f"{produit} — départ {t_dep}°C à {h_txt}", expanded=True):
+                            if denom:
+                                if rule:
+                                    st.caption(
+                                        f"Catégorie GEP : {denom} — "
+                                        f"{rule['min']}°C à {rule['max']}°C "
+                                        f"(max tolérée {rule['max_tol']}°C)"
+                                    )
+                                else:
+                                    st.caption(f"Catégorie GEP : {denom}")
+
+                            temp_input = st.text_input(
+                                "Température réception (°C)",
+                                key=f"liv_recep_{key_suffix}",
+                                placeholder="ex : 3,8",
+                            )
+                            photo_file = st.file_uploader(
+                                "📷 Photo (optionnelle)",
+                                type=["jpg", "jpeg", "png"],
+                                key=f"liv_photo_{key_suffix}",
+                                help="Sur mobile, le bouton permet souvent 'Prendre une photo' ou 'Photothèque'.",
+                            )
+
+                            updates.append(
+                                {
+                                    "row_idx": key_suffix,
+                                    "produit": produit,
+                                    "denom": denom,
+                                    "horodatage": h_dep,
+                                    "temp_recep_txt": temp_input,
+                                    "photo_file": photo_file,
+                                }
+                            )
+
+                    submitted_recep = st.form_submit_button("✅ Enregistrer les températures de réception")
+
+                if submitted_recep:
+                    try:
+                        ws_lt = get_livraison_temp_ws()
+                        headers = ws_lt.row_values(1)
+
+                        def _col_idx(name, default_idx):
+                            try:
+                                return headers.index(name) + 1
+                            except ValueError:
+                                return default_idx
+
+                        col_idx_recep = _col_idx("Température réception (°C)", 4)
+                        col_idx_gep = _col_idx("Dénomination GEP", 5)
+                        col_idx_result = _col_idx("Résultat réception", 6)
+                        col_idx_photo = _col_idx("Lien photo", 7)
+
+                        n_ok = 0
+                        for upd in updates:
+                            val_str = (upd["temp_recep_txt"] or "").strip().replace(" ", "")
+                            if not val_str:
+                                continue
+
+                            rec_txt = val_str.replace(".", ",")
+                            if not re.match(r"^-?\d+(,\d+)?$", rec_txt):
+                                st.error(
+                                    f"Valeur de réception invalide pour « {upd['produit']} » : {val_str}. "
+                                    f"Utilise par ex. 3,8"
+                                )
+                                st.stop()
+
+                            ws_lt.update_cell(upd["row_idx"], col_idx_recep, rec_txt)
+
+                            denom = upd["denom"] or PROD_GEP_MAPPING.get(upd["produit"], "")
+                            if denom:
+                                ws_lt.update_cell(upd["row_idx"], col_idx_gep, denom)
+                                res_txt = compute_reception_result(rec_txt, denom)
+                                if res_txt:
+                                    ws_lt.update_cell(upd["row_idx"], col_idx_result, res_txt)
+
+                            if upd["photo_file"] is not None:
+                                lien = upload_livraison_photo(
+                                    upd["photo_file"],
+                                    upd["produit"],
+                                    upd["horodatage"],
+                                )
+                                if lien:
+                                    ws_lt.update_cell(upd["row_idx"], col_idx_photo, lien)
+
+                            n_ok += 1
+
+                        if n_ok > 0:
+                            load_livraison_temp_df.clear()
+                            st.success(f"{n_ok} température(s) de réception enregistrée(s).")
+                        else:
+                            st.info("Aucune valeur de réception renseignée, rien à enregistrer.")
+                    except Exception as e:
+                        st.error(f"Erreur lors de la mise à jour des températures de réception : {e}")
+
+        # 3) TABLEAU DU JOUR – DÉPART & RÉCEPTION
+        st.markdown("---")
+        st.subheader("Tableau du jour – départ & réception")
+
+        df_liv_today = load_livraison_temp_df()
+        if df_liv_today.empty:
+            st.info("Aucun relevé de livraison pour l’instant.")
+        else:
+            if "Horodatage départ" in df_liv_today.columns:
+                df_liv_today["Horodatage départ"] = pd.to_datetime(
+                    df_liv_today["Horodatage départ"], errors="coerce"
+                )
+                today_dt2 = date.today()
+                mask_today2 = df_liv_today["Horodatage départ"].dt.date == today_dt2
+                df_today = df_liv_today[mask_today2].copy()
+            else:
+                df_today = df_liv_today.copy()
+
+            if df_today.empty:
+                st.info("Aucune livraison enregistrée aujourd’hui.")
+            else:
+                if (
+                    "Température réception (°C)" in df_today.columns
+                    and "Dénomination GEP" in df_today.columns
+                ):
+                    def _compute_res(row):
+                        existing = str(row.get("Résultat réception", "")).strip()
+                        if existing:
+                            return existing
+                        return compute_reception_result(
+                            row["Température réception (°C)"],
+                            row["Dénomination GEP"],
+                        )
+                    df_today["Résultat réception"] = df_today.apply(_compute_res, axis=1)
+
+                cols_to_show = [
+                    c
+                    for c in [
+                        "Produit",
+                        "Dénomination GEP",
+                        "Température départ (°C)",
+                        "Température réception (°C)",
+                        "Résultat réception",
+                    ]
+                    if c in df_today.columns
+                ]
+                st.dataframe(
+                    df_today[cols_to_show],
+                    use_container_width=True,
+                )
+
+        # 4) HISTORIQUE COMPLET
+        st.markdown("---")
+        afficher_hist = st.checkbox("Afficher l’historique complet des relevés de livraison", value=False)
+        if afficher_hist:
+            df_liv_full = load_livraison_temp_df()
+            st.subheader("Historique des relevés de livraison")
+            if df_liv_full.empty:
+                st.info("Aucun relevé de température de livraison pour l’instant.")
+            else:
+                if "Horodatage départ" in df_liv_full.columns:
+                    df_liv_full["Horodatage départ"] = pd.to_datetime(
+                        df_liv_full["Horodatage départ"], errors="coerce"
+                    )
+                    df_liv_full = df_liv_full.sort_values(
+                        "Horodatage départ", ascending=False
+                    ).reset_index(drop=True)
+                st.dataframe(df_liv_full, use_container_width=True)
+
+# —————————————— ONGLET “🧼 Hygiène” ——————————————
 elif choix == "🧼 Hygiène":
     st.header("🧼 Relevé Hygiène – Aujourd’hui")
     typ = st.selectbox("📋 Type de tâches", ["Quotidien", "Hebdomadaire", "Mensuel"], key="hyg_type")
@@ -986,7 +1279,7 @@ elif choix == "🧼 Hygiène":
         except Exception as e:
             st.error(f"❌ Erreur lors de la mise à jour du Google Sheet : {e}")
 
-# ——— ONGLET PROTOCOLES (inchangé, mais lecture par API HTTP) ———
+# ——— ONGLET PROTOCOLES ———
 elif choix == "📋 Protocoles":
     st.header("📋 Protocoles opérationnels")
 
@@ -1025,7 +1318,7 @@ elif choix == "📋 Protocoles":
     except Exception as e:
         st.error(f"❌ Impossible de charger « {choix_proto} » depuis Drive : {e}")
 
-# ——— ONGLET OBJECTIFS CHIFFRES D’AFFAIRES (consultation) ———
+# ——— ONGLET OBJECTIFS CHIFFRES D’AFFAIRES ———
 elif choix == "📊 Objectifs Chiffres d'affaires":
     st.header("📊 Objectifs Chiffres d'affaires")
 
@@ -1033,10 +1326,9 @@ elif choix == "📊 Objectifs Chiffres d'affaires":
     if df_obj.empty:
         st.info("La feuille 'objectifs' est vide ou introuvable dans le fichier europoseidon_liaison.")
     else:
-        # On identifie les colonnes
         cols = list(df_obj.columns)
 
-        col_mois = cols[0] if cols else None  # "Objectif valeur" (mois dessous)
+        col_mois = cols[0] if cols else None
         col_ht = "HT" if "HT" in cols else (cols[1] if len(cols) > 1 else None)
         col_res = None
         for c in cols:
@@ -1049,7 +1341,6 @@ elif choix == "📊 Objectifs Chiffres d'affaires":
         if not (col_mois and col_ht and col_res):
             st.error("Impossible d’identifier les colonnes Mois / HT / Résultat dans la feuille 'objectifs'.")
         else:
-            # Conversion des montants en float
             def _to_float(x):
                 s = str(x or "").strip()
                 if not s:
@@ -1070,7 +1361,6 @@ elif choix == "📊 Objectifs Chiffres d'affaires":
                 res = row["_res_val"]
                 if ht is None or res is None:
                     return ""
-                # ✅ si le résultat atteint ou dépasse l'objectif, sinon ❌
                 return "✅" if res >= ht else "❌"
 
             df_obj["Prime"] = df_obj.apply(_prime, axis=1)
@@ -1085,13 +1375,13 @@ elif choix == "📊 Objectifs Chiffres d'affaires":
             st.caption("✅ = objectif atteint ou dépassé • ❌ = objectif non atteint (Résultat < Objectif HT)")
             st.dataframe(df_aff, use_container_width=True)
 
-# ——— ONGLET PLANNING (désactivé / en construction) ———
+# ——— ONGLET PLANNING (placeholder) ———
 elif choix == "📅 Planning":
     st.header("📅 Planning – en construction")
     st.info("Cette page est temporairement mise de côté. Nous l’intégrerons une fois la ‘Planning app’ finalisée.")
     st.caption("Le Dashboard continue de récupérer le « Responsable de la semaine » via le Google Sheet dédié / Planning existant.")
 
-# ——— ONGLET STOCKAGE FRIGO (inchangé) ———
+# ——— ONGLET STOCKAGE FRIGO ———
 elif choix == "🧊 Stockage Frigo":
     st.header("🧊 Stockage Frigo")
 
@@ -1195,11 +1485,10 @@ elif choix == "🧊 Stockage Frigo":
             save_df(ss_cmd, "Stockage Frigo", df2)
             st.success(f"« {art.strip()} » ajouté.")
 
-# ——— ONGLET VITRINE (formulaire simple + DLC auto J+3 + liste actifs + retrait 1 clic) ———
+# ——— ONGLET VITRINE ———
 elif choix == "🖥️ Vitrine":
     st.header("🖥️ Vitrine")
 
-    # === Lecture robuste de la feuille "Vitrine" ===
     raw = ws_values_safe(SHEET_COMMANDES_ID, "Vitrine")
     if not raw:
         st.warning("Feuille Vitrine vide.")
@@ -1210,20 +1499,16 @@ elif choix == "🖥️ Vitrine":
     rows = raw[1:]
     df_all = pd.DataFrame(rows, columns=cols_norm)
 
-    # Ligne Google Sheets correspondante (2 = 1ère ligne de données)
     df_all["__row__"] = range(2, 2 + len(df_all))
 
-    # Colonnes attendues minimalement
     for missing in ["produit", "date_fabrication", "dlc", "date_ajout", "date_retrait"]:
         if missing not in df_all.columns:
             df_all[missing] = ""
 
-    # === FORMULAIRE D'AJOUT ===
     st.subheader("➕ Ajouter un produit en vitrine")
 
-    # Source liste produits si dispo, sinon fallback depuis la feuille
     try:
-        options_produits = produits_list  # si déjà défini ailleurs
+        options_produits = produits_list
     except Exception:
         options_produits = sorted(
             [p for p in df_all["produit"].dropna().unique().tolist() if str(p).strip()]
@@ -1242,7 +1527,6 @@ elif choix == "🖥️ Vitrine":
     with col2:
         fab = st.date_input("Date de fabrication", value=date.today())
 
-    # DLC auto = J+3, non éditable
     dlc_calc = fab + timedelta(days=3)
     with col3:
         st.text_input("DLC (auto J+3, non éditable)", value=dlc_calc.strftime("%Y-%m-%d"), disabled=True)
@@ -1259,7 +1543,6 @@ elif choix == "🖥️ Vitrine":
             sh = _open_by_key_cached(SHEET_COMMANDES_ID)
             ws = sh.worksheet("Vitrine")
 
-            # Prépare la ligne à insérer en respectant l’ordre du header d’origine
             header_norm_map = {normalize_col(h): i for i, h in enumerate(header_raw)}
             new_vals = [""] * len(header_raw)
 
@@ -1272,7 +1555,6 @@ elif choix == "🖥️ Vitrine":
             set_if_exists("date_fabrication", fab.isoformat())
             set_if_exists("dlc", dlc_calc.isoformat())
             set_if_exists("date_ajout", date_ajout.isoformat())
-            # date_retrait laissée vide
 
             ws.append_row(new_vals, value_input_option="RAW")
             st.success("Produit ajouté en vitrine.")
@@ -1283,15 +1565,13 @@ elif choix == "🖥️ Vitrine":
 
     st.markdown("---")
 
-    # === ALERTES DLC (sur les articles actifs) ===
     st.subheader("⚠️ Alertes DLC")
-    # Actifs = pas de date_retrait
     actifs = df_all[df_all["date_retrait"].astype(str).str.strip() == ""].copy()
 
     if not actifs.empty and "dlc" in actifs.columns:
         dlc_series = pd.to_datetime(actifs["dlc"], errors="coerce")
-        today_dt = pd.Timestamp(date.today())
-        depassee = actifs[dlc_series < today_dt].copy()
+        today_dt3 = pd.Timestamp(date.today())
+        depassee = actifs[dlc_series < today_dt3].copy()
         dujour   = actifs[dlc_series.dt.date == date.today()].copy()
     else:
         depassee = pd.DataFrame()
@@ -1319,20 +1599,17 @@ elif choix == "🖥️ Vitrine":
 
     st.markdown("---")
 
-    # === LISTE DES ARTICLES ACTIFS + RETRAIT 1 CLIC ===
     st.subheader("Articles actifs")
     if actifs.empty:
         st.info("Aucun article actif en vitrine.")
         st.stop()
 
-    # Position de la colonne 'date_retrait' (1-based) dans la feuille
     try:
         col_idx_retrait = [normalize_col(h) for h in header_raw].index("date_retrait") + 1
     except ValueError:
         st.error("Colonne 'date_retrait' introuvable dans la feuille Vitrine.")
         st.stop()
 
-    # Tri par Produit (A→Z, insensible aux accents/majuscules), puis DLC croissante
     def _norm_txt(x):
         s = str(x or "").strip().lower()
         try:
@@ -1377,12 +1654,11 @@ elif choix == "🖥️ Vitrine":
                 except Exception as e:
                     st.error(f"Impossible de retirer l’article (ligne {gs_row}) : {e}")
 
-# ——— ONGLET RUPTURES ET COMMANDES (priorités + header + feature flag WhatsApp) ———
+# ——— ONGLET RUPTURES & COMMANDES ———
 elif choix == "🛎️ Ruptures & Commandes":
     st.header("🛎️ Ruptures & Commandes")
     st.write("Sélectionnez les produits par niveau de priorité puis générez le message SMS / WhatsApp.")
 
-    # Liste produits (si non dispo ailleurs, fallback depuis Vitrine)
     try:
         options_produits = produits_list
     except Exception:
@@ -1399,7 +1675,6 @@ elif choix == "🛎️ Ruptures & Commandes":
         except Exception:
             options_produits = []
 
-    # Sélections par niveau
     col_u, col_j2, col_surplus = st.columns(3)
     with col_u:
         urgence = st.multiselect("🔥 URGENCE", options=options_produits, key="rupt_urgence",
@@ -1413,10 +1688,8 @@ elif choix == "🛎️ Ruptures & Commandes":
 
     commentaire = st.text_area("📝 Commentaire / Quantités (optionnel)")
 
-    # Entête configurable (secret) + fallback
     header = st.secrets.get("RUPTURES_HEADER", "Commandes Corner")
 
-    # Construction du message (3 sections + entête)
     def _build_message(urgence_list, j2_list, surplus_list, note, header_text):
         lines = [str(header_text).strip()]
         if urgence_list:
@@ -1436,21 +1709,16 @@ elif choix == "🛎️ Ruptures & Commandes":
     st.markdown("#### 📨 Aperçu du message")
     st.code(msg, language="text")
 
-    # --------- GESTION DES SECRETS / FEATURE FLAG WHATSAPP ----------
     sms_num = str(st.secrets.get("CONTACT_SMS", "")).strip()
     wa_num  = str(st.secrets.get("CONTACT_WHATSAPP", "")).strip()
 
-    # Interprétation robuste du flag (accepte true/1/yes/on)
     wa_flag_str = str(st.secrets.get("SHOW_WHATSAPP", "")).strip().lower()
     wa_flag = wa_flag_str in ("true", "1", "yes", "on")
-
-    # Le bouton WhatsApp s'affiche SEULEMENT si flag ON ET numéro présent
     show_whatsapp = wa_flag and bool(wa_num)
 
-    cols = st.columns(2) if show_whatsapp else st.columns(1)
+    cols2 = st.columns(2) if show_whatsapp else st.columns(1)
 
-    # --- Bouton SMS ---
-    with cols[0]:
+    with cols2[0]:
         if st.button("📲 Générer SMS"):
             if not sms_num:
                 st.error("🚨 Configurez CONTACT_SMS dans vos secrets.")
@@ -1458,14 +1726,13 @@ elif choix == "🛎️ Ruptures & Commandes":
                 url = f"sms:{sms_num}?&body={urllib.parse.quote(msg)}"
                 st.markdown(f"[➡️ Ouvrir SMS]({url})")
 
-    # --- Bouton WhatsApp (affiché uniquement si autorisé) ---
     if show_whatsapp:
-        with cols[1]:
+        with cols2[1]:
             if st.button("💬 Générer WhatsApp"):
                 url = f"https://wa.me/{wa_num}?text={urllib.parse.quote(msg)}"
                 st.markdown(f"[➡️ Ouvrir WhatsApp]({url})")
 
-# ——— ONGLET CONTROLE HYGIENE (avec ajout Température livraison) ———
+# ——— ONGLET CONTROLE HYGIENE ———
 elif choix == "🧾 Contrôle Hygiène":
     st.header("🧾 Contrôle Hygiène – Visualisation & Export PDF")
 
@@ -1486,7 +1753,6 @@ elif choix == "🧾 Contrôle Hygiène":
     cle_liv  = "ch_df_liv"
 
     if st.button("🔄 Charger & Afficher les relevés"):
-        # Températures frigos
         list_temp = []
         for ws in ss_temp.worksheets():
             titre = ws.title.strip()
@@ -1506,7 +1772,6 @@ elif choix == "🧾 Contrôle Hygiène":
             )
             df_all_temp = df_all_temp.loc[mask_temp].reset_index(drop=True)
 
-        # Hygiène
         list_hyg = []
         for nom in ["Quotidien", "Hebdomadaire", "Mensuel"]:
             try:
@@ -1533,7 +1798,6 @@ elif choix == "🧾 Contrôle Hygiène":
         else:
             df_filtre = pd.DataFrame()
 
-        # Vitrine
         raw_vitrine = sheet_vitrine.get_all_records()
         if raw_vitrine:
             df_vit_full = pd.DataFrame(raw_vitrine)
@@ -1551,7 +1815,6 @@ elif choix == "🧾 Contrôle Hygiène":
         else:
             vitrine_df = pd.DataFrame()
 
-        # Températures de livraison
         try:
             df_liv = load_livraison_temp_df()
             if not df_liv.empty and "Horodatage départ" in df_liv.columns:
@@ -1637,7 +1900,7 @@ elif choix == "🧾 Contrôle Hygiène":
     else:
         st.info("Cliquez sur « 🔄 Charger & Afficher les relevés » pour voir les données puis générer le PDF.")
 
-# ——— ONGLET LIENS GOOGLE SHEETS (inchangé) ———
+# ——— ONGLET LIENS GOOGLE SHEETS ———
 elif choix == "🔗 Liens Google Sheets":
     st.header("🔗 Liens vers les Google Sheets utilisés")
 
@@ -1658,7 +1921,7 @@ elif choix == "🔗 Liens Google Sheets":
             st.link_button("🔗 Ouvrir", url)
 
 # ———————————————————————————————
-# PIED DE PAGE (inchangé)
+# PIED DE PAGE
 # ———————————————————————————————
 st.markdown(
     """
