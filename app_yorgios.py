@@ -92,10 +92,6 @@ AUTH_ENABLED = str(st.secrets.get("AUTH_ENABLED", "true")).strip().lower() in ("
 # Auth simple par mot de passe (stocké dans st.secrets["APP_PASSWORD"])
 # ——————————————————————————————————————————————
 def require_auth():
-    """
-    Si AUTH_ENABLED = false dans les secrets → pas de mot de passe.
-    Si AUTH_ENABLED = true               → écran de login classique.
-    """
     if not AUTH_ENABLED:
         return
 
@@ -149,12 +145,17 @@ require_auth()
 # ———————————————————————————————
 # AUTHENTIFICATION GOOGLE SHEETS
 # ———————————————————————————————
+@st.cache_resource
 def gsheets_client():
+    """
+    Client gspread mis en cache au niveau resource (1 seule instanciation
+    par worker Streamlit). Évite de recréer les credentials à chaque rerun.
+    """
     sa_info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
-        "https://www.googleapis.com/auth/drive.readonly"
+        "https://www.googleapis.com/auth/drive.readonly",
     ]
     creds = ServiceAccountCredentials.from_json_keyfile_dict(sa_info, scopes)
     return gspread.authorize(creds)
@@ -163,6 +164,7 @@ gc = gsheets_client()
 
 # ———————————————————————————————
 # CACHES LECTURE SHEETS
+# TTL augmentés pour limiter les appels API Google
 # ———————————————————————————————
 @st.cache_resource
 def _open_by_key_cached(key: str):
@@ -175,12 +177,12 @@ def _open_by_key_cached(key: str):
             time.sleep(0.7 * (i + 1))
     raise last_err
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300)  # 5 min — la liste des onglets change rarement
 def ws_titles(key: str):
     sh = _open_by_key_cached(key)
     return [w.title for w in sh.worksheets()]
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)  # 2 min au lieu de 60 s
 def ws_values(key: str, title: str):
     sh = _open_by_key_cached(key)
     return sh.worksheet(title).get_all_values()
@@ -209,20 +211,36 @@ def open_sheet_retry(client, key, retries=3, delay=2):
                 st.stop()
 
 # ———————————————————————————————
-# TOKEN & LECTURE PROTOCOLES DRIVE
+# TOKEN SA — mis en cache pour éviter un appel réseau à chaque requête
+# Les tokens OAuth2 de service account ont une durée de vie de ~1 h.
+# TTL = 3 000 s (50 min) pour renouveler avant l'expiration.
 # ———————————————————————————————
-def _get_sa_token(scopes=None):
+@st.cache_data(ttl=3000, show_spinner=False)
+def _get_sa_token(scopes_tuple: tuple = None) -> str:
+    """
+    Retourne un access token OAuth2 pour le service account.
+    Le paramètre est un tuple (hashable) pour être compatible avec le cache.
+    """
+    if scopes_tuple is None:
+        scopes_tuple = ("https://www.googleapis.com/auth/drive.readonly",)
+    sa_info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(sa_info, list(scopes_tuple))
+    return creds.get_access_token().access_token
+
+# Helper pour appeler _get_sa_token avec une liste de scopes
+def _get_token(scopes=None):
     if scopes is None:
         scopes = ["https://www.googleapis.com/auth/drive.readonly"]
-    sa_info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(sa_info, scopes)
-    return creds.get_access_token().access_token
+    return _get_sa_token(tuple(sorted(scopes)))
 
 def _drive_q_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'")
 
+# ———————————————————————————————
+# LECTURE PROTOCOLES DRIVE
+# ———————————————————————————————
 def read_txt_from_drive(file_name, folder_id="14Pa-svM3uF9JQtjKysP0-awxK0BDi35E"):
-    token = _get_sa_token()
+    token = _get_token()
     headers = {"Authorization": f"Bearer {token}"}
 
     name_q   = _drive_q_escape(str(file_name))
@@ -236,7 +254,7 @@ def read_txt_from_drive(file_name, folder_id="14Pa-svM3uF9JQtjKysP0-awxK0BDi35E"
         "https://www.googleapis.com/drive/v3/files",
         headers=headers,
         params=params,
-        timeout=30
+        timeout=30,
     )
     if resp.status_code != 200:
         return None
@@ -253,14 +271,14 @@ def read_txt_from_drive(file_name, folder_id="14Pa-svM3uF9JQtjKysP0-awxK0BDi35E"
             f"https://www.googleapis.com/drive/v3/files/{file_id}",
             headers=headers,
             params={"alt": "media"},
-            timeout=60
+            timeout=60,
         )
     else:
         r = requests.get(
             f"https://www.googleapis.com/drive/v3/files/{file_id}/export",
             headers=headers,
             params={"mimeType": "text/plain"},
-            timeout=60
+            timeout=60,
         )
 
     if r.status_code != 200:
@@ -268,10 +286,15 @@ def read_txt_from_drive(file_name, folder_id="14Pa-svM3uF9JQtjKysP0-awxK0BDi35E"
 
     return r.content.decode("utf-8", errors="replace")
 
+# ———————————————————————————————
+# UPLOAD PHOTO LIVRAISON → GOOGLE DRIVE
+# Corps multipart construit manuellement pour fiabiliser l'upload
+# (requests files= génère un boundary aléatoire parfois rejeté par Drive)
+# ———————————————————————————————
 def upload_livraison_photo(uploaded_file, produit: str, horodatage):
     """
     Téléverse une photo de réception dans le dossier Drive dédié.
-    Retourne un lien partageable.
+    Retourne un lien partageable ou "" en cas d'échec.
     """
     if uploaded_file is None:
         return ""
@@ -279,8 +302,11 @@ def upload_livraison_photo(uploaded_file, produit: str, horodatage):
         st.warning("Dossier Drive pour les photos de livraison non configuré (LIVRAISON_PHOTO_FOLDER_ID).")
         return ""
     try:
-        token = _get_sa_token(scopes=["https://www.googleapis.com/auth/drive"])
-        headers = {"Authorization": f"Bearer {token}"}
+        token = _get_token(scopes=[
+            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/drive.file",
+        ])
+        headers_auth = {"Authorization": f"Bearer {token}"}
 
         if isinstance(horodatage, datetime):
             ts = horodatage.strftime("%Y%m%d-%H%M%S")
@@ -290,32 +316,65 @@ def upload_livraison_photo(uploaded_file, produit: str, horodatage):
         base_name = f"{produit}-{ts}".strip().replace(" ", "_")
         base_name = re.sub(r"[^A-Za-z0-9._-]", "_", base_name)
 
-        mime_type = getattr(uploaded_file, "type", None) or "image/jpeg"
-        metadata = {
+        mime_type  = getattr(uploaded_file, "type", None) or "image/jpeg"
+        file_bytes = uploaded_file.getvalue()
+
+        # ── Corps multipart construit manuellement (boundary fixe et propre) ──
+        BOUNDARY = "yorgios_boundary_xyz_987"
+        metadata_json = json.dumps({
             "name": base_name,
             "parents": [LIVRAISON_PHOTO_FOLDER_ID],
-        }
-        files = {
-            "metadata": ("metadata", json.dumps(metadata), "application/json; charset=UTF-8"),
-            "file": (base_name, uploaded_file.getvalue(), mime_type),
+        })
+
+        body_parts = (
+            f"--{BOUNDARY}\r\n"
+            f"Content-Type: application/json; charset=UTF-8\r\n\r\n"
+            f"{metadata_json}\r\n"
+            f"--{BOUNDARY}\r\n"
+            f"Content-Type: {mime_type}\r\n\r\n"
+        ).encode("utf-8") + file_bytes + f"\r\n--{BOUNDARY}--".encode("utf-8")
+
+        upload_headers = {
+            **headers_auth,
+            "Content-Type": f"multipart/related; boundary={BOUNDARY}",
+            "Content-Length": str(len(body_parts)),
         }
 
         resp = requests.post(
             "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
-            headers=headers,
-            files=files,
-            timeout=60,
+            headers=upload_headers,
+            data=body_parts,
+            timeout=90,
         )
+
         if resp.status_code not in (200, 201):
-            st.warning(f"Échec de l’upload de la photo pour {produit} ({resp.status_code}).")
+            # Afficher le message d'erreur complet pour diagnostic
+            st.warning(
+                f"Échec upload photo pour « {produit} » — "
+                f"HTTP {resp.status_code} : {resp.text[:400]}"
+            )
             return ""
 
         file_id = resp.json().get("id")
         if not file_id:
+            st.warning(f"Upload OK mais pas d'id retourné pour « {produit} ».")
             return ""
+
+        # Rendre le fichier accessible via le lien (lecture seule, non bloquant)
+        try:
+            requests.post(
+                f"https://www.googleapis.com/drive/v3/files/{file_id}/permissions",
+                headers={**headers_auth, "Content-Type": "application/json"},
+                json={"role": "reader", "type": "anyone"},
+                timeout=15,
+            )
+        except Exception:
+            pass
+
         return f"https://drive.google.com/file/d/{file_id}/view?usp=drivesdk"
+
     except Exception as e:
-        st.warning(f"Impossible de téléverser la photo pour {produit} : {e}")
+        st.warning(f"Impossible de téléverser la photo pour « {produit} » : {e}")
         return ""
 
 # ———————————————————————————————
@@ -334,6 +393,7 @@ LIVRAISON_PHOTO_FOLDER_ID = st.secrets.get(
 ).strip()
 
 PHOTOS_LIVRAISON_FOLDER_ID = LIVRAISON_PHOTO_FOLDER_ID
+
 ss_cmd        = open_sheet_retry(gc, SHEET_COMMANDES_ID)
 sheet_haccp   = ss_cmd.worksheet("Suivi HACCP")
 sheet_vitrine = ss_cmd.worksheet("Vitrine")
@@ -383,16 +443,32 @@ def load_objectifs_df():
 
 # ———————————————————————————————
 # PRODUITS + DÉNOMINATION GEP
+# Chargement mis en cache pour éviter 2 appels API à chaque rerun
+# TTL = 1 800 s (30 min) — la liste produits change rarement en journée
 # ———————————————————————————————
 def _norm_gep_key(s: str) -> str:
     s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode("ascii")
     return s.strip().lower()
 
-try:
-    produits_records = sheet_prod.get_all_records()
-    df_produits = pd.DataFrame(produits_records)
-except Exception:
-    df_produits = pd.DataFrame()
+@st.cache_data(ttl=1800, show_spinner=False)
+def _load_produits_raw():
+    """
+    Charge les données produits depuis Google Sheets une seule fois
+    et les met en cache 30 min. Retourne (records_list, col1_values).
+    """
+    try:
+        records = sheet_prod.get_all_records()
+    except Exception:
+        records = []
+    try:
+        col1 = sheet_prod.col_values(1)
+    except Exception:
+        col1 = []
+    return records, col1
+
+_produits_records, _produits_col1 = _load_produits_raw()
+
+df_produits = pd.DataFrame(_produits_records) if _produits_records else pd.DataFrame()
 
 if not df_produits.empty:
     cols_norm = {normalize_col(c): c for c in df_produits.columns}
@@ -409,15 +485,8 @@ if not df_produits.empty:
             col_gep = cols_norm[key]
             break
 
-    if col_nom:
-        df_produits["__nom__"] = df_produits[col_nom].astype(str).str.strip()
-    else:
-        df_produits["__nom__"] = ""
-
-    if col_gep:
-        df_produits["__gep__"] = df_produits[col_gep].astype(str).str.strip()
-    else:
-        df_produits["__gep__"] = ""
+    df_produits["__nom__"] = df_produits[col_nom].astype(str).str.strip() if col_nom else ""
+    df_produits["__gep__"] = df_produits[col_gep].astype(str).str.strip() if col_gep else ""
 else:
     df_produits = pd.DataFrame(columns=["__nom__", "__gep__"])
 
@@ -429,10 +498,11 @@ PROD_GEP_MAPPING = {
 
 produits_gep_list = sorted(PROD_GEP_MAPPING.keys())
 
-try:
-    produits_list = sorted(set(p.strip() for p in sheet_prod.col_values(1) if p.strip()))
-except Exception:
-    produits_list = sorted(PROD_GEP_MAPPING.keys())
+produits_list = (
+    sorted(set(p.strip() for p in _produits_col1 if p.strip()))
+    if _produits_col1
+    else sorted(PROD_GEP_MAPPING.keys())
+)
 
 livraison_produits_list = produits_gep_list if produits_gep_list else produits_list
 
@@ -681,7 +751,7 @@ def render_dashboard():
     col_temp, col_hyg = st.columns(2)
 
     with col_temp:
-        st.subheader("🌡️ Températures – Aujourd’hui")
+        st.subheader("🌡️ Températures – Aujourd'hui")
         candidates = [f"Semaine {semaine_iso} {iso_year}", f"Semaine {semaine_iso}"]
         ws_title = None
         titres_all = ws_titles(SHEET_TEMP_ID)
@@ -720,7 +790,7 @@ def render_dashboard():
                         st.error("À faire – colonnes incomplètes : " + ", ".join(missing_cols))
 
     with col_hyg:
-        st.subheader("🧼 Hygiène – Quotidien (Aujourd’hui)")
+        st.subheader("🧼 Hygiène – Quotidien (Aujourd'hui)")
         try:
             raw = ws_values(SHEET_HYGIENE_ID, "Quotidien")
             if len(raw) < 2:
@@ -732,7 +802,7 @@ def render_dashboard():
                     st.warning("Colonne Date manquante.")
                 else:
                     if today_str not in dfh["Date"].values:
-                        st.error("À faire – aucune ligne pour aujourd’hui.")
+                        st.error("À faire – aucune ligne pour aujourd'hui.")
                     else:
                         idx = int(dfh.index[dfh["Date"] == today_str][0])
                         cols = [c for c in dfh.columns if c != "Date"]
@@ -744,7 +814,7 @@ def render_dashboard():
                             with st.expander("Voir les cases manquantes"):
                                 st.write(", ".join(not_ok))
         except Exception as e:
-            st.warning(f"Impossible de lire l’onglet Hygiène Quotidien : {e}")
+            st.warning(f"Impossible de lire l'onglet Hygiène Quotidien : {e}")
 
     st.markdown("---")
 
@@ -844,6 +914,8 @@ elif choix == "🌡️ Relevé des températures":
                 for i, f in enumerate(frigos):
                     df_temp.at[i, col_reelle] = saisies[f]
                 ws.update("A1", [header] + df_temp.values.tolist())
+                # Invalider le cache pour que le dashboard voie les nouvelles valeurs
+                ws_values.clear()
                 st.success("✅ Relevés sauvegardés.")
 
     disp = df_temp.replace("", "⛔️")
@@ -863,13 +935,13 @@ elif choix == "🚚 Température livraison":
     st.caption("Saisir les températures au départ (cuisine) ou à réception (corner), selon le poste.")
 
     mode_liv = st.radio(
-        "Lieu d’utilisation",
+        "Lieu d'utilisation",
         ["Cuisine – départ", "Corner – réception"],
         horizontal=True,
         key="liv_mode"
     )
 
-    # ——————————— MODE CUISINE : UNIQUEMENT FORMULAIRE DE DÉPART, SANS GOOGLE SHEETS ———————————
+    # ——————————— MODE CUISINE : FORMULAIRE DE DÉPART ———————————
     if mode_liv == "Cuisine – départ":
         st.subheader("Produits à contrôler au départ (cuisine)")
         st.caption(
@@ -881,7 +953,6 @@ elif choix == "🚚 Température livraison":
         if not livraison_produits_list:
             st.error("Impossible de charger la liste des produits Yorgios avec Dénomination GEP.")
         else:
-            # Buffer local tant que rien n’est envoyé
             if "liv_depart_buffer" not in st.session_state:
                 st.session_state["liv_depart_buffer"] = []
 
@@ -893,7 +964,6 @@ elif choix == "🚚 Température livraison":
                     key="liv_depart_prod"
                 )
             with col2:
-                # pas de key → pas d’erreur session_state, champ vidé à chaque rerun
                 temp_dep = st.text_input(
                     "Température départ (°C)",
                     value="",
@@ -908,7 +978,7 @@ elif choix == "🚚 Température livraison":
                 dep_txt = temp_str_raw.replace(".", ",")
 
                 if not prod_clean:
-                    st.error("Choisissez un produit avant d’ajouter.")
+                    st.error("Choisissez un produit avant d'ajouter.")
                 elif not temp_str_raw:
                     st.error("Saisissez la température de départ.")
                 elif not re.match(r"^-?\d+(,\d+)?$", dep_txt):
@@ -925,11 +995,10 @@ elif choix == "🚚 Température livraison":
             buffer = st.session_state["liv_depart_buffer"]
 
             if buffer:
-                st.markdown("#### Lignes en attente d’enregistrement")
+                st.markdown("#### Lignes en attente d'enregistrement")
                 df_buffer = pd.DataFrame(buffer)
                 st.table(df_buffer)
 
-                # Rappels GEP pour les produits déjà saisis
                 produits_buf = sorted({entry["Produit"] for entry in buffer})
                 with st.expander("ℹ️ Rappels GEP et seuils de températures pour les produits saisis"):
                     for p in produits_buf:
@@ -997,10 +1066,9 @@ elif choix == "🚚 Température livraison":
                                     use_container_width=True
                                 )
 
-                            # on vide le buffer une fois que tout est envoyé
                             st.session_state["liv_depart_buffer"] = []
                     except Exception as e:
-                        st.error(f"Erreur lors de l’enregistrement dans Google Sheets : {e}")
+                        st.error(f"Erreur lors de l'enregistrement dans Google Sheets : {e}")
             else:
                 st.info("Aucune ligne en attente. Ajoutez un produit et une température pour commencer.")
 
@@ -1010,7 +1078,7 @@ elif choix == "🚚 Température livraison":
 
         df_liv = load_livraison_temp_df()
         if df_liv.empty:
-            st.info("Aucune livraison à compléter pour l’instant.")
+            st.info("Aucune livraison à compléter pour l'instant.")
         else:
             if "Horodatage départ" not in df_liv.columns:
                 st.warning("Colonne 'Horodatage départ' manquante dans le sheet Livraison Température.")
@@ -1098,10 +1166,10 @@ elif choix == "🚚 Température livraison":
                             except ValueError:
                                 return default_idx
 
-                        col_idx_recep = _col_idx("Température réception (°C)", 4)
-                        col_idx_gep = _col_idx("Dénomination GEP", 5)
+                        col_idx_recep  = _col_idx("Température réception (°C)", 4)
+                        col_idx_gep    = _col_idx("Dénomination GEP", 5)
                         col_idx_result = _col_idx("Résultat réception", 6)
-                        col_idx_photo = _col_idx("Lien photo", 7)
+                        col_idx_photo  = _col_idx("Lien photo", 7)
 
                         n_ok = 0
                         for upd in updates:
@@ -1145,13 +1213,13 @@ elif choix == "🚚 Température livraison":
                     except Exception as e:
                         st.error(f"Erreur lors de la mise à jour des températures de réception : {e}")
 
-        # 3) TABLEAU DU JOUR – DÉPART & RÉCEPTION
+        # TABLEAU DU JOUR – DÉPART & RÉCEPTION
         st.markdown("---")
         st.subheader("Tableau du jour – départ & réception")
 
         df_liv_today = load_livraison_temp_df()
         if df_liv_today.empty:
-            st.info("Aucun relevé de livraison pour l’instant.")
+            st.info("Aucun relevé de livraison pour l'instant.")
         else:
             if "Horodatage départ" in df_liv_today.columns:
                 df_liv_today["Horodatage départ"] = pd.to_datetime(
@@ -1164,7 +1232,7 @@ elif choix == "🚚 Température livraison":
                 df_today = df_liv_today.copy()
 
             if df_today.empty:
-                st.info("Aucune livraison enregistrée aujourd’hui.")
+                st.info("Aucune livraison enregistrée aujourd'hui.")
             else:
                 if (
                     "Température réception (°C)" in df_today.columns
@@ -1191,19 +1259,16 @@ elif choix == "🚚 Température livraison":
                     ]
                     if c in df_today.columns
                 ]
-                st.dataframe(
-                    df_today[cols_to_show],
-                    use_container_width=True,
-                )
+                st.dataframe(df_today[cols_to_show], use_container_width=True)
 
-        # 4) HISTORIQUE COMPLET
+        # HISTORIQUE COMPLET
         st.markdown("---")
-        afficher_hist = st.checkbox("Afficher l’historique complet des relevés de livraison", value=False)
+        afficher_hist = st.checkbox("Afficher l'historique complet des relevés de livraison", value=False)
         if afficher_hist:
             df_liv_full = load_livraison_temp_df()
             st.subheader("Historique des relevés de livraison")
             if df_liv_full.empty:
-                st.info("Aucun relevé de température de livraison pour l’instant.")
+                st.info("Aucun relevé de température de livraison pour l'instant.")
             else:
                 if "Horodatage départ" in df_liv_full.columns:
                     df_liv_full["Horodatage départ"] = pd.to_datetime(
@@ -1214,9 +1279,9 @@ elif choix == "🚚 Température livraison":
                     ).reset_index(drop=True)
                 st.dataframe(df_liv_full, use_container_width=True)
 
-# —————————————— ONGLET “🧼 Hygiène” ——————————————
+# —————————————— ONGLET "🧼 Hygiène" ——————————————
 elif choix == "🧼 Hygiène":
-    st.header("🧼 Relevé Hygiène – Aujourd’hui")
+    st.header("🧼 Relevé Hygiène – Aujourd'hui")
     typ = st.selectbox("📋 Type de tâches", ["Quotidien", "Hebdomadaire", "Mensuel"], key="hyg_type")
 
     df_key  = f"df_hyg_{typ}"
@@ -1226,7 +1291,7 @@ elif choix == "🧼 Hygiène":
         try:
             ws = ss_hygiene.worksheet(typ)
         except Exception as e:
-            st.error(f"❌ Impossible d’ouvrir l’onglet '{typ}' : {e}")
+            st.error(f"❌ Impossible d'ouvrir l'onglet '{typ}' : {e}")
             st.stop()
 
         raw = ws.get_all_values()
@@ -1270,6 +1335,8 @@ elif choix == "🧼 Hygiène":
         try:
             ws = ss_hygiene.worksheet(typ)
             ws.update("A1", nouvelle_feuille)
+            # Invalider le cache pour que le dashboard reflète les changements
+            ws_values.clear()
             st.success("✅ Hygiène mise à jour dans Google Sheets.")
             del st.session_state[df_key]
             del st.session_state[idx_key]
@@ -1297,7 +1364,7 @@ elif choix == "📋 Protocoles":
     }
 
     choix_proto = st.selectbox(
-        "🧾 Choisir un protocole à consulter", 
+        "🧾 Choisir un protocole à consulter",
         list(fichiers.keys()),
         key="select_proto"
     )
@@ -1308,7 +1375,7 @@ elif choix == "📋 Protocoles":
             folder_id="14Pa-svM3uF9JQtjKysP0-awxK0BDi35E"
         )
         if contenu is None:
-            st.error(f"⚠️ Le fichier « {fichiers[choix_proto]} » n’a pas été trouvé dans le dossier Drive.")
+            st.error(f"⚠️ Le fichier « {fichiers[choix_proto]} » n'a pas été trouvé dans le dossier Drive.")
         else:
             texte = contenu.replace("•", "\n\n•")
             st.markdown(
@@ -1319,7 +1386,7 @@ elif choix == "📋 Protocoles":
     except Exception as e:
         st.error(f"❌ Impossible de charger « {choix_proto} » depuis Drive : {e}")
 
-# ——— ONGLET OBJECTIFS CHIFFRES D’AFFAIRES ———
+# ——— ONGLET OBJECTIFS CHIFFRES D'AFFAIRES ———
 elif choix == "📊 Objectifs Chiffres d'affaires":
     st.header("📊 Objectifs Chiffres d'affaires")
 
@@ -1340,7 +1407,7 @@ elif choix == "📊 Objectifs Chiffres d'affaires":
             col_res = cols[2]
 
         if not (col_mois and col_ht and col_res):
-            st.error("Impossible d’identifier les colonnes Mois / HT / Résultat dans la feuille 'objectifs'.")
+            st.error("Impossible d'identifier les colonnes Mois / HT / Résultat dans la feuille 'objectifs'.")
         else:
             def _to_float(x):
                 s = str(x or "").strip()
@@ -1379,7 +1446,7 @@ elif choix == "📊 Objectifs Chiffres d'affaires":
 # ——— ONGLET PLANNING (placeholder) ———
 elif choix == "📅 Planning":
     st.header("📅 Planning – en construction")
-    st.info("Cette page est temporairement mise de côté. Nous l’intégrerons une fois la ‘Planning app’ finalisée.")
+    st.info("Cette page est temporairement mise de côté. Nous l'intégrerons une fois la 'Planning app' finalisée.")
     st.caption("Le Dashboard continue de récupérer le « Responsable de la semaine » via le Google Sheet dédié / Planning existant.")
 
 # ——— ONGLET STOCKAGE FRIGO ———
@@ -1474,7 +1541,7 @@ elif choix == "🧊 Stockage Frigo":
     dlc_in = c3.date_input("DLC", value=date.today() + timedelta(days=3), key="add_dlc")
     if c4.button("✅ Ajouter"):
         if not art.strip():
-            st.error("Le nom de l’article est vide.")
+            st.error("Le nom de l'article est vide.")
         else:
             nouveau = {
                 "frigo":    choix_frigo,
@@ -1532,7 +1599,7 @@ elif choix == "🖥️ Vitrine":
     with col3:
         st.text_input("DLC (auto J+3, non éditable)", value=dlc_calc.strftime("%Y-%m-%d"), disabled=True)
 
-    date_ajout = st.date_input("Date d’ajout (pour le lot si besoin)", value=date.today())
+    date_ajout = st.date_input("Date d'ajout (pour le lot si besoin)", value=date.today())
 
     ok = st.button("Enregistrer en vitrine", type="primary", use_container_width=True)
 
@@ -1562,7 +1629,7 @@ elif choix == "🖥️ Vitrine":
             st.cache_data.clear()
             st.rerun()
         except Exception as e:
-            st.error(f"Échec de l’enregistrement : {e}")
+            st.error(f"Échec de l'enregistrement : {e}")
 
     st.markdown("---")
 
@@ -1653,7 +1720,7 @@ elif choix == "🖥️ Vitrine":
                     st.cache_data.clear()
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Impossible de retirer l’article (ligne {gs_row}) : {e}")
+                    st.error(f"Impossible de retirer l'article (ligne {gs_row}) : {e}")
 
 # ——— ONGLET RUPTURES & COMMANDES ———
 elif choix == "🛎️ Ruptures & Commandes":
@@ -1861,7 +1928,7 @@ elif choix == "🧾 Contrôle Hygiène":
 
         st.markdown("### 🧼 Relevés Hygiène (Vue complète)")
         if df_filtre.empty:
-            st.warning("Aucun relevé d’hygiène sur la période sélectionnée.")
+            st.warning("Aucun relevé d'hygiène sur la période sélectionnée.")
         else:
             st.dataframe(df_filtre, use_container_width=True)
 
