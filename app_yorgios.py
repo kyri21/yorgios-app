@@ -333,6 +333,7 @@ LIVRAISON_PHOTO_FOLDER_ID = st.secrets.get(
     "1EF9JPKr8XV4XDlHm_rFhpbYofDkBvv5V"
 ).strip()
 
+PHOTOS_LIVRAISON_FOLDER_ID = LIVRAISON_PHOTO_FOLDER_ID
 ss_cmd        = open_sheet_retry(gc, SHEET_COMMANDES_ID)
 sheet_haccp   = ss_cmd.worksheet("Suivi HACCP")
 sheet_vitrine = ss_cmd.worksheet("Vitrine")
