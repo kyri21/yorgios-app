@@ -293,85 +293,56 @@ def read_txt_from_drive(file_name, folder_id="14Pa-svM3uF9JQtjKysP0-awxK0BDi35E"
 # ———————————————————————————————
 def upload_livraison_photo(uploaded_file, produit: str, horodatage):
     """
-    Téléverse une photo de réception dans le dossier Drive dédié.
-    Retourne un lien partageable ou "" en cas d'échec.
+    Téléverse une photo via ImgBB (hébergement image gratuit).
+    Les service accounts Google Drive n'ayant pas de quota de stockage,
+    ImgBB est la solution de remplacement.
+    Retourne l'URL de visualisation ou "" en cas d'échec.
     """
     if uploaded_file is None:
         return ""
-    if not LIVRAISON_PHOTO_FOLDER_ID:
-        st.warning("Dossier Drive pour les photos de livraison non configuré (LIVRAISON_PHOTO_FOLDER_ID).")
-        return ""
-    try:
-        token = _get_token(scopes=[
-            "https://www.googleapis.com/auth/drive",
-            "https://www.googleapis.com/auth/drive.file",
-        ])
-        headers_auth = {"Authorization": f"Bearer {token}"}
 
+    import base64
+
+    api_key = st.secrets.get("IMGBB_API_KEY", "e1e5b622326cfff0f5c21063137e04be").strip()
+    if not api_key:
+        st.warning("Clé ImgBB non configurée (IMGBB_API_KEY manquant dans les secrets).")
+        return ""
+
+    try:
         if isinstance(horodatage, datetime):
             ts = horodatage.strftime("%Y%m%d-%H%M%S")
         else:
             ts = datetime.now().strftime("%Y%m%d-%H%M%S")
 
-        base_name = f"{produit}-{ts}".strip().replace(" ", "_")
-        base_name = re.sub(r"[^A-Za-z0-9._-]", "_", base_name)
+        nom = f"{produit}-{ts}".strip().replace(" ", "_")
+        nom = re.sub(r"[^A-Za-z0-9._-]", "_", nom)
 
-        mime_type  = getattr(uploaded_file, "type", None) or "image/jpeg"
-        file_bytes = uploaded_file.getvalue()
-
-        # ── Corps multipart construit manuellement (boundary fixe et propre) ──
-        BOUNDARY = "yorgios_boundary_xyz_987"
-        metadata_json = json.dumps({
-            "name": base_name,
-            "parents": [LIVRAISON_PHOTO_FOLDER_ID],
-        })
-
-        body_parts = (
-            f"--{BOUNDARY}\r\n"
-            f"Content-Type: application/json; charset=UTF-8\r\n\r\n"
-            f"{metadata_json}\r\n"
-            f"--{BOUNDARY}\r\n"
-            f"Content-Type: {mime_type}\r\n\r\n"
-        ).encode("utf-8") + file_bytes + f"\r\n--{BOUNDARY}--".encode("utf-8")
-
-        upload_headers = {
-            **headers_auth,
-            "Content-Type": f"multipart/related; boundary={BOUNDARY}",
-            "Content-Length": str(len(body_parts)),
-        }
+        # ImgBB attend l'image encodée en base64
+        image_b64 = base64.b64encode(uploaded_file.getvalue()).decode("utf-8")
 
         resp = requests.post(
-            "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
-            headers=upload_headers,
-            data=body_parts,
-            timeout=90,
+            "https://api.imgbb.com/1/upload",
+            data={
+                "key": api_key,
+                "image": image_b64,
+                "name": nom,
+            },
+            timeout=60,
         )
 
-        if resp.status_code not in (200, 201):
-            # Afficher le message d'erreur complet pour diagnostic
+        if resp.status_code != 200:
             st.warning(
                 f"Échec upload photo pour « {produit} » — "
-                f"HTTP {resp.status_code} : {resp.text[:400]}"
+                f"HTTP {resp.status_code} : {resp.text[:300]}"
             )
             return ""
 
-        file_id = resp.json().get("id")
-        if not file_id:
-            st.warning(f"Upload OK mais pas d'id retourné pour « {produit} ».")
+        data = resp.json()
+        if not data.get("success"):
+            st.warning(f"ImgBB a refusé l'image pour « {produit} » : {data}")
             return ""
 
-        # Rendre le fichier accessible via le lien (lecture seule, non bloquant)
-        try:
-            requests.post(
-                f"https://www.googleapis.com/drive/v3/files/{file_id}/permissions",
-                headers={**headers_auth, "Content-Type": "application/json"},
-                json={"role": "reader", "type": "anyone"},
-                timeout=15,
-            )
-        except Exception:
-            pass
-
-        return f"https://drive.google.com/file/d/{file_id}/view?usp=drivesdk"
+        return data["data"]["url_viewer"]
 
     except Exception as e:
         st.warning(f"Impossible de téléverser la photo pour « {produit} » : {e}")
