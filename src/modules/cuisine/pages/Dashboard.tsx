@@ -59,16 +59,12 @@ export default function CuisineDashboard() {
     async function load() {
       const today = todayISO()
       try {
-        const [tempsData, matinData, lotsSnap, recepSnap, livrSnap] = await Promise.all([
+        const [tempsData, lotsSnap, recepSnap, livrSnap] = await Promise.all([
           Promise.all(CUISINE_FRIDGES.map(async f => {
             const snap = await getDoc(doc(db, 'temperatures', `${today}_${f.id}_matin`))
             if (!snap.exists()) return { id: f.id, name: f.name, tempC: null, status: null }
             const d = snap.data() as any
             return { id: f.id, name: f.name, tempC: d.tempC ?? null, status: d.status ?? null }
-          })),
-          Promise.all(CUISINE_FRIDGES.map(async f => {
-            const snap = await getDoc(doc(db, 'temperatures', `${today}_${f.id}_matin`))
-            return snap.exists()
           })),
           getDocs(query(
             collection(db, 'lots_cuisine'),
@@ -90,7 +86,7 @@ export default function CuisineDashboard() {
         ])
 
         setTemps(tempsData)
-        setMatinSaisis(matinData.some(Boolean))
+        setMatinSaisis(tempsData.some(t => t.tempC !== null))
         setLotsEnCours(lotsSnap.docs.map(d => ({ id: d.id, ...(d.data() as any) })))
         setDerniereReception(recepSnap.empty ? null : { id: recepSnap.docs[0].id, ...(recepSnap.docs[0].data() as any) })
 
@@ -250,7 +246,6 @@ export default function CuisineDashboard() {
         style={{
           background: hasKo ? 'rgba(136,0,20,0.04)' : 'var(--surface-low)',
           cursor: 'default',
-          borderLeft: hasKo ? '3px solid var(--danger)' : '3px solid transparent',
           borderRadius: 16,
           padding: '14px 16px',
         }}
