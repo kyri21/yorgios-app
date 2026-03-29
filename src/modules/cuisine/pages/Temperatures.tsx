@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Timestamp, collection, doc, getDoc, getDocs, query, setDoc, where } from 'firebase/firestore'
 import { db, auth } from '../../../firebase/config'
 import { useToast } from '../../../hooks/useToast'
@@ -6,11 +6,11 @@ import { useToast } from '../../../hooks/useToast'
 const ALERT_MAX = 4
 
 const FRIDGES = [
-  { id: 'CUI_FRIGO_1',           name: 'Frigo 1 entrée',       icon: '🧊' },
+  { id: 'CUI_FRIGO1_ENTREE',     name: 'Frigo 1 entrée',       icon: '🧊' },
   { id: 'CUI_GRAND_FRIGO_INOX',  name: 'Grand frigo inox',     icon: '❄️' },
   { id: 'CUI_GRAND_FRIGO_VERRE', name: 'Grand frigo verre',    icon: '❄️' },
-  { id: 'CUI_FRIGO_2',           name: 'Frigo 2 milieu',       icon: '🧊' },
-  { id: 'CUI_FRIGO_FOUR',        name: 'Frigo four',           icon: '🔥' },
+  { id: 'CUI_FRIGO2_MILIEU',     name: 'Frigo 2 milieu',       icon: '🧊' },
+  { id: 'CUI_FRIGO_FOUR',        name: 'Frigo four',           icon: '🌡️' },
 ]
 
 const SESSIONS = ['matin', 'soir'] as const
@@ -102,10 +102,14 @@ export default function Temperatures() {
   }
 
   useEffect(() => {
-    getDoc(doc(db, 'settings', 'temperatures'))
-      .then(snap => { if (snap.exists()) { const v = (snap.data() as any).alertMinC; if (typeof v === 'number') setAlertMin(v) } })
-      .catch(() => {})
-    loadForDate(date).catch(e => setError(e?.message))
+    async function init() {
+      try {
+        const snap = await getDoc(doc(db, 'settings', 'temperatures'))
+        if (snap.exists()) { const v = (snap.data() as any).alertMinC; if (typeof v === 'number') setAlertMin(v) }
+      } catch {}
+      loadForDate(date).catch(e => setError(e?.message))
+    }
+    init()
   }, [])
 
   function setTemp(fridgeId: string, session: Session, value: string) {
@@ -202,23 +206,9 @@ export default function Temperatures() {
       </div>
 
       {/* ── Tabs ─────────────────────────────────────────────────── */}
-      <div style={{
-        display: 'flex', gap: 4, padding: 4,
-        background: 'var(--surface-mid)', borderRadius: 14,
-      }}>
-        {(['saisie', 'semaine'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)} style={{
-            flex: 1, padding: '9px 0', borderRadius: 10, border: 'none',
-            fontSize: 13, fontWeight: 700, cursor: 'pointer',
-            fontFamily: 'Manrope, sans-serif',
-            background: tab === t ? 'var(--surface)' : 'transparent',
-            color: tab === t ? 'var(--primary)' : 'var(--on-surface-3)',
-            boxShadow: tab === t ? '0 1px 6px rgba(28,28,24,0.08)' : 'none',
-            transition: 'all 0.15s',
-          }}>
-            {t === 'saisie' ? '✏️ Saisie' : '📊 Semaine'}
-          </button>
-        ))}
+      <div className="nav-tabs">
+        <button className={`nav-tab${tab === 'saisie' ? ' active' : ''}`} onClick={() => setTab('saisie')}>✏️ Saisie</button>
+        <button className={`nav-tab${tab === 'semaine' ? ' active' : ''}`} onClick={() => setTab('semaine')}>📊 Semaine</button>
       </div>
 
       {/* ── ONGLET SAISIE ─────────────────────────────────────── */}
@@ -283,12 +273,12 @@ export default function Temperatures() {
                           {f.name}
                         </h3>
                         <p style={{ fontSize: 10, color: 'var(--on-surface-3)', margin: 0, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                          Cuisine · Frigo
+                          Cuisine · HACCP
                         </p>
                       </div>
                     </div>
                     {hasAlert && <span className="chip-danger">Hors seuil</span>}
-                    {!hasAlert && row.matin.savedTemp != null && <span className="chip-ok">Conforme</span>}
+                    {!hasAlert && SESSIONS.some(s => row[s]?.savedTemp != null) && <span className="chip-ok">Conforme</span>}
                   </div>
 
                   {/* Matin + Soir côte à côte */}
@@ -420,7 +410,6 @@ export default function Temperatures() {
                   <div style={{
                     display: 'grid', gridTemplateColumns: '72px 28px repeat(7, 1fr)',
                     background: 'var(--surface-mid)',
-                    borderBottom: '1px solid var(--border-soft)',
                   }}>
                     <div style={{ padding: '8px 10px', fontSize: 10, fontWeight: 700, color: 'var(--on-surface-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Frigo</div>
                     <div />
@@ -446,8 +435,7 @@ export default function Temperatures() {
                       {/* Matin */}
                       <div style={{
                         display: 'grid', gridTemplateColumns: '72px 28px repeat(7, 1fr)',
-                        background: fi % 2 === 0 ? 'rgba(28,28,24,0.015)' : 'transparent',
-                        borderBottom: '1px solid var(--border-soft)',
+                        background: fi % 2 === 0 ? 'var(--surface-low)' : 'var(--surface)',
                       }}>
                         <div style={{ padding: '7px 10px', fontSize: 11, fontWeight: 600, color: 'var(--on-surface)', display: 'flex', alignItems: 'center' }}>
                           {f.name}
@@ -470,8 +458,7 @@ export default function Temperatures() {
                       {/* Soir */}
                       <div style={{
                         display: 'grid', gridTemplateColumns: '72px 28px repeat(7, 1fr)',
-                        background: fi % 2 === 0 ? 'rgba(28,28,24,0.015)' : 'transparent',
-                        borderBottom: fi < FRIDGES.length - 1 ? '1px solid var(--border-soft)' : 'none',
+                        background: fi % 2 === 0 ? 'var(--surface-low)' : 'var(--surface)',
                       }}>
                         <div style={{ padding: '7px 10px' }} />
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11 }}>🌙</div>
