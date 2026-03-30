@@ -1,0 +1,21 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "lots_cuisine",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "archived",   "order": "ASCENDING" },
+        { "fieldPath": "archivedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "deliveries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status",    "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

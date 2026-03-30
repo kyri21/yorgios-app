@@ -1,0 +1,173 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/test/documents {
+
+    // ─── Helpers ────────────────────────────────────────────────
+    function isAuth() {
+      return request.auth != null;
+    }
+    function role() {
+      return get(/databases/test/documents/users/$(request.auth.uid)).data.role;
+    }
+    function isPatronOrManager() {
+      return isAuth() && role() in ['patron', 'administrateur', 'manager'];
+    }
+    function isCuisine() {
+      return isAuth() && role() in ['patron', 'administrateur', 'manager', 'cuisine'];
+    }
+    function isCorner() {
+      return isAuth() && role() in ['patron', 'administrateur', 'manager', 'corner'];
+    }
+    function isAnyRole() {
+      return isAuth() && role() in ['patron', 'administrateur', 'manager', 'cuisine', 'corner'];
+    }
+
+    // ─── Users ──────────────────────────────────────────────────
+    // Chaque user lit/modifie son propre profil ; patron/manager voient tout
+    match /users/{uid} {
+      allow read:   if isAuth() && (request.auth.uid == uid || isPatronOrManager());
+      allow write:  if isAuth() && (request.auth.uid == uid || isPatronOrManager());
+    }
+
+    // ─── Planning ────────────────────────────────────────────────
+    match /employees/{doc} {
+      allow read:  if isAnyRole();
+      allow write: if isPatronOrManager();
+    }
+    // planningWeeks + toutes les sous-collections (days, events)
+    match /planningWeeks/{path=**} {
+      allow read:  if isAnyRole();
+      allow write: if isPatronOrManager();
+    }
+
+    // ─── Cuisine ────────────────────────────────────────────────
+    match /receptions/{doc} {
+      allow read, write: if isCuisine();
+    }
+    match /lots_cuisine/{doc} {
+      allow read, write: if isCuisine();
+    }
+    match /lot_counters/{doc} {
+      allow read, write: if isCuisine();
+    }
+    match /archives/{doc} {
+      allow read, write: if isCuisine();
+    }
+    match /hygiene_cuisine/{doc} {
+      allow read, write: if isCuisine();
+    }
+
+    // ─── Produits (partagé cuisine + corner) ────────────────────
+    match /produits/{doc} {
+      allow read:  if isAnyRole();
+      allow write: if isPatronOrManager();
+    }
+
+    // ─── Températures (partagé cuisine + corner) ────────────────
+    // Les deux sites utilisent la même collection ; lecture par tous,
+    // écriture autorisée pour les deux sites (cuisine ET corner ont leurs propres frigos)
+    match /temperatures/{doc} {
+      allow read:   if isAnyRole();
+      allow create: if isAnyRole();
+      // Seul le créateur du relevé ou patron/manager peut le modifier/supprimer
+      allow update, delete: if isAuth() && (
+        resource.data.createdBy == request.auth.uid || isPatronOrManager()
+      );
+    }
+
+    // ─── Livraisons (cuisine crée le départ, corner reçoit) ─────
+    match /livraisons/{doc} {
+      allow read:   if isAnyRole();
+      // Cuisine crée la livraison (départ avec departTempC)
+      allow create: if isCuisine();
+      // Corner met à jour la réception (receptionTempC, result)
+      // Patron/manager peuvent aussi modifier pour les corrections
+      allow update: if isCorner();
+      allow delete: if isPatronOrManager();
+    }
+
+    // ─── Corner ─────────────────────────────────────────────────
+    match /hygiene_corner/{doc} {
+      allow read, write: if isCorner();
+    }
+    match /corner_stock/{doc} {
+      allow read, write: if isCorner();
+    }
+    match /corner_commandes/{doc} {
+      allow read, write: if isCorner();
+    }
+    // Non-conformités : créées par corner lors du refus d'une livraison
+    match /non_conformites/{doc} {
+      allow read:         if isAnyRole();
+      allow create:       if isCorner();
+      allow update:       if isCorner();
+      allow delete:       if isPatronOrManager();
+    }
+    // Stockage frigo corner : géré exclusivement par corner
+    match /stockage_frigo/{doc} {
+      allow read, write: if isCorner();
+    }
+    // Pertes corner : saisie corner uniquement
+    match /pertes_corner/{doc} {
+      allow read, write: if isCorner();
+    }
+
+    // ─── Messagerie ─────────────────────────────────────────────
+    match /messages/{doc} {
+      allow read, write: if isAnyRole();
+    }
+
+    // ─── Commandes externes ──────────────────────────────────────
+    // create : public (formulaire client sans auth)
+    // read/update : corner + patron + manager
+    match /commandes_externes/{doc} {
+      allow create: if true;
+      allow read, update: if isCorner();
+    }
+
+    // ─── Objectifs CA ────────────────────────────────────────────
+    match /objectifs_ca/{doc} {
+      allow read:  if isAnyRole();
+      allow write: if isPatronOrManager();
+    }
+
+    // ─── Pointages ───────────────────────────────────────────────
+    // Validation GPS déléguée à la CF createPointage (admin SDK)
+    // Aucun create direct depuis le client n'est autorisé
+    match /pointages/{doc} {
+      allow create: if false; // CF createPointage uniquement (admin SDK bypasse ces règles)
+      allow read:   if isAuth() && (request.auth.uid == resource.data.userId || isPatronOrManager());
+    }
+
+    // ─── Notifications log ───────────────────────────────────────
+    match /notifications_log/{userId}/{rest=**} {
+      allow read, write: if isAuth() && request.auth.uid == userId;
+    }
+
+    // ─── Paramètres admin ────────────────────────────────────────
+    // Lecture : tous les rôles (corner/cuisine lisent alertMinC, ruptures, etc.)
+    // Écriture : patron/administrateur uniquement
+    match /settings/{doc} {
+      allow read:  if isAnyRole();
+      allow write: if isAuth() && role() in ['patron', 'administrateur'];
+    }
+
+    // ─── CRM / Customers ─────────────────────────────────────────
+    // Écrit par Cloud Functions (admin SDK, bypasse les règles)
+    // Lecture : patron/manager pour le suivi CRM
+    match /customers/{doc} {
+      allow read:  if isPatronOrManager();
+      allow write: if false; // Cloud Functions admin SDK uniquement
+    }
+    match /crm_sync_log/{doc} {
+      allow read:  if isPatronOrManager();
+      allow write: if false; // Cloud Functions admin SDK uniquement
+    }
+
+    // ─── Deliveries (suivi Twilio) ────────────────────────────────
+    match /deliveries/{id} {
+      allow read: if isAuth();
+      allow write: if false;  // écriture uniquement via CF backend (Admin SDK)
+    }
+  }
+}
