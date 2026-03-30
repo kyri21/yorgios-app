@@ -168,7 +168,10 @@ export default function Livraison() {
         return docs.length
       })
     }, () => setDeliveryLoading(false))
-    return () => unsub()
+    return () => {
+      unsub()
+      setPrevDeliveryCount(null)
+    }
   }, [tab])
 
   useEffect(() => {
@@ -213,7 +216,11 @@ export default function Livraison() {
   }
 
   async function markDeliveryDone(id: string) {
-    await updateDoc(doc(db, 'deliveries', id), { status: 'completed', updatedAt: Timestamp.now() })
+    try {
+      await updateDoc(doc(db, 'deliveries', id), { status: 'completed', updatedAt: Timestamp.now() })
+    } catch (e: any) {
+      setError(e?.message ?? 'Erreur lors de la mise à jour')
+    }
   }
 
   async function handleNonConformite(decision: string) {
