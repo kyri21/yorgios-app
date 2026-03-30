@@ -166,7 +166,7 @@ service cloud.firestore {
 
     // ─── Deliveries (suivi Twilio) ────────────────────────────────
     match /deliveries/{id} {
-      allow read: if isAuth();
+      allow read: if isAnyRole();
       allow write: if false;  // écriture uniquement via CF backend (Admin SDK)
     }
   }
