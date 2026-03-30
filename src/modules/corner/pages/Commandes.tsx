@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Timestamp, addDoc, collection, getDocs, orderBy, query, doc, updateDoc,
 } from 'firebase/firestore'
@@ -16,8 +16,10 @@ type Commande = {
   dateLivraison: string; heureLivraison: string; mode: string
   produits: ProduitLigne[]; instructionsSpeciales: string
   prixEstime: string; notesCuisine: string; notesManager: string
-  lienGcal: string
+  lienGcal: string; nombreConvives?: number | null
 }
+
+type CatalogueProduit = { id: string; name: string; prix?: number }
 
 // ─── Constantes ───────────────────────────────────────────────────
 const STATUTS    = ['En attente', 'Acceptée', 'En production', 'Livrée', 'Refusée']
@@ -73,8 +75,7 @@ function validateForm(f: typeof INIT_FORM, prods: ProduitLigne[]): Record<string
   if (!f.prenom.trim())        e.prenom = 'Champ obligatoire'
   if (!f.telephone.trim())     e.telephone = 'Champ obligatoire'
   else if (!rePhone.test(f.telephone)) e.telephone = 'Numéro invalide'
-  if (!f.email.trim())         e.email = 'Champ obligatoire'
-  else if (!reEmail.test(f.email)) e.email = 'Email invalide'
+  if (f.email.trim() && !reEmail.test(f.email)) e.email = 'Email invalide'
   if (!f.adresseLivraison.trim()) e.adresseLivraison = 'Champ obligatoire'
   if (!f.dateLivraison)        e.dateLivraison = 'Champ obligatoire'
   if (!f.heureLivraison)       e.heureLivraison = 'Champ obligatoire'
@@ -430,6 +431,48 @@ function CommandeCard({ commande: c, expanded, onToggle, onUpdated, isPatron }: 
   const [commandePreteSending, setCommandePreteSending] = useState(false)
   const [commandePreteOk, setCommandePreteOk] = useState(false)
 
+  // Edition complète
+  const [isEditing, setIsEditing]               = useState(false)
+  const [editNom, setEditNom]                   = useState('')
+  const [editPrenom, setEditPrenom]             = useState('')
+  const [editTelephone, setEditTelephone]       = useState('')
+  const [editEmail, setEditEmail]               = useState('')
+  const [editEntreprise, setEditEntreprise]     = useState('')
+  const [editAdresse, setEditAdresse]           = useState('')
+  const [editDateLivraison, setEditDateLivraison] = useState('')
+  const [editHeureLivraison, setEditHeureLivraison] = useState('')
+  const [editMode, setEditMode]                 = useState('')
+  const [editCreneauHoraire, setEditCreneauHoraire] = useState('')
+  const [editNombreConvives, setEditNombreConvives] = useState('')
+  const [editInstructions, setEditInstructions] = useState('')
+  const [editProduits, setEditProduits]         = useState<ProduitLigne[]>([emptyProduit()])
+
+  function startEditing() {
+    setEditNom(c.nom || '')
+    setEditPrenom(c.prenom || '')
+    setEditTelephone(c.telephone || '')
+    setEditEmail(c.email || '')
+    setEditEntreprise(c.entreprise || '')
+    setEditAdresse(c.adresseLivraison || '')
+    setEditDateLivraison(c.dateLivraison || '')
+    setEditHeureLivraison(c.heureLivraison || '')
+    setEditMode(c.mode || 'Livraison')
+    setEditCreneauHoraire(c.creneauHoraire || CRENEAUX[0])
+    setEditNombreConvives(c.nombreConvives != null ? String(c.nombreConvives) : '')
+    setEditInstructions(c.instructionsSpeciales || '')
+    const prods = Array.isArray(c.produits) && c.produits.length > 0
+      ? c.produits.map(p => ({ id: nextId(), produit: p.produit || '', quantite: p.quantite || '', unite: p.unite || 'pièces' }))
+      : [emptyProduit()]
+    setEditProduits(prods)
+    setIsEditing(true)
+  }
+
+  function addEditProduit() { setEditProduits(p => [...p, emptyProduit()]) }
+  function removeEditProduit(id: number) { setEditProduits(p => p.filter(r => r.id !== id)) }
+  function updateEditProduit(id: number, field: keyof ProduitLigne, val: string) {
+    setEditProduits(p => p.map(r => r.id === id ? { ...r, [field]: val } : r))
+  }
+
   const st = STATUT_STYLE[statut] || STATUT_STYLE['En attente']
 
   async function handleCommandePrete() {
@@ -455,6 +498,39 @@ function CommandeCard({ commande: c, expanded, onToggle, onUpdated, isPatron }: 
         updatedAt: Timestamp.now(),
       })
       setSaved(true)
+      setTimeout(() => { setSaved(false); onUpdated() }, 1500)
+    } catch (e) { console.error(e) }
+    finally { setSaving(false) }
+  }
+
+  async function handleSaveFullEdit() {
+    setSaving(true)
+    try {
+      const prodsClean = editProduits
+        .filter(p => p.produit.trim())
+        .map(({ produit, quantite, unite }) => ({ produit, quantite, unite }))
+      await updateDoc(doc(db, 'commandes_externes', c.docId), {
+        nom: editNom.trim(),
+        prenom: editPrenom.trim(),
+        telephone: editTelephone.trim(),
+        email: editEmail.trim(),
+        entreprise: editEntreprise.trim(),
+        adresseLivraison: editAdresse.trim(),
+        dateLivraison: editDateLivraison,
+        heureLivraison: editHeureLivraison,
+        mode: editMode,
+        creneauHoraire: editCreneauHoraire,
+        nombreConvives: editNombreConvives ? parseInt(editNombreConvives) : null,
+        instructionsSpeciales: editInstructions.trim(),
+        produits: prodsClean,
+        statut,
+        notesCuisine,
+        notesManager,
+        prixEstime: prixEstime ? parseFloat(prixEstime) : null,
+        updatedAt: Timestamp.now(),
+      })
+      setSaved(true)
+      setIsEditing(false)
       setTimeout(() => { setSaved(false); onUpdated() }, 1500)
     } catch (e) { console.error(e) }
     finally { setSaving(false) }
@@ -504,201 +580,340 @@ function CommandeCard({ commande: c, expanded, onToggle, onUpdated, isPatron }: 
       {expanded && (
         <div style={{ borderTop: '1px solid var(--border)' }} className="animate-fade-in">
 
-          {/* Articles de la commande */}
-          {produits.length > 0 && (
-            <div style={{ padding: '14px 16px', background: 'var(--surface-low)' }}>
-              <div className="section-label" style={{ marginBottom: 10 }}>Articles de la commande</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-                {produits.map((p, i) => (
-                  <div key={i} style={{
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                    padding: '9px 0',
-                    borderBottom: i < produits.length - 1 ? '1px solid var(--border)' : 'none',
-                  }}>
-                    <span style={{ fontSize: 14, color: 'var(--on-surface)', fontFamily: 'Manrope, sans-serif', fontWeight: 500 }}>{p.produit}</span>
-                    <span style={{ fontSize: 13, color: 'var(--on-surface-2)', fontWeight: 600, fontFamily: 'Manrope, sans-serif' }}>
-                      {p.quantite} {p.unite}
-                    </span>
+          {/* Mode édition complète */}
+          {isEditing ? (
+            <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div className="section-label">Modifier la commande</div>
+                <button onClick={() => setIsEditing(false)} style={{ fontSize: 12, color: 'var(--on-surface-3)', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'Manrope, sans-serif' }}>Annuler</button>
+              </div>
+
+              {/* Infos client */}
+              <div style={{ background: 'var(--surface-low)', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Informations client</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  <EditField label="Nom">
+                    <input className="input" style={{ fontSize: 13 }} value={editNom} onChange={e => setEditNom(e.target.value)} />
+                  </EditField>
+                  <EditField label="Prénom">
+                    <input className="input" style={{ fontSize: 13 }} value={editPrenom} onChange={e => setEditPrenom(e.target.value)} />
+                  </EditField>
+                </div>
+                <EditField label="Téléphone">
+                  <input className="input" type="tel" style={{ fontSize: 13 }} value={editTelephone} onChange={e => setEditTelephone(e.target.value)} />
+                </EditField>
+                <EditField label="Email">
+                  <input className="input" type="email" style={{ fontSize: 13 }} value={editEmail} onChange={e => setEditEmail(e.target.value)} />
+                </EditField>
+                <EditField label="Entreprise">
+                  <input className="input" style={{ fontSize: 13 }} value={editEntreprise} onChange={e => setEditEntreprise(e.target.value)} />
+                </EditField>
+                <EditField label="Adresse de livraison">
+                  <textarea className="input" rows={2} style={{ resize: 'none', fontSize: 13 }} value={editAdresse} onChange={e => setEditAdresse(e.target.value)} />
+                </EditField>
+                <EditField label="Instructions spéciales">
+                  <textarea className="input" rows={2} style={{ resize: 'none', fontSize: 13 }} value={editInstructions} onChange={e => setEditInstructions(e.target.value)} />
+                </EditField>
+              </div>
+
+              {/* Livraison */}
+              <div style={{ background: 'var(--surface-low)', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Livraison</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  <EditField label="Date">
+                    <input className="input" type="date" style={{ fontSize: 13 }} value={editDateLivraison} onChange={e => setEditDateLivraison(e.target.value)} />
+                  </EditField>
+                  <EditField label="Heure">
+                    <input className="input" type="time" style={{ fontSize: 13 }} value={editHeureLivraison} onChange={e => setEditHeureLivraison(e.target.value)} />
+                  </EditField>
+                </div>
+                <EditField label="Mode">
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    {MODES.map(m => (
+                      <button key={m} onClick={() => setEditMode(m)} style={{
+                        flex: 1, padding: '8px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                        background: editMode === m ? 'var(--primary)' : 'var(--surface-mid)',
+                        color: editMode === m ? '#fff' : 'var(--on-surface-3)',
+                        border: `1px solid ${editMode === m ? 'var(--primary)' : 'var(--border)'}`,
+                      }}>{m}</button>
+                    ))}
+                  </div>
+                </EditField>
+                <EditField label="Créneau horaire">
+                  <select className="input" style={{ fontSize: 13 }} value={editCreneauHoraire} onChange={e => setEditCreneauHoraire(e.target.value)}>
+                    {CRENEAUX.map(cr => <option key={cr}>{cr}</option>)}
+                  </select>
+                </EditField>
+                <EditField label="Nombre de convives">
+                  <input className="input" type="number" min="1" style={{ fontSize: 13 }} value={editNombreConvives} onChange={e => setEditNombreConvives(e.target.value)} />
+                </EditField>
+              </div>
+
+              {/* Produits éditables */}
+              <div style={{ background: 'var(--surface-low)', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Produits commandés</div>
+                {editProduits.map(p => (
+                  <div key={p.id} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto auto', gap: 6, alignItems: 'start' }}>
+                    <input className="input" style={{ fontSize: 13 }} value={p.produit} onChange={e => updateEditProduit(p.id, 'produit', e.target.value)} placeholder="Produit…" />
+                    <input className="input" type="number" min="0" style={{ fontSize: 13, width: 64 }} value={p.quantite} onChange={e => updateEditProduit(p.id, 'quantite', e.target.value)} placeholder="Qté" />
+                    <select className="input" style={{ fontSize: 12, width: 84 }} value={p.unite} onChange={e => updateEditProduit(p.id, 'unite', e.target.value)}>
+                      {UNITES.map(u => <option key={u}>{u}</option>)}
+                    </select>
+                    <button onClick={() => removeEditProduit(p.id)} style={{ width: 36, height: 36, borderRadius: 8, border: '1px solid rgba(136,0,20,0.3)', background: 'rgba(136,0,20,0.10)', color: 'var(--danger)', cursor: 'pointer', fontSize: 14 }}>✕</button>
                   </div>
                 ))}
+                <button onClick={addEditProduit} style={{
+                  fontSize: 12, fontWeight: 600, color: 'var(--primary)',
+                  background: 'rgba(0,66,117,0.07)', border: '1px dashed rgba(0,66,117,0.30)',
+                  borderRadius: 8, padding: '7px 12px', cursor: 'pointer', width: '100%',
+                }}>+ Ajouter un produit</button>
               </div>
-            </div>
-          )}
 
-          <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {/* Prix estimé prominent */}
-            {(c.prixEstime || isPatron) && (
-              <div style={{
-                background: 'rgba(0,66,117,0.06)', borderRadius: 'var(--radius-md)',
-                padding: '14px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              }}>
-                <div>
-                  <div className="section-label" style={{ marginBottom: 4 }}>Prix estimé</div>
-                  {c.prixEstime
-                    ? <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--primary)', fontFamily: 'Epilogue, sans-serif', lineHeight: 1 }}>
-                        {parseFloat(String(c.prixEstime)).toFixed(2)} €
-                      </div>
-                    : <div style={{ fontSize: 13, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif' }}>Non renseigné</div>
-                  }
-                  {(c as any).discountPercent > 0 && (
-                    <div style={{ fontSize: 11, color: 'var(--success)', marginTop: 3, fontFamily: 'Manrope, sans-serif' }}>
-                      -{(c as any).discountPercent}% fidélité appliqué
-                    </div>
-                  )}
-                </div>
-                {(c as any).promoCode && (
-                  <div style={{
-                    background: 'var(--surface)', border: '1.5px solid var(--primary)',
-                    borderRadius: 8, padding: '6px 12px',
-                    fontSize: 13, fontWeight: 700, color: 'var(--primary)', fontFamily: 'Manrope, sans-serif',
-                    letterSpacing: '0.04em',
-                  }}>
-                    {(c as any).promoCode}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Saisi par */}
-            {c.saisiPar && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <div style={{
-                  width: 32, height: 32, borderRadius: '50%',
-                  background: 'var(--primary)', color: '#fff',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 13, fontWeight: 700, flexShrink: 0, fontFamily: 'Epilogue, sans-serif',
-                }}>
-                  {c.saisiPar.charAt(0).toUpperCase()}
-                </div>
-                <div>
-                  <div className="section-label" style={{ marginBottom: 1 }}>Saisi par</div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--on-surface)', fontFamily: 'Epilogue, sans-serif' }}>{c.saisiPar}</div>
-                </div>
-              </div>
-            )}
-
-            {/* Infos client */}
-            <div className="divider" />
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <InfoRow label="Téléphone" value={c.telephone} />
-              <InfoRow label="Email" value={c.email} />
-              <InfoRow label="Créneau" value={c.creneauHoraire} />
-              <InfoRow label="Mode" value={c.mode} />
-            </div>
-            <InfoRow label="Adresse" value={c.adresseLivraison} />
-
-            {/* Instructions spéciales */}
-            {c.instructionsSpeciales && (
-              <div style={{
-                padding: '10px 12px', background: 'rgba(180,83,9,0.08)',
-                border: '1px solid rgba(180,83,9,0.22)', borderRadius: 'var(--radius-sm)',
-                fontSize: 12, color: 'var(--warning)', fontFamily: 'Manrope, sans-serif',
-              }}>
-                ⚠️ {c.instructionsSpeciales}
-              </div>
-            )}
-
-            {/* Notes cuisine */}
-            {c.notesCuisine && (
-              <div style={{ padding: '10px 12px', background: 'var(--surface-low)', borderRadius: 'var(--radius-sm)', fontSize: 13, color: 'var(--on-surface-2)', fontFamily: 'Manrope, sans-serif', fontStyle: 'italic' }}>
-                <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.05em', fontStyle: 'normal' }}>Notes cuisine</span>
-                {c.notesCuisine}
-              </div>
-            )}
-
-            {c.lienGcal && (
-              <a href={c.lienGcal} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--primary)', fontWeight: 600, fontFamily: 'Manrope, sans-serif' }}>
-                📅 Voir sur Google Calendar
-              </a>
-            )}
-
-            {/* Actions client */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {c.telephone && (
-                <a
-                  href={`sms:${c.telephone}?body=Bonjour ${c.prenom}, concernant votre commande ${c.id} du ${formatDate(c.dateLivraison)}.`}
-                  style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 5,
-                    padding: '9px 16px', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 700,
-                    background: 'rgba(84,101,30,0.10)', color: 'var(--success)', border: '1px solid rgba(84,101,30,0.25)',
-                    textDecoration: 'none', fontFamily: 'Manrope, sans-serif',
-                  }}
-                >
-                  💬 SMS
-                </a>
-              )}
-              {c.email && (
-                <a
-                  href={`mailto:${c.email}?subject=Votre commande ${c.id} — Matias&body=Bonjour ${c.prenom},%0D%0A%0D%0AConcernant votre commande ${c.id} prévue le ${formatDate(c.dateLivraison)} à ${c.heureLivraison}.%0D%0A%0D%0ACordialement,%0D%0AMatias`}
-                  style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 5,
-                    padding: '9px 16px', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 700,
-                    background: 'rgba(0,66,117,0.08)', color: 'var(--primary)', border: '1px solid rgba(0,66,117,0.22)',
-                    textDecoration: 'none', fontFamily: 'Manrope, sans-serif',
-                  }}
-                >
-                  ✉️ Email
-                </a>
-              )}
-              {isPatron && (
-                <button
-                  onClick={handleCommandePrete}
-                  disabled={commandePreteSending || commandePreteOk}
-                  style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 5,
-                    padding: '9px 16px', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 700,
-                    background: commandePreteOk ? 'rgba(84,101,30,0.10)' : 'rgba(0,66,117,0.07)',
-                    color: commandePreteOk ? 'var(--success)' : 'var(--primary)',
-                    border: `1px solid ${commandePreteOk ? 'rgba(84,101,30,0.25)' : 'rgba(0,66,117,0.20)'}`,
-                    cursor: commandePreteSending ? 'not-allowed' : 'pointer',
-                    opacity: commandePreteSending ? 0.6 : 1,
-                    fontFamily: 'Manrope, sans-serif',
-                  }}
-                >
-                  {commandePreteOk ? '✅ Notifié !' : commandePreteSending ? 'Envoi…' : '📦 Commande prête'}
-                </button>
-              )}
-            </div>
-
-            {/* Édition patron/manager */}
-            {isPatron && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, borderTop: '1px solid var(--border)', paddingTop: 14, marginTop: 2 }}>
-                <div className="section-label">Édition</div>
-                <div>
-                  <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Statut</label>
+              {/* Gestion interne */}
+              <div style={{ background: 'var(--surface-low)', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Informations internes</div>
+                <EditField label="Statut">
                   <select className="input" style={{ fontSize: 13 }} value={statut} onChange={e => setStatut(e.target.value)}>
                     {STATUTS.map(s => <option key={s}>{s}</option>)}
                   </select>
-                </div>
-                <div>
-                  <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Prix estimé (€)</label>
+                </EditField>
+                <EditField label="Prix estimé (€)">
                   <input type="number" className="input" style={{ fontSize: 13 }} value={prixEstime} onChange={e => setPrixEstime(e.target.value)} placeholder="0.00" />
-                </div>
-                <div>
-                  <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Notes cuisine</label>
-                  <textarea className="input" rows={2} style={{ resize: 'none', fontSize: 13 }} value={notesCuisine} onChange={e => setNotesCuisine(e.target.value)} placeholder="Instructions spéciales pour la brigade…" />
-                </div>
-                <div>
-                  <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Notes manager</label>
+                </EditField>
+                <EditField label="Notes cuisine">
+                  <textarea className="input" rows={2} style={{ resize: 'none', fontSize: 13 }} value={notesCuisine} onChange={e => setNotesCuisine(e.target.value)} />
+                </EditField>
+                <EditField label="Notes manager">
                   <textarea className="input" rows={2} style={{ resize: 'none', fontSize: 13 }} value={notesManager} onChange={e => setNotesManager(e.target.value)} />
+                </EditField>
+              </div>
+
+              <button onClick={handleSaveFullEdit} disabled={saving} className="btn-primary" style={{ fontSize: 14 }}>
+                {saved ? '✅ Sauvegardé !' : saving ? 'Sauvegarde…' : '💾 Enregistrer les modifications'}
+              </button>
+            </div>
+          ) : (
+            <>
+              {/* Vue normale */}
+              {/* Articles de la commande */}
+              {produits.length > 0 && (
+                <div style={{ padding: '14px 16px', background: 'var(--surface-low)' }}>
+                  <div className="section-label" style={{ marginBottom: 10 }}>Articles de la commande</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                    {produits.map((p, i) => (
+                      <div key={i} style={{
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        padding: '9px 0',
+                        borderBottom: i < produits.length - 1 ? '1px solid var(--border)' : 'none',
+                      }}>
+                        <span style={{ fontSize: 14, color: 'var(--on-surface)', fontFamily: 'Manrope, sans-serif', fontWeight: 500 }}>{p.produit}</span>
+                        <span style={{ fontSize: 13, color: 'var(--on-surface-2)', fontWeight: 600, fontFamily: 'Manrope, sans-serif' }}>
+                          {p.quantite} {p.unite}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <button onClick={handleUpdate} disabled={saving} className="btn-primary" style={{ fontSize: 14 }}>
-                  {saved ? '✅ Sauvegardé !' : saving ? 'Sauvegarde…' : 'Enregistrer la commande'}
-                </button>
-                {!saved && !saving && (
-                  <button onClick={() => { setStatut('En attente'); handleUpdate() }} style={{
-                    background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)',
-                    padding: '12px', fontSize: 13, fontWeight: 600, color: 'var(--on-surface-2)',
-                    cursor: 'pointer', fontFamily: 'Manrope, sans-serif',
+              )}
+
+              <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {/* Prix estimé prominent */}
+                {(c.prixEstime || isPatron) && (
+                  <div style={{
+                    background: 'rgba(0,66,117,0.06)', borderRadius: 'var(--radius-md)',
+                    padding: '14px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                   }}>
-                    Mettre en attente
-                  </button>
+                    <div>
+                      <div className="section-label" style={{ marginBottom: 4 }}>Prix estimé</div>
+                      {c.prixEstime
+                        ? <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--primary)', fontFamily: 'Epilogue, sans-serif', lineHeight: 1 }}>
+                            {parseFloat(String(c.prixEstime)).toFixed(2)} €
+                          </div>
+                        : <div style={{ fontSize: 13, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif' }}>Non renseigné</div>
+                      }
+                      {(c as any).discountPercent > 0 && (
+                        <div style={{ fontSize: 11, color: 'var(--success)', marginTop: 3, fontFamily: 'Manrope, sans-serif' }}>
+                          -{(c as any).discountPercent}% fidélité appliqué
+                        </div>
+                      )}
+                    </div>
+                    {(c as any).promoCode && (
+                      <div style={{
+                        background: 'var(--surface)', border: '1.5px solid var(--primary)',
+                        borderRadius: 8, padding: '6px 12px',
+                        fontSize: 13, fontWeight: 700, color: 'var(--primary)', fontFamily: 'Manrope, sans-serif',
+                        letterSpacing: '0.04em',
+                      }}>
+                        {(c as any).promoCode}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Saisi par */}
+                {c.saisiPar && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div style={{
+                      width: 32, height: 32, borderRadius: '50%',
+                      background: 'var(--primary)', color: '#fff',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 13, fontWeight: 700, flexShrink: 0, fontFamily: 'Epilogue, sans-serif',
+                    }}>
+                      {c.saisiPar.charAt(0).toUpperCase()}
+                    </div>
+                    <div>
+                      <div className="section-label" style={{ marginBottom: 1 }}>Saisi par</div>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--on-surface)', fontFamily: 'Epilogue, sans-serif' }}>{c.saisiPar}</div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Infos client */}
+                <div className="divider" />
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <InfoRow label="Téléphone" value={c.telephone} />
+                  <InfoRow label="Email" value={c.email} />
+                  <InfoRow label="Créneau" value={c.creneauHoraire} />
+                  <InfoRow label="Mode" value={c.mode} />
+                </div>
+                <InfoRow label="Adresse" value={c.adresseLivraison} />
+
+                {/* Instructions spéciales */}
+                {c.instructionsSpeciales && (
+                  <div style={{
+                    padding: '10px 12px', background: 'rgba(180,83,9,0.08)',
+                    border: '1px solid rgba(180,83,9,0.22)', borderRadius: 'var(--radius-sm)',
+                    fontSize: 12, color: 'var(--warning)', fontFamily: 'Manrope, sans-serif',
+                  }}>
+                    ⚠️ {c.instructionsSpeciales}
+                  </div>
+                )}
+
+                {/* Notes cuisine */}
+                {c.notesCuisine && (
+                  <div style={{ padding: '10px 12px', background: 'var(--surface-low)', borderRadius: 'var(--radius-sm)', fontSize: 13, color: 'var(--on-surface-2)', fontFamily: 'Manrope, sans-serif', fontStyle: 'italic' }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.05em', fontStyle: 'normal' }}>Notes cuisine</span>
+                    {c.notesCuisine}
+                  </div>
+                )}
+
+                {c.lienGcal && (
+                  <a href={c.lienGcal} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--primary)', fontWeight: 600, fontFamily: 'Manrope, sans-serif' }}>
+                    📅 Voir sur Google Calendar
+                  </a>
+                )}
+
+                {/* Actions client */}
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {c.telephone && (
+                    <a
+                      href={`sms:${c.telephone}?body=Bonjour ${c.prenom}, concernant votre commande ${c.id} du ${formatDate(c.dateLivraison)}.`}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 5,
+                        padding: '9px 16px', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 700,
+                        background: 'rgba(84,101,30,0.10)', color: 'var(--success)', border: '1px solid rgba(84,101,30,0.25)',
+                        textDecoration: 'none', fontFamily: 'Manrope, sans-serif',
+                      }}
+                    >
+                      💬 SMS
+                    </a>
+                  )}
+                  {c.email && (
+                    <a
+                      href={`mailto:${c.email}?subject=Votre commande ${c.id} — Matias&body=Bonjour ${c.prenom},%0D%0A%0D%0AConcernant votre commande ${c.id} prévue le ${formatDate(c.dateLivraison)} à ${c.heureLivraison}.%0D%0A%0D%0ACordialement,%0D%0AMatias`}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 5,
+                        padding: '9px 16px', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 700,
+                        background: 'rgba(0,66,117,0.08)', color: 'var(--primary)', border: '1px solid rgba(0,66,117,0.22)',
+                        textDecoration: 'none', fontFamily: 'Manrope, sans-serif',
+                      }}
+                    >
+                      ✉️ Email
+                    </a>
+                  )}
+                  {isPatron && (
+                    <button
+                      onClick={handleCommandePrete}
+                      disabled={commandePreteSending || commandePreteOk}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 5,
+                        padding: '9px 16px', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 700,
+                        background: commandePreteOk ? 'rgba(84,101,30,0.10)' : 'rgba(0,66,117,0.07)',
+                        color: commandePreteOk ? 'var(--success)' : 'var(--primary)',
+                        border: `1px solid ${commandePreteOk ? 'rgba(84,101,30,0.25)' : 'rgba(0,66,117,0.20)'}`,
+                        cursor: commandePreteSending ? 'not-allowed' : 'pointer',
+                        opacity: commandePreteSending ? 0.6 : 1,
+                        fontFamily: 'Manrope, sans-serif',
+                      }}
+                    >
+                      {commandePreteOk ? '✅ Notifié !' : commandePreteSending ? 'Envoi…' : '📦 Commande prête'}
+                    </button>
+                  )}
+                  {isPatron && (
+                    <button
+                      onClick={startEditing}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 5,
+                        padding: '9px 16px', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 700,
+                        background: 'rgba(180,83,9,0.08)', color: 'var(--warning)', border: '1px solid rgba(180,83,9,0.22)',
+                        cursor: 'pointer', fontFamily: 'Manrope, sans-serif',
+                      }}
+                    >
+                      ✏️ Modifier
+                    </button>
+                  )}
+                </div>
+
+                {/* Édition rapide patron/manager */}
+                {isPatron && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12, borderTop: '1px solid var(--border)', paddingTop: 14, marginTop: 2 }}>
+                    <div className="section-label">Édition rapide</div>
+                    <div>
+                      <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Statut</label>
+                      <select className="input" style={{ fontSize: 13 }} value={statut} onChange={e => setStatut(e.target.value)}>
+                        {STATUTS.map(s => <option key={s}>{s}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Prix estimé (€)</label>
+                      <input type="number" className="input" style={{ fontSize: 13 }} value={prixEstime} onChange={e => setPrixEstime(e.target.value)} placeholder="0.00" />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Notes cuisine</label>
+                      <textarea className="input" rows={2} style={{ resize: 'none', fontSize: 13 }} value={notesCuisine} onChange={e => setNotesCuisine(e.target.value)} placeholder="Instructions spéciales pour la brigade…" />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Notes manager</label>
+                      <textarea className="input" rows={2} style={{ resize: 'none', fontSize: 13 }} value={notesManager} onChange={e => setNotesManager(e.target.value)} />
+                    </div>
+                    <button onClick={handleUpdate} disabled={saving} className="btn-primary" style={{ fontSize: 14 }}>
+                      {saved ? '✅ Sauvegardé !' : saving ? 'Sauvegarde…' : 'Enregistrer'}
+                    </button>
+                    {!saved && !saving && (
+                      <button onClick={() => { setStatut('En attente'); handleUpdate() }} style={{
+                        background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)',
+                        padding: '12px', fontSize: 13, fontWeight: 600, color: 'var(--on-surface-2)',
+                        cursor: 'pointer', fontFamily: 'Manrope, sans-serif',
+                      }}>
+                        Mettre en attente
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
-            )}
-          </div>
+            </>
+          )}
         </div>
       )}
+    </div>
+  )
+}
+
+function EditField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <label style={{ fontSize: 10, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.04em', fontFamily: 'Manrope, sans-serif' }}>{label}</label>
+      {children}
     </div>
   )
 }
@@ -709,6 +924,80 @@ function InfoRow({ label, value }: { label: string; value: string }) {
     <div style={{ marginBottom: 4 }}>
       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--on-surface-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
       <div style={{ fontSize: 13, color: 'var(--on-surface)', marginTop: 2 }}>{value}</div>
+    </div>
+  )
+}
+
+// ─── Autocomplete produit ─────────────────────────────────────────
+function AutocompleteProduit({ value, onChange, catalogue }: {
+  value: string
+  onChange: (name: string, prix?: number) => void
+  catalogue: CatalogueProduit[]
+}) {
+  const [open, setOpen]     = useState(false)
+  const [query2, setQuery]  = useState(value)
+  const containerRef        = useRef<HTMLDivElement>(null)
+
+  // Sync query when value changes from outside (e.g. reset)
+  useEffect(() => { setQuery(value) }, [value])
+
+  const suggestions = query2.trim().length >= 1
+    ? catalogue.filter(p => p.name.toLowerCase().includes(query2.toLowerCase())).slice(0, 8)
+    : []
+
+  function select(p: CatalogueProduit) {
+    setQuery(p.name)
+    setOpen(false)
+    onChange(p.name, p.prix)
+  }
+
+  // Close on outside click
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative', flex: 1 }}>
+      <input
+        className="input"
+        style={{ fontSize: 13, width: '100%' }}
+        value={query2}
+        placeholder="Produit…"
+        onChange={e => { setQuery(e.target.value); onChange(e.target.value, undefined); setOpen(true) }}
+        onFocus={() => setOpen(true)}
+      />
+      {open && suggestions.length > 0 && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 100,
+          background: 'var(--surface)', border: '1px solid var(--border)',
+          borderRadius: 10, boxShadow: '0 4px 20px rgba(28,28,24,0.12)',
+          marginTop: 2, overflow: 'hidden',
+        }}>
+          {suggestions.map(p => (
+            <button
+              key={p.id}
+              onMouseDown={e => { e.preventDefault(); select(p) }}
+              style={{
+                width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                padding: '9px 12px', background: 'none', border: 'none', cursor: 'pointer',
+                textAlign: 'left', borderBottom: '1px solid var(--border-soft)',
+                fontFamily: 'Manrope, sans-serif',
+              }}
+            >
+              <span style={{ fontSize: 13, color: 'var(--on-surface)', fontWeight: 500 }}>{p.name}</span>
+              {p.prix != null && (
+                <span style={{ fontSize: 12, color: 'var(--on-surface-3)', fontWeight: 600 }}>{p.prix.toFixed(2)} €</span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -724,6 +1013,29 @@ export function CommandeFormBody({ form, set, produits, addProduit, removeProdui
   errors: Record<string, string>
   mode: 'interne' | 'public'
 }) {
+  const [catalogue, setCatalogue] = useState<CatalogueProduit[]>([])
+
+  useEffect(() => {
+    getDocs(query(collection(db, 'produits'), orderBy('name', 'asc')))
+      .then(snap => {
+        setCatalogue(snap.docs.map(d => ({ id: d.id, ...(d.data() as any) } as CatalogueProduit)))
+      })
+      .catch(() => {/* silently ignore — catalogue is optional */})
+  }, [])
+
+  // Estimation de prix automatique
+  const estimation = produits.reduce((sum, p) => {
+    const found = catalogue.find(c => c.name.toLowerCase() === p.produit.toLowerCase())
+    if (!found || found.prix == null) return sum
+    const qty = parseFloat(p.quantite) || 1
+    return sum + qty * found.prix
+  }, 0)
+
+  const hasEstimation = produits.some(p => {
+    const found = catalogue.find(c => c.name.toLowerCase() === p.produit.toLowerCase())
+    return found && found.prix != null
+  })
+
   return (
     <>
       {/* Section client */}
@@ -740,8 +1052,8 @@ export function CommandeFormBody({ form, set, produits, addProduit, removeProdui
         <Field label="Téléphone *" error={errors.telephone}>
           <input className="input" type="tel" value={form.telephone} onChange={e => set('telephone', e.target.value)} placeholder="+33 6 12 34 56 78" />
         </Field>
-        <Field label="Email *" error={errors.email}>
-          <input className="input" type="email" value={form.email} onChange={e => set('email', e.target.value)} placeholder="jean@example.com" />
+        <Field label="Email" error={errors.email}>
+          <input className="input" type="email" value={form.email} onChange={e => set('email', e.target.value)} placeholder="jean@example.com (optionnel)" />
         </Field>
         <Field label="Entreprise / Société">
           <input className="input" value={form.entreprise} onChange={e => set('entreprise', e.target.value)} placeholder="Optionnel" />
@@ -762,7 +1074,17 @@ export function CommandeFormBody({ form, set, produits, addProduit, removeProdui
         {errors.produits && <div style={{ fontSize: 12, color: 'var(--danger)' }}>{errors.produits}</div>}
         {produits.map(p => (
           <div key={p.id} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto auto', gap: 8, alignItems: 'start' }}>
-            <input className="input" style={{ fontSize: 13 }} value={p.produit} onChange={e => updateProduit(p.id, 'produit', e.target.value)} placeholder="Produit…" />
+            <AutocompleteProduit
+              value={p.produit}
+              catalogue={catalogue}
+              onChange={(name, prix) => {
+                updateProduit(p.id, 'produit', name)
+                if (prix != null) {
+                  // auto-fill quantite if empty
+                  if (!p.quantite) updateProduit(p.id, 'quantite', '1')
+                }
+              }}
+            />
             <input className="input" type="number" min="0" style={{ fontSize: 13, width: 70 }} value={p.quantite} onChange={e => updateProduit(p.id, 'quantite', e.target.value)} placeholder="Qté" />
             <select className="input" style={{ fontSize: 13, width: 90 }} value={p.unite} onChange={e => updateProduit(p.id, 'unite', e.target.value)}>
               {UNITES.map(u => <option key={u}>{u}</option>)}
@@ -778,6 +1100,36 @@ export function CommandeFormBody({ form, set, produits, addProduit, removeProdui
         }}>
           ➕ Ajouter un produit
         </button>
+
+        {/* Estimation de prix automatique */}
+        {hasEstimation && (
+          <div style={{
+            background: 'rgba(0,66,117,0.05)', border: '1px solid rgba(0,66,117,0.18)',
+            borderRadius: 10, padding: '10px 14px',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+          }}>
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--on-surface-3)', textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'Manrope, sans-serif' }}>Estimation catalogue</div>
+              <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--primary)', fontFamily: 'Epilogue, sans-serif', marginTop: 2 }}>
+                ~{estimation.toFixed(2)} €
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', marginTop: 2 }}>Indicatif — non contractuel</div>
+            </div>
+            {mode === 'interne' && (
+              <button
+                onClick={() => set('prixEstime', estimation.toFixed(2))}
+                style={{
+                  padding: '8px 14px', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: 'pointer',
+                  background: 'var(--primary)', color: '#fff', border: 'none',
+                  fontFamily: 'Manrope, sans-serif', whiteSpace: 'nowrap', flexShrink: 0,
+                }}
+              >
+                Utiliser cette estimation
+              </button>
+            )}
+          </div>
+        )}
+
         <Field label="Instructions spéciales / Allergènes">
           <textarea className="input" rows={2} style={{ resize: 'none' }} value={form.instructionsSpeciales} onChange={e => set('instructionsSpeciales', e.target.value)} placeholder="Optionnel" />
         </Field>
