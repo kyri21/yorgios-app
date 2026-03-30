@@ -1103,7 +1103,7 @@ export const incomingSms = onRequest(
     const authToken = process.env.TWILIO_AUTH_TOKEN || ''
     const signature = req.headers['x-twilio-signature'] as string | undefined
 
-    if (authToken && authToken !== 'xxxx' && signature) {
+    if (authToken && signature) {
       const proto = req.headers['x-forwarded-proto'] || 'https'
       const host  = req.headers['x-forwarded-host'] || req.headers.host || ''
       const url   = `${proto}://${host}${req.originalUrl}`
