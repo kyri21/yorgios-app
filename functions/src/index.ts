@@ -1091,7 +1091,7 @@ export const createPointage = onCall(
  * Écrit dans la collection `deliveries` (Admin SDK) et envoie FCM.
  */
 export const incomingSms = onRequest(
-  { region: 'europe-west1', cors: false },
+  { region: 'europe-west1', cors: false, secrets: ['TWILIO_AUTH_TOKEN'] },
   async (req, res) => {
     // ── 1. Méthode
     if (req.method !== 'POST') {

@@ -890,7 +890,7 @@ exports.createPointage = (0, https_1.onCall)({ region: 'europe-west1' }, async (
  * Sécurisé par validation de signature Twilio.
  * Écrit dans la collection `deliveries` (Admin SDK) et envoie FCM.
  */
-exports.incomingSms = (0, https_1.onRequest)({ region: 'europe-west1', cors: false }, async (req, res) => {
+exports.incomingSms = (0, https_1.onRequest)({ region: 'europe-west1', cors: false, secrets: ['TWILIO_AUTH_TOKEN'] }, async (req, res) => {
     var _a, _b;
     // ── 1. Méthode
     if (req.method !== 'POST') {
