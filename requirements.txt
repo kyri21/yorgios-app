@@ -3,3 +3,7 @@ gspread
 oauth2client
 pandas
 openpyxl
+ics
+google-api-python-client
+reportlab
+pytz

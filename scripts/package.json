@@ -1,0 +1,19 @@
+{
+  "name": "yorgios-migration-scripts",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Scripts de migration Google Sheets/Excel → Firestore",
+  "scripts": {
+    "migrate:all":          "node migrate_all.mjs",
+    "migrate:produits":     "node migrate_produits.mjs",
+    "migrate:temperatures": "node migrate_temperatures.mjs",
+    "migrate:hygiene":      "node migrate_hygiene.mjs",
+    "migrate:livraisons":   "node migrate_livraisons.mjs",
+    "migrate:vitrine":      "node migrate_vitrine.mjs",
+    "migrate:objectifs":    "node migrate_objectifs.mjs"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.0.0",
+    "xlsx": "^0.18.5"
+  }
+}

@@ -347,19 +347,19 @@ function GestionCommandes({ user }: { user: any }) {
   return (
     <>
       {/* KPIs */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
         {([
-          ['Total', kpi.total, 'var(--primary)', 'rgba(0,66,117,0.08)'],
-          ['En attente', kpi.attente, 'var(--warning)', 'rgba(180,83,9,0.08)'],
-          ['Semaine', kpi.semaine, 'var(--primary)', 'rgba(0,66,117,0.08)'],
-          ['Acceptées', kpi.acceptees, 'var(--secondary)', 'rgba(84,101,30,0.08)'],
+          ['Total', kpi.total, 'var(--primary)', 'rgba(0,66,117,0.07)'],
+          ['En attente', kpi.attente, 'var(--warning)', 'rgba(180,83,9,0.07)'],
+          ['Cette semaine', kpi.semaine, 'var(--primary)', 'rgba(0,66,117,0.07)'],
+          ['Acceptées', kpi.acceptees, 'var(--success)', 'rgba(45,122,79,0.07)'],
         ] as const).map(([label, val, color, bg]) => (
           <div key={label} style={{
-            textAlign: 'center', padding: '12px 6px', borderRadius: 12,
-            background: bg, border: `1px solid ${color}30`,
+            padding: '14px 16px', borderRadius: 'var(--radius-md)',
+            background: bg, border: `1px solid ${color}25`,
           }}>
-            <div style={{ fontSize: 22, fontWeight: 800, color }}>{val}</div>
-            <div style={{ fontSize: 10, fontWeight: 600, color, marginTop: 3, lineHeight: 1.2, opacity: 0.8 }}>{label}</div>
+            <div style={{ fontSize: 28, fontWeight: 800, color, fontFamily: 'Epilogue, sans-serif', lineHeight: 1 }}>{val}</div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--on-surface-2)', marginTop: 4, fontFamily: 'Manrope, sans-serif' }}>{label}</div>
           </div>
         ))}
       </div>
@@ -463,135 +463,240 @@ function CommandeCard({ commande: c, expanded, onToggle, onUpdated, isPatron }: 
   const produits = Array.isArray(c.produits) ? c.produits : []
 
   return (
-    <div style={{ background: 'var(--surface)', borderRadius: 14, border: '1px solid var(--border)', overflow: 'hidden' }}>
-      {/* Header */}
+    <div style={{
+      background: 'var(--surface)',
+      borderRadius: 'var(--radius-lg)',
+      border: '1px solid var(--border)',
+      overflow: 'hidden',
+      boxShadow: expanded ? 'var(--shadow-float)' : 'none',
+      transition: 'box-shadow 0.2s',
+    }}>
+      {/* Header row */}
       <button onClick={onToggle} style={{
         width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '12px 14px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', gap: 8,
+        padding: '14px 16px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', gap: 10,
       }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary)', marginBottom: 3 }}>{c.id}</div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--on-surface)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {c.prenom} {c.nom} · {formatDate(c.dateLivraison)} {c.heureLivraison}
+          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--primary)', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.06em', fontFamily: 'Manrope, sans-serif' }}>{c.id}</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--on-surface)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'Epilogue, sans-serif' }}>
+            {c.prenom} {c.nom}
           </div>
-          {c.entreprise && <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2 }}>{c.entreprise}</div>}
+          <div style={{ fontSize: 12, color: 'var(--on-surface-2)', marginTop: 2, fontFamily: 'Manrope, sans-serif' }}>
+            {formatDate(c.dateLivraison)}{c.heureLivraison ? ` · ${c.heureLivraison}` : ''}
+            {c.entreprise ? ` · ${c.entreprise}` : ''}
+          </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-          <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, background: st.bg, color: st.color, border: `1px solid ${st.border}` }}>{statut}</span>
+          {c.prixEstime && (
+            <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--primary)', fontFamily: 'Epilogue, sans-serif' }}>
+              {parseFloat(String(c.prixEstime)).toFixed(0)} €
+            </span>
+          )}
+          <span style={{
+            fontSize: 11, fontWeight: 700, padding: '4px 10px', borderRadius: 99,
+            background: st.bg, color: st.color, border: `1px solid ${st.border}`,
+            fontFamily: 'Manrope, sans-serif', whiteSpace: 'nowrap',
+          }}>{statut}</span>
           <span style={{ fontSize: 14, color: 'var(--on-surface-3)', transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▾</span>
         </div>
       </button>
 
       {expanded && (
-        <div style={{ padding: '0 14px 14px', borderTop: '1px solid var(--border)' }} className="animate-fade-in">
-          {/* Infos client */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 12, marginBottom: 10 }}>
-            <InfoRow label="Téléphone" value={c.telephone} />
-            <InfoRow label="Email" value={c.email} />
-            <InfoRow label="Créneau" value={c.creneauHoraire} />
-            <InfoRow label="Mode" value={c.mode} />
-          </div>
-          <InfoRow label="Adresse" value={c.adresseLivraison} />
+        <div style={{ borderTop: '1px solid var(--border)' }} className="animate-fade-in">
 
-          {/* Produits */}
+          {/* Articles de la commande */}
           {produits.length > 0 && (
-            <div style={{ marginTop: 10 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Produits</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <div style={{ padding: '14px 16px', background: 'var(--surface-low)' }}>
+              <div className="section-label" style={{ marginBottom: 10 }}>Articles de la commande</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
                 {produits.map((p, i) => (
-                  <div key={i} style={{ fontSize: 13, background: 'var(--surface-mid)', borderRadius: 8, padding: '6px 10px', color: 'var(--on-surface)' }}>
-                    {p.produit} — <strong>{p.quantite}</strong> {p.unite}
+                  <div key={i} style={{
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    padding: '9px 0',
+                    borderBottom: i < produits.length - 1 ? '1px solid var(--border)' : 'none',
+                  }}>
+                    <span style={{ fontSize: 14, color: 'var(--on-surface)', fontFamily: 'Manrope, sans-serif', fontWeight: 500 }}>{p.produit}</span>
+                    <span style={{ fontSize: 13, color: 'var(--on-surface-2)', fontWeight: 600, fontFamily: 'Manrope, sans-serif' }}>
+                      {p.quantite} {p.unite}
+                    </span>
                   </div>
                 ))}
               </div>
             </div>
           )}
 
-          {c.instructionsSpeciales && (
-            <div style={{ marginTop: 10, padding: '8px 10px', background: 'rgba(180,83,9,0.10)', border: '1px solid rgba(180,83,9,0.25)', borderRadius: 8, fontSize: 12, color: 'var(--warning)' }}>
-              ⚠️ {c.instructionsSpeciales}
+          <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {/* Prix estimé prominent */}
+            {(c.prixEstime || isPatron) && (
+              <div style={{
+                background: 'rgba(0,66,117,0.06)', borderRadius: 'var(--radius-md)',
+                padding: '14px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              }}>
+                <div>
+                  <div className="section-label" style={{ marginBottom: 4 }}>Prix estimé</div>
+                  {c.prixEstime
+                    ? <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--primary)', fontFamily: 'Epilogue, sans-serif', lineHeight: 1 }}>
+                        {parseFloat(String(c.prixEstime)).toFixed(2)} €
+                      </div>
+                    : <div style={{ fontSize: 13, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif' }}>Non renseigné</div>
+                  }
+                  {(c as any).discountPercent > 0 && (
+                    <div style={{ fontSize: 11, color: 'var(--success)', marginTop: 3, fontFamily: 'Manrope, sans-serif' }}>
+                      -{(c as any).discountPercent}% fidélité appliqué
+                    </div>
+                  )}
+                </div>
+                {(c as any).promoCode && (
+                  <div style={{
+                    background: 'var(--surface)', border: '1.5px solid var(--primary)',
+                    borderRadius: 8, padding: '6px 12px',
+                    fontSize: 13, fontWeight: 700, color: 'var(--primary)', fontFamily: 'Manrope, sans-serif',
+                    letterSpacing: '0.04em',
+                  }}>
+                    {(c as any).promoCode}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Saisi par */}
+            {c.saisiPar && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{
+                  width: 32, height: 32, borderRadius: '50%',
+                  background: 'var(--primary)', color: '#fff',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 13, fontWeight: 700, flexShrink: 0, fontFamily: 'Epilogue, sans-serif',
+                }}>
+                  {c.saisiPar.charAt(0).toUpperCase()}
+                </div>
+                <div>
+                  <div className="section-label" style={{ marginBottom: 1 }}>Saisi par</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--on-surface)', fontFamily: 'Epilogue, sans-serif' }}>{c.saisiPar}</div>
+                </div>
+              </div>
+            )}
+
+            {/* Infos client */}
+            <div className="divider" />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <InfoRow label="Téléphone" value={c.telephone} />
+              <InfoRow label="Email" value={c.email} />
+              <InfoRow label="Créneau" value={c.creneauHoraire} />
+              <InfoRow label="Mode" value={c.mode} />
             </div>
-          )}
+            <InfoRow label="Adresse" value={c.adresseLivraison} />
 
-          {c.lienGcal && (
-            <a href={c.lienGcal} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 10, fontSize: 12, color: 'var(--primary)', fontWeight: 600 }}>
-              📅 Voir sur Google Calendar
-            </a>
-          )}
+            {/* Instructions spéciales */}
+            {c.instructionsSpeciales && (
+              <div style={{
+                padding: '10px 12px', background: 'rgba(180,83,9,0.08)',
+                border: '1px solid rgba(180,83,9,0.22)', borderRadius: 'var(--radius-sm)',
+                fontSize: 12, color: 'var(--warning)', fontFamily: 'Manrope, sans-serif',
+              }}>
+                ⚠️ {c.instructionsSpeciales}
+              </div>
+            )}
 
-          {/* Actions client */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 14 }}>
-            {c.telephone && (
-              <a
-                href={`sms:${c.telephone}?body=Bonjour ${c.prenom}, concernant votre commande ${c.id} du ${formatDate(c.dateLivraison)}.`}
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 5,
-                  padding: '8px 14px', borderRadius: 10, fontSize: 12, fontWeight: 700,
-                  background: 'rgba(84,101,30,0.12)', color: 'var(--success)', border: '1px solid rgba(84,101,30,0.3)',
-                  textDecoration: 'none',
-                }}
-              >
-                💬 SMS
+            {/* Notes cuisine */}
+            {c.notesCuisine && (
+              <div style={{ padding: '10px 12px', background: 'var(--surface-low)', borderRadius: 'var(--radius-sm)', fontSize: 13, color: 'var(--on-surface-2)', fontFamily: 'Manrope, sans-serif', fontStyle: 'italic' }}>
+                <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.05em', fontStyle: 'normal' }}>Notes cuisine</span>
+                {c.notesCuisine}
+              </div>
+            )}
+
+            {c.lienGcal && (
+              <a href={c.lienGcal} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--primary)', fontWeight: 600, fontFamily: 'Manrope, sans-serif' }}>
+                📅 Voir sur Google Calendar
               </a>
             )}
-            {c.email && (
-              <a
-                href={`mailto:${c.email}?subject=Votre commande ${c.id} — Matias&body=Bonjour ${c.prenom},%0D%0A%0D%0AConcernant votre commande ${c.id} prévue le ${formatDate(c.dateLivraison)} à ${c.heureLivraison}.%0D%0A%0D%0ACordialement,%0D%0AMatias`}
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 5,
-                  padding: '8px 14px', borderRadius: 10, fontSize: 12, fontWeight: 700,
-                  background: 'rgba(0,66,117,0.10)', color: 'var(--primary)', border: '1px solid rgba(0,66,117,0.25)',
-                  textDecoration: 'none',
-                }}
-              >
-                ✉️ Email
-              </a>
-            )}
+
+            {/* Actions client */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {c.telephone && (
+                <a
+                  href={`sms:${c.telephone}?body=Bonjour ${c.prenom}, concernant votre commande ${c.id} du ${formatDate(c.dateLivraison)}.`}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 5,
+                    padding: '9px 16px', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 700,
+                    background: 'rgba(84,101,30,0.10)', color: 'var(--success)', border: '1px solid rgba(84,101,30,0.25)',
+                    textDecoration: 'none', fontFamily: 'Manrope, sans-serif',
+                  }}
+                >
+                  💬 SMS
+                </a>
+              )}
+              {c.email && (
+                <a
+                  href={`mailto:${c.email}?subject=Votre commande ${c.id} — Matias&body=Bonjour ${c.prenom},%0D%0A%0D%0AConcernant votre commande ${c.id} prévue le ${formatDate(c.dateLivraison)} à ${c.heureLivraison}.%0D%0A%0D%0ACordialement,%0D%0AMatias`}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 5,
+                    padding: '9px 16px', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 700,
+                    background: 'rgba(0,66,117,0.08)', color: 'var(--primary)', border: '1px solid rgba(0,66,117,0.22)',
+                    textDecoration: 'none', fontFamily: 'Manrope, sans-serif',
+                  }}
+                >
+                  ✉️ Email
+                </a>
+              )}
+              {isPatron && (
+                <button
+                  onClick={handleCommandePrete}
+                  disabled={commandePreteSending || commandePreteOk}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 5,
+                    padding: '9px 16px', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 700,
+                    background: commandePreteOk ? 'rgba(84,101,30,0.10)' : 'rgba(0,66,117,0.07)',
+                    color: commandePreteOk ? 'var(--success)' : 'var(--primary)',
+                    border: `1px solid ${commandePreteOk ? 'rgba(84,101,30,0.25)' : 'rgba(0,66,117,0.20)'}`,
+                    cursor: commandePreteSending ? 'not-allowed' : 'pointer',
+                    opacity: commandePreteSending ? 0.6 : 1,
+                    fontFamily: 'Manrope, sans-serif',
+                  }}
+                >
+                  {commandePreteOk ? '✅ Notifié !' : commandePreteSending ? 'Envoi…' : '📦 Commande prête'}
+                </button>
+              )}
+            </div>
+
+            {/* Édition patron/manager */}
             {isPatron && (
-              <button
-                onClick={handleCommandePrete}
-                disabled={commandePreteSending || commandePreteOk}
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 5,
-                  padding: '8px 14px', borderRadius: 10, fontSize: 12, fontWeight: 700,
-                  background: commandePreteOk ? 'rgba(84,101,30,0.10)' : 'rgba(0,66,117,0.08)',
-                  color: commandePreteOk ? 'var(--secondary)' : 'var(--primary)',
-                  border: `1px solid ${commandePreteOk ? 'rgba(84,101,30,0.25)' : 'rgba(0,66,117,0.20)'}`,
-                  cursor: commandePreteSending ? 'not-allowed' : 'pointer',
-                  opacity: commandePreteSending ? 0.7 : 1,
-                }}
-              >
-                {commandePreteOk ? '✅ Notifié !' : commandePreteSending ? 'Envoi…' : '📦 Commande prête'}
-              </button>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, borderTop: '1px solid var(--border)', paddingTop: 14, marginTop: 2 }}>
+                <div className="section-label">Édition</div>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Statut</label>
+                  <select className="input" style={{ fontSize: 13 }} value={statut} onChange={e => setStatut(e.target.value)}>
+                    {STATUTS.map(s => <option key={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Prix estimé (€)</label>
+                  <input type="number" className="input" style={{ fontSize: 13 }} value={prixEstime} onChange={e => setPrixEstime(e.target.value)} placeholder="0.00" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Notes cuisine</label>
+                  <textarea className="input" rows={2} style={{ resize: 'none', fontSize: 13 }} value={notesCuisine} onChange={e => setNotesCuisine(e.target.value)} placeholder="Instructions spéciales pour la brigade…" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Notes manager</label>
+                  <textarea className="input" rows={2} style={{ resize: 'none', fontSize: 13 }} value={notesManager} onChange={e => setNotesManager(e.target.value)} />
+                </div>
+                <button onClick={handleUpdate} disabled={saving} className="btn-primary" style={{ fontSize: 14 }}>
+                  {saved ? '✅ Sauvegardé !' : saving ? 'Sauvegarde…' : 'Enregistrer la commande'}
+                </button>
+                {!saved && !saving && (
+                  <button onClick={() => { setStatut('En attente'); handleUpdate() }} style={{
+                    background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)',
+                    padding: '12px', fontSize: 13, fontWeight: 600, color: 'var(--on-surface-2)',
+                    cursor: 'pointer', fontFamily: 'Manrope, sans-serif',
+                  }}>
+                    Mettre en attente
+                  </button>
+                )}
+              </div>
             )}
           </div>
-
-          {/* Édition patron/manager */}
-          {isPatron && (
-            <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 10, borderTop: '1px solid var(--border)', paddingTop: 14 }}>
-              <div>
-                <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Statut</label>
-                <select className="input" style={{ fontSize: 13 }} value={statut} onChange={e => setStatut(e.target.value)}>
-                  {STATUTS.map(s => <option key={s}>{s}</option>)}
-                </select>
-              </div>
-              <div>
-                <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Prix estimé (€)</label>
-                <input type="number" className="input" style={{ fontSize: 13 }} value={prixEstime} onChange={e => setPrixEstime(e.target.value)} placeholder="0.00" />
-              </div>
-              <div>
-                <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Notes cuisine</label>
-                <textarea className="input" rows={2} style={{ resize: 'none', fontSize: 13 }} value={notesCuisine} onChange={e => setNotesCuisine(e.target.value)} />
-              </div>
-              <div>
-                <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Notes manager</label>
-                <textarea className="input" rows={2} style={{ resize: 'none', fontSize: 13 }} value={notesManager} onChange={e => setNotesManager(e.target.value)} />
-              </div>
-              <button onClick={handleUpdate} disabled={saving} className="btn-primary" style={{ fontSize: 13 }}>
-                {saved ? '✅ Sauvegardé !' : saving ? 'Sauvegarde…' : '💾 Mettre à jour'}
-              </button>
-            </div>
-          )}
         </div>
       )}
     </div>

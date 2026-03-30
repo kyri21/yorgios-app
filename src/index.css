@@ -1,0 +1,523 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@keyframes gdpr-spin { to { transform: rotate(360deg) } }
+
+/* ─── Aegean Precision — Variables ─────────────────── */
+:root {
+  /* Brand */
+  --primary:          #004275;   /* Deep Greek Blue */
+  --primary-dark:     #003260;   /* hover */
+  --primary-container:#005a9c;   /* gradient end */
+  --secondary:        #54651e;   /* Olive Green — HACCP OK */
+  --tertiary:         #880014;   /* Madder Red — HACCP danger */
+
+  /* Surface hierarchy (light mode) */
+  --surface:          #fcf9f3;   /* Level 0 — fond de base */
+  --surface-low:      #f6f3ed;   /* Level 1 — sections */
+  --surface-mid:      #ede9e1;   /* Level 2 — cards interactives */
+  --surface-high:     #e5e2dc;   /* Level 3 — cards actives */
+  --surface-highest:  #dedad2;   /* Level 4 */
+
+  /* Text */
+  --on-surface:       #1c1c18;   /* texte principal (pas de noir pur) */
+  --on-surface-2:     #5a5a55;   /* texte secondaire */
+  --on-surface-3:     #9a9a94;   /* texte tertiaire / placeholder */
+  --on-primary:       #ffffff;
+
+  /* HACCP chips */
+  --haccp-ok-bg:      #d7ec95;
+  --haccp-ok-text:    #3a4a0e;
+  --haccp-danger-bg:  #b10f21;
+  --haccp-danger-text:#ffffff;
+  --haccp-warn-bg:    #fef08a;
+  --haccp-warn-text:  #713f12;
+
+  /* Status */
+  --danger:           #c0392b;
+  --success:          #2d7a4f;
+  --warning:          #b45309;
+
+  /* Ghost border */
+  --border:           rgba(28, 28, 24, 0.12);
+  --border-soft:      rgba(28, 28, 24, 0.06);
+
+  /* Radius */
+  --radius-sm:   8px;
+  --radius-md:   12px;
+  --radius-lg:   16px;
+  --radius-xl:   20px;
+
+  /* Nav */
+  --nav-h:       64px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-top:    env(safe-area-inset-top, 0px);
+
+  /* Shadows — ambient only, 6% opacity */
+  --shadow-float: 0 8px 32px rgba(28, 28, 24, 0.08);
+  --shadow-fab:   0 4px 24px rgba(0, 66, 117, 0.24);
+}
+
+/* ─── Base ─────────────────────────────────────────── */
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    scroll-behavior: smooth;
+  }
+  body {
+    font-family: 'Manrope', system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--on-surface);
+    background: var(--surface);
+    padding-top: var(--safe-top);
+  }
+  * { box-sizing: border-box; }
+
+  h1, h2, h3 {
+    font-family: 'Epilogue', 'Manrope', sans-serif;
+    letter-spacing: -0.02em;
+    color: var(--on-surface);
+  }
+
+  /* Scrollbars — ultra fins */
+  ::-webkit-scrollbar { width: 3px; height: 3px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(28,28,24,0.2); }
+}
+
+/* ─── Components ───────────────────────────────────── */
+@layer components {
+
+  /* ── Page container ── */
+  .page {
+    padding: 24px 20px;
+    max-width: 680px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding-bottom: calc(var(--nav-h) + var(--safe-bottom) + 32px);
+    animation: page-in 0.2s ease both;
+  }
+
+  /* ── Card ── */
+  .card {
+    background: var(--surface-low);
+    border-radius: var(--radius-lg);
+    padding: 16px;
+    transition: background 0.15s ease, transform 0.15s ease;
+  }
+  .card:hover {
+    background: var(--surface-mid);
+  }
+
+  /* ── Bouton primaire — bleu Aegean ── */
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    min-height: 52px;
+    padding: 0 2rem;
+    background: linear-gradient(135deg, var(--primary) 0%, var(--primary-container) 100%);
+    color: var(--on-primary);
+    font-family: 'Manrope', sans-serif;
+    font-size: 15px;
+    font-weight: 700;
+    border: none;
+    border-radius: var(--radius-xl);
+    cursor: pointer;
+    transition: opacity 0.15s ease, transform 0.1s ease;
+    user-select: none;
+    letter-spacing: 0.01em;
+  }
+  .btn-primary:not(:disabled):hover {
+    opacity: 0.9;
+  }
+  .btn-primary:not(:disabled):active {
+    transform: scale(0.98);
+  }
+  .btn-primary:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+
+  /* ── Bouton secondaire — ghost border ── */
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    min-height: 48px;
+    padding: 0 1.5rem;
+    background: transparent;
+    color: var(--primary);
+    font-family: 'Manrope', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    border: 1.5px solid rgba(0, 66, 117, 0.25);
+    border-radius: var(--radius-xl);
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+    user-select: none;
+  }
+  .btn-secondary:not(:disabled):hover {
+    background: rgba(0, 66, 117, 0.06);
+    border-color: rgba(0, 66, 117, 0.4);
+  }
+  .btn-secondary:not(:disabled):active {
+    transform: scale(0.98);
+  }
+  .btn-secondary:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+
+  /* ── Bouton danger ── */
+  .btn-danger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    min-height: 48px;
+    padding: 0 1.5rem;
+    background: var(--tertiary);
+    color: #fff;
+    font-family: 'Manrope', sans-serif;
+    font-size: 14px;
+    font-weight: 700;
+    border: none;
+    border-radius: var(--radius-xl);
+    cursor: pointer;
+    transition: opacity 0.15s ease;
+    user-select: none;
+  }
+  .btn-danger:not(:disabled):hover { opacity: 0.88; }
+  .btn-danger:not(:disabled):active { transform: scale(0.98); }
+  .btn-danger:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  /* ── Bouton icône ── */
+  .btn-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 40px;
+    min-height: 40px;
+    border-radius: var(--radius-md);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    transition: background 0.1s ease;
+    color: var(--on-surface-2);
+  }
+  .btn-icon:hover { background: var(--surface-mid); color: var(--on-surface); }
+
+  /* ── Input — underlined style professionnel ── */
+  .input {
+    width: 100%;
+    min-height: 52px;
+    padding: 0 4px;
+    background: transparent;
+    border: none;
+    border-bottom: 1.5px solid var(--border);
+    border-radius: 0;
+    font-family: 'Manrope', sans-serif;
+    font-size: 15px;
+    color: var(--on-surface);
+    transition: border-color 0.2s ease;
+    outline: none;
+  }
+  .input::placeholder { color: var(--on-surface-3); }
+  .input:focus {
+    border-bottom-color: var(--primary);
+    border-bottom-width: 2px;
+  }
+
+  /* Input dans un card (fond teinté) */
+  .input-filled {
+    width: 100%;
+    min-height: 52px;
+    padding: 0 14px;
+    background: var(--surface-low);
+    border: none;
+    border-radius: var(--radius-md);
+    font-family: 'Manrope', sans-serif;
+    font-size: 15px;
+    color: var(--on-surface);
+    transition: background 0.15s ease, box-shadow 0.2s ease;
+    outline: none;
+  }
+  .input-filled::placeholder { color: var(--on-surface-3); }
+  .input-filled:focus {
+    background: var(--surface-mid);
+    box-shadow: inset 0 -2px 0 var(--primary);
+  }
+
+  textarea.input { padding: 14px 4px; min-height: 80px; resize: vertical; }
+  textarea.input-filled { padding: 14px; min-height: 80px; resize: vertical; }
+
+  /* Select */
+  select.input-filled {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%235a5a55' viewBox='0 0 16 16'%3E%3Cpath d='M7.247 11.14 2.451 5.658C1.885 5.013 2.345 4 3.204 4h9.592a1 1 0 0 1 .753 1.659l-4.796 5.48a1 1 0 0 1-1.506 0z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 14px center;
+    padding-right: 36px;
+    cursor: pointer;
+  }
+  select.input {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%235a5a55' viewBox='0 0 16 16'%3E%3Cpath d='M7.247 11.14 2.451 5.658C1.885 5.013 2.345 4 3.204 4h9.592a1 1 0 0 1 .753 1.659l-4.796 5.48a1 1 0 0 1-1.506 0z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 4px center;
+    padding-right: 28px;
+    cursor: pointer;
+    background-color: transparent;
+  }
+
+  /* ── Chips HACCP ── */
+  .chip-ok {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--haccp-ok-bg);
+    color: var(--haccp-ok-text);
+    font-family: 'Manrope', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 10px;
+    border-radius: 99px;
+    white-space: nowrap;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+  .chip-danger {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--haccp-danger-bg);
+    color: var(--haccp-danger-text);
+    font-family: 'Manrope', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 10px;
+    border-radius: 99px;
+    white-space: nowrap;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+  .chip-warn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--haccp-warn-bg);
+    color: var(--haccp-warn-text);
+    font-family: 'Manrope', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 10px;
+    border-radius: 99px;
+    white-space: nowrap;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+
+  /* Aliases rétro-compat */
+  .badge-ok   { @apply chip-ok; }
+  .badge-ko   { @apply chip-danger; }
+  .badge-warn { @apply chip-warn; }
+
+  /* ── Section title ── */
+  .section-title {
+    font-family: 'Epilogue', sans-serif;
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--on-surface);
+    letter-spacing: -0.02em;
+    margin-bottom: 4px;
+  }
+
+  /* ── Label de section ── */
+  .section-label {
+    font-family: 'Manrope', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--on-surface-3);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+
+  /* ── Divider ── (invisible — séparation par espace) */
+  .divider {
+    border: none;
+    height: 1px;
+    background: var(--border-soft);
+    margin: 8px 0;
+  }
+
+  /* ── Display temperature ── */
+  .temp-display {
+    font-family: 'Epilogue', sans-serif;
+    font-size: 3.5rem;
+    font-weight: 800;
+    line-height: 1;
+    letter-spacing: -0.03em;
+    color: var(--on-surface);
+  }
+}
+
+/* ─── Bottom nav safe area ─────────────────────────── */
+.bottom-nav {
+  padding-bottom: var(--safe-bottom);
+}
+
+/* ─── Chat bubbles ─────────────────────────────────── */
+.bubble-sent {
+  background: var(--primary);
+  color: #fff;
+  border-radius: 16px;
+  border-bottom-right-radius: 4px;
+  padding: 10px 14px;
+  max-width: 280px;
+  font-family: 'Manrope', sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.bubble-received {
+  background: var(--surface-high);
+  color: var(--on-surface);
+  border-radius: 16px;
+  border-bottom-left-radius: 4px;
+  padding: 10px 14px;
+  max-width: 280px;
+  font-family: 'Manrope', sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+/* ─── Animations ───────────────────────────────────── */
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.animate-slide-up { animation: slideUp 0.2s ease both; }
+.animate-fade-in  { animation: fadeIn 0.15s ease both; }
+
+/* ─── Loading spinner ──────────────────────────────── */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner {
+  width: 20px; height: 20px;
+  border: 2px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.65s linear infinite;
+  flex-shrink: 0;
+}
+
+/* ─── Skeleton shimmer ─────────────────────────────── */
+@keyframes skeleton-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--surface-low) 25%, var(--surface-mid) 50%, var(--surface-low) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+  border-radius: var(--radius-md);
+}
+
+/* ─── Page transitions ─────────────────────────────── */
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── Bottom nav active scale ──────────────────────── */
+.bottom-nav-item {
+  transition: transform 0.12s ease, opacity 0.12s ease;
+}
+.bottom-nav-item:active {
+  transform: scale(0.88);
+  opacity: 0.7;
+}
+
+/* ─── Card hover lift ──────────────────────────────── */
+.card {
+  transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+.card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 20px rgba(28, 28, 24, 0.06);
+}
+
+/* ─── Modal / bottom-sheet transition ─────────────── */
+@keyframes sheet-in {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-sheet-in { animation: sheet-in 0.22s cubic-bezier(0.34,1.56,0.64,1) both; }
+
+/* ─── Checkbox animation ──────────────────────────── */
+@keyframes check-pop {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.25); }
+  100% { transform: scale(1); }
+}
+.animate-check-pop { animation: check-pop 0.2s ease both; }
+
+/* ─── Nav tabs (module corner/cuisine) ────────────── */
+.nav-tabs {
+  display: flex;
+  gap: 0;
+  padding: 0 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border-soft);
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  scrollbar-width: none;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  background: rgba(252, 249, 243, 0.85);
+}
+.nav-tabs::-webkit-scrollbar { display: none; }
+
+.nav-tab {
+  padding: 14px 16px 12px;
+  font-family: 'Manrope', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--on-surface-2);
+  text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+  border-bottom: 2.5px solid transparent;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.nav-tab:hover { color: var(--primary); }
+.nav-tab.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+/* ─── Glassmorphism overlay ───────────────────────── */
+.glass {
+  background: rgba(252, 249, 243, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}

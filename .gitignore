@@ -1,0 +1,40 @@
+# Dépendances
+node_modules/
+.venv/
+venv/
+
+# Build
+dist/
+
+# Variables d'environnement — NE JAMAIS COMMITER
+.env
+.env.local
+.env.*.local
+functions/.env
+.streamlit/secrets.toml
+
+# Clés de service Firebase — NE JAMAIS COMMITER
+*-adminsdk-*.json
+yorgios-app-6a715-e74c29ecbcc3.json
+cuisine-yorgios-firebase-adminsdk-fbsvc-1c759ed390.json
+secrets/
+
+# Firebase cache
+.firebase/
+firebase-debug.log
+.firebaserc
+
+# Claude
+memory/
+.claude-integration-state.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Fichiers de référence volumineux (données historiques importées)
+reference/
+storage
