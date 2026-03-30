@@ -6,6 +6,7 @@ import LoadingScreen from '../components/LoadingScreen';
 import Layout from '../components/Layout';
 import Login from '../pages/Login';
 import CommandePublique from '../pages/CommandePublique';
+import Rgpd from '../pages/Rgpd';
 
 // Lazy loading — chaque module est chargé uniquement à la première visite
 const PlanningModule  = lazy(() => import('../modules/planning'));
@@ -41,6 +42,7 @@ export default function AppRouter() {
 
         {/* Public */}
         <Route path="/login" element={<Login />} />
+        <Route path="/rgpd" element={<Rgpd />} />
 
         {/* Racine → redirection par rôle */}
         <Route path="/" element={<RootRedirect />} />
