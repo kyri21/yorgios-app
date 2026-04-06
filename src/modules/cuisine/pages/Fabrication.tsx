@@ -9,13 +9,28 @@ import { db, auth } from '../../../firebase/config'
 import { useToast } from '../../../hooks/useToast'
 import type { HaccpCategory } from '../lib/haccpRules'
 
+type LivraisonHisto = {
+  id: string
+  lotCode: string
+  productName: string
+  category: string
+  departTempC: number | null
+  departAt: any
+  receptionTempC: number | null
+  receptionAt: any
+  result: string | null
+  isManual?: boolean
+}
+
 type Produit = {
   id: string
   name: string
   abrv?: string
   defaultCategory?: HaccpCategory
+  gepCategory?: string
   dlcDays?: number
   active?: boolean
+  inFabrication?: boolean
 }
 
 type Lot = {
@@ -66,10 +81,18 @@ export default function Fabrication() {
   const [produits, setProduits] = useState<Produit[]>([])
   const [produitsLoaded, setProduitsLoaded] = useState(false)
 
+  // Mode formulaire
+  const [formMode, setFormMode] = useState<'catalogue' | 'manuel'>('catalogue')
+
   // Formulaire
   const [producedDate, setProducedDate] = useState(nowLocalDateValue())
   const [productId, setProductId] = useState('')
   const [quantity, setQuantity] = useState('')
+
+  // Mode manuel
+  const [manualName, setManualName] = useState('')
+  const [manualDlcDays, setManualDlcDays] = useState('3')
+  const [manualCategory, setManualCategory] = useState('PLAT_CUISINE')
 
   // Liste lots
   const [lots, setLots] = useState<Lot[]>([])
@@ -84,6 +107,13 @@ export default function Fabrication() {
   // QR code
   const [qrLot, setQrLot] = useState<Lot | null>(null)
 
+  // Onglets
+  const [tab, setTab] = useState<'fabrication' | 'historique'>('fabrication')
+
+  // Historique livraisons
+  const [histoLoading, setHistoLoading] = useState(false)
+  const [historique, setHistorique] = useState<LivraisonHisto[]>([])
+
   const selectedProduit = useMemo(() => produits.find(p => p.id === productId) || null, [produits, productId])
 
   const computed = useMemo(() => {
@@ -96,12 +126,22 @@ export default function Fabrication() {
   }, [quantity, producedDate, selectedProduit])
 
   async function loadProduits() {
-    const snap = await getDocsFromServer(collection(db, 'produits'))
+    const snap = await getDocsFromServer(collection(db, 'catalogue'))
     const list: Produit[] = snap.docs
       .map(d => ({ id: d.id, ...(d.data() as any) }))
-      .filter(p => p.active !== false)
+      .filter(p => p.active !== false && p.inFabrication !== false)
       .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
     setProduits(list)
+  }
+
+  async function loadHistorique() {
+    setHistoLoading(true)
+    try {
+      const snap = await getDocs(query(collection(db, 'livraisons'), orderBy('departAt', 'desc'), limit(50)))
+      setHistorique(snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }) as LivraisonHisto))
+    } finally {
+      setHistoLoading(false)
+    }
   }
 
   async function loadLots() {
@@ -129,11 +169,18 @@ export default function Fabrication() {
     setSavedOk(false)
     const q = Number(quantity)
     if (!producedDate) return setError('Date de fabrication obligatoire.')
-    if (!selectedProduit) return setError('Produit obligatoire.')
     if (!Number.isFinite(q) || q <= 0) return setError('Quantité invalide (doit être > 0).')
 
-    const abrv = (selectedProduit.abrv || selectedProduit.name.slice(0, 3)).trim().toUpperCase()
-    const dlcDays = Number(selectedProduit.dlcDays ?? 3)
+    const isManuel = formMode === 'manuel'
+    if (!isManuel && !selectedProduit) return setError('Produit obligatoire.')
+    if (isManuel && !manualName.trim()) return setError('Nom du produit obligatoire.')
+
+    const productName = isManuel ? manualName.trim() : selectedProduit!.name
+    const abrv = isManuel
+      ? manualName.trim().slice(0, 4).toUpperCase().replace(/\s+/g, '')
+      : (selectedProduit!.abrv || selectedProduit!.name.slice(0, 3)).trim().toUpperCase()
+    const dlcDays = isManuel ? Number(manualDlcDays) || 3 : Number(selectedProduit!.dlcDays ?? 3)
+    const category = isManuel ? manualCategory : (selectedProduit!.gepCategory ?? selectedProduit!.defaultCategory ?? 'AUTRE')
 
     setLoading(true)
     try {
@@ -147,10 +194,10 @@ export default function Fabrication() {
       await setDoc(lotRef, {
         producedAt: Timestamp.fromDate(producedAtDate),
         dlcAt: Timestamp.fromDate(dlcAtDate),
-        productId: selectedProduit.id,
-        productName: selectedProduit.name,
+        productId: isManuel ? null : selectedProduit!.id,
+        productName,
         abrv,
-        category: selectedProduit.defaultCategory ?? 'AUTRE',
+        category,
         quantity: q,
         dlcDays,
         lotCode,
@@ -160,6 +207,8 @@ export default function Fabrication() {
       })
       setQuantity('')
       setProductId('')
+      setManualName('')
+      setManualDlcDays('3')
       setProducedDate(nowLocalDateValue())
       setSavedOk(true)
       show('Lot créé')
@@ -268,39 +317,133 @@ export default function Fabrication() {
         </h1>
       </div>
 
+      {/* Onglets */}
+      <div style={{ display: 'flex', gap: 4, background: 'var(--surface-mid)', borderRadius: 12, padding: 4 }}>
+        {(['fabrication', 'historique'] as const).map(t => (
+          <button
+            key={t}
+            onClick={() => { setTab(t); if (t === 'historique' && historique.length === 0) loadHistorique() }}
+            style={{
+              flex: 1, padding: '9px 0', borderRadius: 9, fontSize: 13, fontWeight: 700,
+              border: 'none', cursor: 'pointer', fontFamily: 'Manrope, sans-serif',
+              background: tab === t ? 'var(--surface)' : 'transparent',
+              color: tab === t ? 'var(--primary)' : 'var(--on-surface-3)',
+              boxShadow: tab === t ? '0 1px 6px rgba(28,28,24,0.08)' : 'none',
+              transition: 'all 0.15s',
+            }}
+          >
+            {t === 'fabrication' ? '🍳 Fabrication' : '📋 Historique'}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'historique' && (
+        <HistoriqueTab loading={histoLoading} livraisons={historique} onRefresh={loadHistorique} />
+      )}
+
+      {tab === 'fabrication' && (<>
+
       {/* Formulaire nouveau lot */}
       <div className="card" style={{ padding: 20 }}>
         <p className="section-label" style={{ margin: '0 0 14px' }}>Nouveau lot</p>
 
+        {/* Mode toggle */}
+        <div style={{
+          display: 'flex', gap: 4, marginBottom: 16,
+          background: 'var(--surface-mid)', borderRadius: 12, padding: 4,
+        }}>
+          {(['catalogue', 'manuel'] as const).map(m => (
+            <button key={m} type="button" onClick={() => { setFormMode(m); setProductId(''); setManualName('') }} style={{
+              flex: 1, padding: '8px 0', borderRadius: 9, fontSize: 12, fontWeight: 700,
+              border: 'none', cursor: 'pointer', fontFamily: 'Manrope, sans-serif',
+              background: formMode === m ? 'var(--surface)' : 'transparent',
+              color: formMode === m ? 'var(--primary)' : 'var(--on-surface-3)',
+              boxShadow: formMode === m ? '0 1px 6px rgba(28,28,24,0.08)' : 'none',
+              transition: 'all 0.15s',
+            }}>
+              {m === 'catalogue' ? '📋 Catalogue' : '✏️ Produit libre'}
+            </button>
+          ))}
+        </div>
+
         <form onSubmit={onSubmit}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, alignItems: 'end' }}>
             <div>
               <label style={labelStyle}>Date fabrication *</label>
-              <input className="input" type="date" value={producedDate} onChange={e => setProducedDate(e.target.value)} />
+              <input className="input" type="date" value={producedDate} onChange={e => setProducedDate(e.target.value)} style={{ width: '100%', boxSizing: 'border-box' }} />
             </div>
             <div>
               <label style={labelStyle}>Quantité *</label>
-              <input className="input" type="number" step="1" min="1" value={quantity} onChange={e => setQuantity(e.target.value)} />
+              <input className="input" type="number" step="1" min="1" value={quantity} onChange={e => setQuantity(e.target.value)} style={{ width: '100%', boxSizing: 'border-box' }} />
             </div>
           </div>
 
-          <label style={{ ...labelStyle, marginTop: 14 }}>Produit *</label>
-          <select className="input" value={productId} onChange={e => setProductId(e.target.value)} disabled={!produitsLoaded}>
-            <option value="">{produitsLoaded ? '— Sélectionner —' : 'Chargement…'}</option>
-            {produits.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-
-          {selectedProduit && (
-            <div style={{
-              fontSize: 12, color: 'var(--on-surface-2)', marginTop: 8,
-              padding: '8px 12px', borderRadius: 10,
-              background: 'var(--surface-mid)',
-            }}>
-              DLC : <b style={{ color: 'var(--on-surface)', fontWeight: 700 }}>{selectedProduit.dlcDays ?? '?'} j</b>
-              {computed.dlcAt && (
-                <> · Expire le <b style={{ color: 'var(--warning)', fontWeight: 700 }}>{computed.dlcAt.toLocaleDateString('fr-FR')}</b></>
+          {formMode === 'catalogue' ? (
+            <>
+              <label style={{ ...labelStyle, marginTop: 14 }}>Produit *</label>
+              <select className="input" value={productId} onChange={e => setProductId(e.target.value)} disabled={!produitsLoaded}>
+                <option value="">{produitsLoaded ? '— Sélectionner —' : 'Chargement…'}</option>
+                {produits.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              {selectedProduit && (
+                <div style={{
+                  fontSize: 12, color: 'var(--on-surface-2)', marginTop: 8,
+                  padding: '8px 12px', borderRadius: 10,
+                  background: 'var(--surface-mid)',
+                }}>
+                  DLC : <b style={{ color: 'var(--on-surface)', fontWeight: 700 }}>{selectedProduit.dlcDays ?? '?'} j</b>
+                  {computed.dlcAt && (
+                    <> · Expire le <b style={{ color: 'var(--warning)', fontWeight: 700 }}>{computed.dlcAt.toLocaleDateString('fr-FR')}</b></>
+                  )}
+                </div>
               )}
-            </div>
+            </>
+          ) : (
+            <>
+              <label style={{ ...labelStyle, marginTop: 14 }}>Nom du produit *</label>
+              <input
+                className="input"
+                placeholder="ex : Moussaka maison, Tiramisu…"
+                value={manualName}
+                onChange={e => setManualName(e.target.value)}
+              />
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginTop: 14 }}>
+                <div>
+                  <label style={labelStyle}>DLC (jours) *</label>
+                  <input
+                    className="input"
+                    type="number" min="1" max="30"
+                    value={manualDlcDays}
+                    onChange={e => setManualDlcDays(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label style={labelStyle}>Catégorie</label>
+                  <select className="input" value={manualCategory} onChange={e => setManualCategory(e.target.value)}>
+                    <option value="PLAT_CUISINE">Plat cuisiné</option>
+                    <option value="PATISSERIE">Pâtisserie</option>
+                    <option value="LAIT">Laitier</option>
+                    <option value="LEGUME">Légume</option>
+                    <option value="VIANDE">Viande</option>
+                    <option value="VIANDE_HACHEE">Viande hachée</option>
+                    <option value="AUTRE">Autre</option>
+                  </select>
+                </div>
+              </div>
+              {manualName.trim() && manualDlcDays && (
+                <div style={{
+                  fontSize: 12, color: 'var(--on-surface-2)', marginTop: 8,
+                  padding: '8px 12px', borderRadius: 10, background: 'var(--surface-mid)',
+                }}>
+                  DLC : <b style={{ color: 'var(--on-surface)', fontWeight: 700 }}>{manualDlcDays} j</b>
+                  {producedDate && (
+                    <> · Expire le <b style={{ color: 'var(--warning)', fontWeight: 700 }}>
+                      {new Date(new Date(`${producedDate}T00:00:00`).getTime() + Number(manualDlcDays) * 86400000).toLocaleDateString('fr-FR')}
+                    </b></>
+                  )}
+                </div>
+              )}
+            </>
           )}
 
           {error && (
@@ -315,7 +458,9 @@ export default function Fabrication() {
           )}
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16 }}>
-            <button className="btn-primary" type="submit" disabled={loading || !computed.okQty || !productId} style={{ flex: 1 }}>
+            <button className="btn-primary" type="submit"
+              disabled={loading || !computed.okQty || (formMode === 'catalogue' ? !productId : !manualName.trim())}
+              style={{ flex: 1 }}>
               {loading ? 'Création…' : 'Valider le lot'}
             </button>
             {savedOk && (
@@ -504,6 +649,8 @@ export default function Fabrication() {
         })}
       </div>
 
+      </> )} {/* fin tab fabrication */}
+
       {/* ========== MODAL QR CODE ========== */}
       {qrLot && (() => {
         const fmt = (ts: any) => ts?.toDate ? ts.toDate().toLocaleDateString('fr-FR') : '—'
@@ -582,6 +729,84 @@ export default function Fabrication() {
         )
       })()}
 
+    </div>
+  )
+}
+
+// ─── Onglet Historique ────────────────────────────────────────────
+function HistoriqueTab({ loading, livraisons, onRefresh }: { loading: boolean; livraisons: LivraisonHisto[]; onRefresh: () => void }) {
+  function fmt(ts: any) {
+    if (!ts?.toDate) return '—'
+    return ts.toDate().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+  }
+
+  if (loading) return <SkeletonList count={4} />
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <p className="section-label" style={{ margin: 0 }}>50 dernières livraisons</p>
+        <button onClick={onRefresh} className="btn-secondary" style={{ padding: '6px 12px', fontSize: 12, height: 'auto' }}>↺ Actualiser</button>
+      </div>
+
+      {livraisons.length === 0 && (
+        <EmptyState icon="📋" title="Aucune livraison" subtitle="Les lots envoyés au corner apparaîtront ici" />
+      )}
+
+      {livraisons.map(l => {
+        const hasReception = l.receptionTempC !== null && l.receptionTempC !== undefined
+        const result = l.result
+        const resultColor = result === 'ACCEPTE' ? 'var(--success)' : result === 'REFUSE' ? 'var(--danger)' : 'var(--on-surface-3)'
+        const resultBg   = result === 'ACCEPTE' ? 'rgba(45,122,79,0.10)' : result === 'REFUSE' ? 'rgba(192,57,43,0.10)' : 'var(--surface-mid)'
+        const resultLabel = result === 'ACCEPTE' ? '✓ Accepté' : result === 'REFUSE' ? '✕ Refusé' : '…'
+
+        return (
+          <div key={l.id} className="card" style={{ padding: '12px 14px' }}>
+            {/* Ligne 1 : produit + lot */}
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--on-surface)', marginBottom: 2 }}>
+                  {l.productName}{l.isManual ? <span style={{ fontSize: 10, color: 'var(--on-surface-3)', marginLeft: 4 }}>manuel</span> : null}
+                </div>
+                <div style={{ fontFamily: 'monospace', fontSize: 11, fontWeight: 700, color: 'var(--primary)', letterSpacing: '0.02em' }}>
+                  {l.lotCode}
+                </div>
+              </div>
+              {hasReception ? (
+                <span style={{ fontSize: 11, fontWeight: 700, color: resultColor, background: resultBg, borderRadius: 8, padding: '3px 9px', flexShrink: 0 }}>
+                  {resultLabel}
+                </span>
+              ) : (
+                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--warning)', background: 'rgba(180,83,9,0.08)', borderRadius: 8, padding: '3px 9px', flexShrink: 0 }}>
+                  Réception en attente
+                </span>
+              )}
+            </div>
+
+            {/* Ligne 2 : températures */}
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: 11, color: 'var(--on-surface-3)' }}>Départ</span>
+                <span style={{ fontSize: 15, fontWeight: 800, color: 'var(--primary)', fontFamily: 'Epilogue, sans-serif' }}>
+                  {l.departTempC !== null && l.departTempC !== undefined ? `${l.departTempC}°C` : '—'}
+                </span>
+              </div>
+              <span style={{ color: 'var(--border)', fontSize: 14 }}>→</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: 11, color: 'var(--on-surface-3)' }}>Réception</span>
+                <span style={{ fontSize: 15, fontWeight: 800, fontFamily: 'Epilogue, sans-serif', color: hasReception ? (result === 'REFUSE' ? 'var(--danger)' : 'var(--success)') : 'var(--on-surface-3)' }}>
+                  {hasReception ? `${l.receptionTempC}°C` : '—'}
+                </span>
+              </div>
+            </div>
+
+            {/* Ligne 3 : date */}
+            <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 6 }}>
+              {fmt(l.departAt)}{hasReception && l.receptionAt ? ` · Réception ${fmt(l.receptionAt)}` : ''}
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }
