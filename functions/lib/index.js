@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.incomingSms = exports.createPointage = exports.validatePromoCodePublic = exports.validatePromoCode = exports.syncContactToBrevo = exports.weeklyHygieneRecap = exports.notifHygieneMensuel = exports.notifHygieneHebdo = exports.notifTemperaturesEvening = exports.notifUrgences = exports.onLivraisonReception = exports.onLivraisonTemperature = exports.onPointageLate = exports.notifPlatsJour = exports.notifCartonsChambrefroide = exports.notifTooGoodToGo = exports.notifTemperatures = exports.deleteUser = exports.createUser = exports.purgeOldMessages = exports.onCommandePrete = exports.notifCommandesJJ = exports.notifCommandesJ2 = exports.onCommandeUpdated = exports.onNewCommande = exports.onNewMessage = void 0;
+exports.clearRupturesAt13h = exports.incomingSms = exports.createPointage = exports.validatePromoCodePublic = exports.validatePromoCode = exports.syncContactToBrevo = exports.weeklyHygieneRecap = exports.notifHygieneMensuel = exports.notifHygieneHebdo = exports.notifTemperaturesEvening = exports.notifUrgences = exports.onLivraisonReception = exports.onLivraisonTemperature = exports.onPointageLate = exports.notifPlatsJour = exports.notifCartonsChambrefroide = exports.notifTooGoodToGo = exports.notifTemperatures = exports.updateUserPassword = exports.deleteUser = exports.createUser = exports.sendPasswordReset = exports.purgeOldMessages = exports.onCommandePrete = exports.notifCommandesJJ = exports.notifCommandesJ2 = exports.onCommandeUpdated = exports.onNewCommande = exports.onNewMessage = void 0;
 // Node.js 22
 const app_1 = require("firebase-admin/app");
 const firestore_1 = require("firebase-admin/firestore");
@@ -173,7 +173,7 @@ exports.onNewMessage = (0, firestore_2.onDocumentCreated)({ document: 'messages/
     });
 });
 // ─────────────────────────────────────────────────────────────────
-// COMMANDES — Nouvelle commande → notif immédiate (patron + manager)
+// COMMANDES — Nouvelle commande → notif immédiate (patron + manager + cuisine) + email
 // ─────────────────────────────────────────────────────────────────
 exports.onNewCommande = (0, firestore_2.onDocumentCreated)({ document: 'commandes_externes/{cmdId}', region: 'europe-west1', database: 'test' }, async (event) => {
     var _a;
@@ -181,20 +181,111 @@ exports.onNewCommande = (0, firestore_2.onDocumentCreated)({ document: 'commande
     if (!cmd)
         return;
     // ── Anti-spam : max 3 commandes par numéro de téléphone sur 24h ──
-    const telephone = cmd.telephone || cmd.tel || '';
-    if (telephone) {
-        const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-        const existing = await db.collection('commandes_externes')
-            .where('telephone', '==', telephone)
-            .where('createdAt', '>=', firestore_1.Timestamp.fromDate(since))
-            .get();
-        if (existing.size > 3) {
-            console.warn(`[anti-spam] Trop de commandes pour ${telephone} — suppression`);
-            await event.data.ref.delete();
-            return;
+    // (query simple sur telephone uniquement, filtrage date en mémoire pour éviter index composite)
+    try {
+        const telephone = cmd.telephone || cmd.tel || '';
+        if (telephone) {
+            const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+            const existing = await db.collection('commandes_externes')
+                .where('telephone', '==', telephone)
+                .get();
+            const recentCount = existing.docs.filter(d => {
+                const ds = d.data().dateSaisie;
+                const t = (ds === null || ds === void 0 ? void 0 : ds.toDate) ? ds.toDate() : null;
+                return t && t >= since;
+            }).length;
+            if (recentCount > 3) {
+                console.warn(`[anti-spam] Trop de commandes pour ${telephone} — suppression`);
+                await event.data.ref.delete();
+                return;
+            }
         }
     }
-    await notifyRoles(`📬 Nouvelle commande — ${cmd.id}`, `${cmd.prenom} ${cmd.nom} · ${cmd.dateLivraison} à ${cmd.heureLivraison}`, '/corner/commandes', ['patron', 'manager']);
+    catch (e) {
+        console.error('[anti-spam] Erreur vérification (ignorée):', e);
+    }
+    // ── Produits ──
+    const produitsList = Array.isArray(cmd.produits) && cmd.produits.length
+        ? cmd.produits.map((p) => `  - ${p.produit}${p.quantite ? ' × ' + p.quantite : ''}${p.unite ? ' ' + p.unite : ''}`).join('\n')
+        : '  Non précisé';
+    // ── Message messagerie interne ──
+    const now = firestore_1.Timestamp.now();
+    const expiresAt = firestore_1.Timestamp.fromMillis(now.toMillis() + 7 * 86400000);
+    const messageText = [
+        '📬 NOUVELLE COMMANDE CLIENT',
+        `━━━━━━━━━━━━━━━━━━`,
+        `Client : ${cmd.prenom} ${cmd.nom}`,
+        cmd.telephone ? `Tél : ${cmd.telephone}` : null,
+        `Livraison : ${cmd.dateLivraison} à ${cmd.heureLivraison}`,
+        cmd.adresseLivraison ? `Adresse : ${cmd.adresseLivraison}` : null,
+        cmd.nombreConvives ? `Convives : ${cmd.nombreConvives}` : null,
+        `━━━━━━━━━━━━━━━━━━`,
+        `Produits :`,
+        produitsList,
+        cmd.instructionsSpeciales ? `━━━━━━━━━━━━━━━━━━\nNote : ${cmd.instructionsSpeciales}` : null,
+        `━━━━━━━━━━━━━━━━━━`,
+        `Statut : EN ATTENTE — voir onglet Commandes clients`,
+    ].filter(Boolean).join('\n');
+    try {
+        await db.collection('messages').add({
+            channelId: 'corner-cuisine',
+            senderId: 'system',
+            senderName: 'Commandes',
+            senderRole: 'system',
+            text: messageText,
+            createdAt: now,
+            expiresAt,
+        });
+    }
+    catch (e) {
+        console.error('[onNewCommande] Erreur écriture message:', e);
+    }
+    // ── Push FCM ──
+    try {
+        await notifyRoles(`📬 Nouvelle commande — ${cmd.prenom} ${cmd.nom}`, `${cmd.dateLivraison} à ${cmd.heureLivraison}`, '/corner/commandes', ['patron', 'manager', 'cuisine']);
+    }
+    catch (e) {
+        console.error('[onNewCommande] Erreur FCM:', e);
+    }
+    // ── Email au patron ──
+    try {
+        const gmailUser = process.env.GMAIL_USER;
+        const gmailPass = process.env.GMAIL_APP_PASSWORD;
+        if (gmailUser && gmailPass) {
+            const transporter = nodemailer.createTransport({
+                service: 'gmail',
+                auth: { user: gmailUser, pass: gmailPass },
+            });
+            await transporter.sendMail({
+                from: `"Matias" <${gmailUser}>`,
+                to: 'a.cozzika@gmail.com',
+                cc: 'yorgios.system@gmail.com, commande.yorgios@gmail.com',
+                subject: `📬 Nouvelle commande — ${cmd.prenom} ${cmd.nom} (${cmd.dateLivraison})`,
+                text: [
+                    `Bonjour Alexandre,`,
+                    ``,
+                    `Une nouvelle commande vient d'être enregistrée.`,
+                    ``,
+                    `Client : ${cmd.prenom} ${cmd.nom}`,
+                    cmd.telephone ? `Téléphone : ${cmd.telephone}` : null,
+                    cmd.email ? `Email : ${cmd.email}` : null,
+                    ``,
+                    `Livraison : ${cmd.dateLivraison} à ${cmd.heureLivraison}`,
+                    cmd.adresseLivraison ? `Adresse : ${cmd.adresseLivraison}` : null,
+                    cmd.nombreConvives ? `Convives : ${cmd.nombreConvives}` : null,
+                    ``,
+                    `Produits :`,
+                    produitsList,
+                    cmd.instructionsSpeciales ? `\nInstructions : ${cmd.instructionsSpeciales}` : null,
+                    ``,
+                    `Voir dans l'application : onglet Commandes clients.`,
+                ].filter(Boolean).join('\n'),
+            });
+        }
+    }
+    catch (e) {
+        console.error('[onNewCommande] Erreur email:', e);
+    }
 });
 // ─────────────────────────────────────────────────────────────────
 // COMMANDES — Statut mis à jour
@@ -331,6 +422,40 @@ exports.purgeOldMessages = (0, scheduler_1.onSchedule)({ schedule: 'every 24 hou
 // ─────────────────────────────────────────────────────────────────
 // ADMIN — Créer un utilisateur (patron uniquement)
 // ─────────────────────────────────────────────────────────────────
+exports.sendPasswordReset = (0, https_1.onCall)({ region: 'europe-west1' }, async (request) => {
+    const { email } = request.data;
+    if (!email)
+        throw new https_1.HttpsError('invalid-argument', 'Email manquant');
+    const gmailUser = process.env.GMAIL_USER;
+    const gmailPass = process.env.GMAIL_APP_PASSWORD;
+    if (!gmailUser || !gmailPass)
+        throw new https_1.HttpsError('internal', 'Configuration email manquante');
+    // Génère le lien Firebase (sécurisé, expire en 1h)
+    const resetLink = await (0, auth_1.getAuth)().generatePasswordResetLink(email);
+    const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: { user: gmailUser, pass: gmailPass },
+    });
+    await transporter.sendMail({
+        from: `"Matias" <${gmailUser}>`,
+        to: email,
+        subject: 'Réinitialisation du mot de passe Matias',
+        text: [
+            `Bonjour,`,
+            ``,
+            `Une demande de réinitialisation de mot de passe a été effectuée pour votre compte Matias.`,
+            ``,
+            `Le lien de réinitialisation vous a été communiqué directement dans l'application.`,
+            `Il est valable 1 heure.`,
+            ``,
+            `Si vous n'êtes pas à l'origine de cette demande, ignorez simplement cet email.`,
+            ``,
+            `L'équipe Matias`,
+        ].join('\n'),
+    });
+    return { ok: true, resetLink };
+});
+// ─────────────────────────────────────────────────────────────────
 exports.createUser = (0, https_1.onCall)({ region: 'europe-west1' }, async (request) => {
     var _a;
     if (!request.auth)
@@ -378,6 +503,23 @@ exports.deleteUser = (0, https_1.onCall)({ region: 'europe-west1' }, async (requ
         throw new https_1.HttpsError('invalid-argument', 'Impossible de supprimer son propre compte');
     await (0, auth_1.getAuth)().deleteUser(uid);
     await db.collection('users').doc(uid).delete();
+    return { ok: true };
+});
+// ─────────────────────────────────────────────────────────────────
+exports.updateUserPassword = (0, https_1.onCall)({ region: 'europe-west1' }, async (request) => {
+    var _a;
+    if (!request.auth)
+        throw new https_1.HttpsError('unauthenticated', 'Non authentifié');
+    const callerSnap = await db.collection('users').doc(request.auth.uid).get();
+    if (!['patron', 'administrateur'].includes((_a = callerSnap.data()) === null || _a === void 0 ? void 0 : _a.role)) {
+        throw new https_1.HttpsError('permission-denied', 'Réservé au patron / administrateur');
+    }
+    const { uid, password } = request.data;
+    if (!uid)
+        throw new https_1.HttpsError('invalid-argument', 'uid manquant');
+    if (!password || password.length < 6)
+        throw new https_1.HttpsError('invalid-argument', 'Mot de passe minimum 6 caractères');
+    await (0, auth_1.getAuth)().updateUser(uid, { password });
     return { ok: true };
 });
 // ─────────────────────────────────────────────────────────────────
@@ -802,7 +944,7 @@ const POINTAGE_ZONES_SERVER = [
     { id: 'cuisine', label: 'Cuisine', lat: 48.8739, lng: 2.3498, radiusMeters: 80 },
     { id: 'corner', label: 'Corner', lat: 48.85034, lng: 2.32394, radiusMeters: 100 },
 ];
-const GPS_ACCURACY_LIMIT_SERVER = 50; // mètres
+const GPS_ACCURACY_LIMIT_SERVER = 200; // mètres (WiFi iPad ~50-200m)
 function haversineServer(lat1, lon1, lat2, lon2) {
     const R = 6371000;
     const toRad = (x) => x * Math.PI / 180;
@@ -970,5 +1112,17 @@ exports.incomingSms = (0, https_1.onRequest)({ region: 'europe-west1', cors: fal
     }
     // ── 9. Réponse TwiML vide (pas de SMS de retour)
     res.status(200).send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+});
+/** 13h00 — Efface les demandes de ruptures non vues (nouveau cycle après-midi) */
+exports.clearRupturesAt13h = (0, scheduler_1.onSchedule)({ schedule: '0 13 * * *', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
+    const snap = await db.collection('ruptures_actives').where('viewed', '==', false).get();
+    if (snap.empty) {
+        console.log('[13h] Aucune rupture active non vue.');
+        return;
+    }
+    const batch = db.batch();
+    snap.docs.forEach(d => batch.update(d.ref, { viewed: true }));
+    await batch.commit();
+    console.log(`[13h] ${snap.size} rupture(s) active(s) marquée(s) vues.`);
 });
 //# sourceMappingURL=index.js.map
