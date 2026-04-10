@@ -59,9 +59,10 @@ export function monthKey(date: Date): string {
 
 export function getContractAt(emp: { weeklyCapHours: number; avenants?: { effectiveDate: string; weeklyCapHours: number }[] }, weekStartDate: Date): number {
   if (!emp.avenants || emp.avenants.length === 0) return emp.weeklyCapHours
-  const dateStr = weekStartDate.toISOString().slice(0, 10)
+  const d = weekStartDate
+  const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
   const applicable = emp.avenants
-    .filter(a => a.effectiveDate <= dateStr)
+    .filter(a => a.effectiveDate && a.effectiveDate <= dateStr)
     .sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate))
   return applicable.length > 0 ? applicable[0].weeklyCapHours : emp.weeklyCapHours
 }

@@ -98,7 +98,9 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
     if (!emp || !ep || !primeMois) return null
     const caPrime = calcCaPrime(primeMois.caRealise, primeMois.caObjectif)
     const hb = primeMois.hygieneActif ? hygieneBonus(primeMois.hygieneScore) : 0
-    return calcPrime(emp.weeklyCapHours, ep.comportementOk, ep.ponctualiteOk, caPrime, hb, emp.primeComportement, emp.primePonctualite)
+    const lastDay = new Date(month.getFullYear(), month.getMonth() + 1, 0)
+    const effectiveHours = getContractAt(emp, lastDay)
+    return calcPrime(effectiveHours, ep.comportementOk, ep.ponctualiteOk, caPrime, hb, emp.primeComportement, emp.primePonctualite)
   }
 
   if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--on-surface-2)', fontSize: '13px' }}>Chargement du mois…</div>
