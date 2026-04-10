@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { deleteField } from 'firebase/firestore'
 import type { Employee, RestrictionRule } from '../../types'
 import { HOURS, DAYS_LABELS } from '../../types'
 import { createEmployee, updateEmployee, deactivateEmployee } from '../../firebase/employees'
@@ -61,8 +62,8 @@ export function EmployeeManager({ employees, onClose }: Props) {
     const data: Omit<Employee, 'id'> = {
       name: name.trim(), initials: inits, color, weeklyCapHours: cap, active: true,
       restrictions: restrictions.filter(r => r.days.length > 0 && r.hours.length > 0),
-      ...(primeComp !== '' ? { primeComportement: Number(primeComp) } : {}),
-      ...(primePonct !== '' ? { primePonctualite: Number(primePonct) } : {}),
+      primeComportement: primeComp !== '' ? Number(primeComp) : (editing ? deleteField() as any : undefined),
+      primePonctualite:  primePonct !== '' ? Number(primePonct) : (editing ? deleteField() as any : undefined),
     }
     try {
       editing ? await updateEmployee(editing.id, data) : await createEmployee(data)
