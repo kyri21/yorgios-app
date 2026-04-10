@@ -11,6 +11,8 @@ export interface Employee {
   weeklyCapHours: number
   active: boolean
   restrictions?: RestrictionRule[]
+  primeComportement?: number
+  primePonctualite?: number
 }
 
 export type HoursMap = Record<string, string[]>

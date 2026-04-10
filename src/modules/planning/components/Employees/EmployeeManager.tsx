@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { Employee, RestrictionRule } from '../../types'
 import { HOURS, DAYS_LABELS } from '../../types'
 import { createEmployee, updateEmployee, deactivateEmployee } from '../../firebase/employees'
+import { getBareme } from '../../utils/primes'
 
 const PRESET_COLORS = [
   '#1976D2','#43A047','#F4511E','#8E24AA','#00897B',
@@ -19,10 +20,12 @@ export function EmployeeManager({ employees, onClose }: Props) {
   const [color, setColor] = useState(PRESET_COLORS[0])
   const [cap, setCap] = useState(35)
   const [restrictions, setRestrictions] = useState<RestrictionRule[]>([])
+  const [primeComp, setPrimeComp]   = useState<number | ''>('')
+  const [primePonct, setPrimePonct] = useState<number | ''>('')
   const [saving, setSaving] = useState(false)
 
   function openNew() {
-    setEditing(null); setName(''); setInitials(''); setColor(PRESET_COLORS[0]); setCap(35); setRestrictions([]); setMode('edit')
+    setEditing(null); setName(''); setInitials(''); setColor(PRESET_COLORS[0]); setCap(35); setRestrictions([]); setPrimeComp(''); setPrimePonct(''); setMode('edit')
   }
 
   function openEdit(emp: Employee) {
@@ -31,6 +34,8 @@ export function EmployeeManager({ employees, onClose }: Props) {
     if (!r) setRestrictions([])
     else if (Array.isArray(r)) setRestrictions(r)
     else setRestrictions([r as RestrictionRule])
+    setPrimeComp(emp.primeComportement !== undefined ? emp.primeComportement : '')
+    setPrimePonct(emp.primePonctualite !== undefined ? emp.primePonctualite : '')
     setMode('edit')
   }
 
@@ -56,6 +61,8 @@ export function EmployeeManager({ employees, onClose }: Props) {
     const data: Omit<Employee, 'id'> = {
       name: name.trim(), initials: inits, color, weeklyCapHours: cap, active: true,
       restrictions: restrictions.filter(r => r.days.length > 0 && r.hours.length > 0),
+      ...(primeComp !== '' ? { primeComportement: Number(primeComp) } : {}),
+      ...(primePonct !== '' ? { primePonctualite: Number(primePonct) } : {}),
     }
     try {
       editing ? await updateEmployee(editing.id, data) : await createEmployee(data)
@@ -228,6 +235,36 @@ export function EmployeeManager({ employees, onClose }: Props) {
                   max={45}
                   className="input-filled w-full"
                 />
+              </div>
+
+              {/* Primes personnalisées */}
+              <div>
+                <label className="section-label mb-1 block">Primes personnalisées (optionnel)</label>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '10px', color: 'var(--on-surface-3)', marginBottom: 3 }}>Comportement (€)</div>
+                    <input
+                      type="number" min={0} max={500}
+                      value={primeComp}
+                      onChange={e => setPrimeComp(e.target.value === '' ? '' : Number(e.target.value))}
+                      className="input-filled w-full"
+                      placeholder={`${getBareme(cap).comp / 2} (barème)`}
+                    />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '10px', color: 'var(--on-surface-3)', marginBottom: 3 }}>Ponctualité (€)</div>
+                    <input
+                      type="number" min={0} max={500}
+                      value={primePonct}
+                      onChange={e => setPrimePonct(e.target.value === '' ? '' : Number(e.target.value))}
+                      className="input-filled w-full"
+                      placeholder={`${getBareme(cap).comp / 2} (barème)`}
+                    />
+                  </div>
+                </div>
+                <div style={{ fontSize: '10px', color: 'var(--on-surface-3)', marginTop: 4 }}>
+                  Laisser vide = barème par défaut selon les heures contrat
+                </div>
               </div>
 
               {/* Indisponibilités */}

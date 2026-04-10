@@ -159,8 +159,9 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
         if (!ep) return null
         const retard = stats.find(s => s.empId === emp.id)?.total.retardMinutes ?? 0
         const b = getBareme(emp.weeklyCapHours)
-        const prime = calcPrime(emp.weeklyCapHours, ep.comportementOk, ep.ponctualiteOk, caPrime, hygBonus)
-        const compHalf = b.comp / 2
+        const compAmt  = emp.primeComportement ?? b.comp / 2
+        const ponctAmt = emp.primePonctualite  ?? b.comp / 2
+        const prime = calcPrime(emp.weeklyCapHours, ep.comportementOk, ep.ponctualiteOk, caPrime, hygBonus, emp.primeComportement, emp.primePonctualite)
 
         return (
           <div key={emp.id} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '12px', padding: '14px', marginBottom: '10px' }}>
@@ -182,7 +183,7 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
               <CriteriaRow
                 emoji="🎭" label="Comportement en stand" tag="Manuel"
-                amount={compHalf} earned={ep.comportementOk}
+                amount={compAmt} earned={ep.comportementOk}
                 checked={ep.comportementOk} disabled={!canEdit}
                 onChange={v => updateEmp(emp.id, { comportementOk: v })}
               />
@@ -190,7 +191,7 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
                 emoji="⏰" label="Ponctualité"
                 tag={retard > 0 ? `${retard}min de retard` : 'Aucun retard ✓'}
                 tagWarn={retard > 0}
-                amount={compHalf} earned={ep.ponctualiteOk}
+                amount={ponctAmt} earned={ep.ponctualiteOk}
                 checked={ep.ponctualiteOk} disabled={!canEdit}
                 onChange={v => updateEmp(emp.id, { ponctualiteOk: v })}
               />
@@ -219,7 +220,7 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
 
             <div style={{ borderTop: '1px solid var(--border-soft)', marginTop: '8px', paddingTop: '8px', display: 'flex', justifyContent: 'flex-end', gap: '12px', alignItems: 'center' }}>
               <span style={{ fontSize: '10px', color: 'var(--on-surface-3)' }}>
-                comp. {b.comp}€ + CA {caPrime}€{primeMois.hygieneActif ? ` + ${hygBonus}€ hyg.` : ''}
+                comp. {compAmt + ponctAmt}€ + CA {caPrime}€{primeMois.hygieneActif ? ` + ${hygBonus}€ hyg.` : ''}
               </span>
               <span style={{ fontSize: '14px', fontWeight: 800, color: prime > 0 ? 'var(--primary)' : 'var(--on-surface-3)' }}>= {prime}€ brut</span>
             </div>

@@ -39,11 +39,15 @@ export function calcPrime(
   ponctualiteOk: boolean,
   caPrime: number,
   hygBonus: number,
+  primeComportement?: number,
+  primePonctualite?: number,
 ): number {
   const b = getBareme(weeklyCapHours)
+  const compAmt  = primeComportement ?? b.comp / 2
+  const ponctAmt = primePonctualite  ?? b.comp / 2
   return (
-    (comportementOk ? b.comp / 2 : 0) +
-    (ponctualiteOk  ? b.comp / 2 : 0) +
+    (comportementOk ? compAmt  : 0) +
+    (ponctualiteOk  ? ponctAmt : 0) +
     caPrime +
     hygBonus
   )
