@@ -196,7 +196,11 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
               />
               <CriteriaRow
                 emoji="📈" label="Performance CA"
-                tag={caPrime > 0 ? `${Math.round((caRealise! / caObjectif!) * 100)}% ✓` : 'Objectif non atteint'}
+                tag={
+                  caPrime > 0 && caRealise != null && caObjectif != null
+                    ? `${Math.round((caRealise / caObjectif) * 100)}% ✓`
+                    : 'Objectif non atteint'
+                }
                 tagWarn={caPrime === 0}
                 amount={caPrime} earned={caPrime > 0}
                 checked={caPrime > 0} disabled={true}
