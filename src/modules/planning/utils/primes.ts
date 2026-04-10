@@ -1,8 +1,8 @@
-export const BAREME: Record<number, { comp: number; perf: number }> = {
-  35: { comp: 60, perf: 240 },
-  30: { comp: 50, perf: 200 },
-  25: { comp: 40, perf: 160 },
-  20: { comp: 30, perf: 120 },
+export const BAREME: Record<number, { comp: number }> = {
+  35: { comp: 60 },
+  30: { comp: 50 },
+  25: { comp: 40 },
+  20: { comp: 30 },
 }
 export const HYGIENE_BONUS = 50
 
