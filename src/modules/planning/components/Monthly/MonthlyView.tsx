@@ -123,6 +123,7 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
                 <th style={thSt}>S.Solde</th>
                 <th style={thSt}>Absences</th>
                 <th style={thSt}>Retard</th>
+                <th style={thSt}>Parti tôt</th>
                 <th style={thSt}>J.Off</th>
                 <th style={{ ...thSt, background: '#2d5a8e' }}>🏆 Prime</th>
               </tr>
@@ -149,6 +150,9 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
                         <td style={{ ...tdSt, color: wc.sansSolde > 0 ? 'var(--warning)' : 'var(--on-surface-3)' }}>{wc.sansSolde > 0 ? `${wc.sansSolde}j` : '—'}</td>
                         <td style={{ ...tdSt, color: wc.absences > 0 ? 'var(--danger)' : 'var(--on-surface-3)' }}>{wc.absences > 0 ? `${wc.absences}j` : '—'}</td>
                         <td style={{ ...tdSt, color: wc.retardMinutes > 0 ? 'var(--warning)' : 'var(--on-surface-3)' }}>{wc.retardMinutes > 0 ? `${wc.retardMinutes}min` : '—'}</td>
+                        <td style={{ ...tdSt, color: wc.partiTotHeures > 0 ? 'var(--danger)' : 'var(--on-surface-3)' }}>
+                          {wc.partiTotHeures > 0 ? `${wc.partiTotHeures}h` : '—'}
+                        </td>
                         <td style={{ ...tdSt, color: wc.joursOff > 0 ? '#6366f1' : 'var(--on-surface-3)' }}>{wc.joursOff > 0 ? `${wc.joursOff}j` : '—'}</td>
                         {wi === 0 && (
                           <td rowSpan={stat.weeks.length + 1} style={{ ...tdSt, verticalAlign: 'middle', textAlign: 'center', background: 'rgba(0,66,117,0.04)' }}>
@@ -169,6 +173,9 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
                       <td style={{ ...tdSt, fontWeight: 700, color: stat.total.sansSolde > 0 ? 'var(--warning)' : 'var(--on-surface-3)' }}>{stat.total.sansSolde > 0 ? `${stat.total.sansSolde}j` : '—'}</td>
                       <td style={{ ...tdSt, fontWeight: 700, color: stat.total.absences > 0 ? 'var(--danger)' : 'var(--on-surface-3)' }}>{stat.total.absences > 0 ? `${stat.total.absences}j` : '—'}</td>
                       <td style={{ ...tdSt, fontWeight: 700, color: stat.total.retardMinutes > 0 ? 'var(--warning)' : 'var(--on-surface-3)' }}>{stat.total.retardMinutes > 0 ? `${stat.total.retardMinutes}min` : '—'}</td>
+                      <td style={{ ...tdSt, fontWeight: 700, color: stat.total.partiTotHeures > 0 ? 'var(--danger)' : 'var(--on-surface-3)' }}>
+                        {stat.total.partiTotHeures > 0 ? `${stat.total.partiTotHeures}h` : '—'}
+                      </td>
                       <td style={{ ...tdSt, fontWeight: 700, color: stat.total.joursOff > 0 ? '#6366f1' : 'var(--on-surface-3)' }}>{stat.total.joursOff > 0 ? `${stat.total.joursOff}j` : '—'}</td>
                     </tr>
                   </React.Fragment>
