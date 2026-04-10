@@ -3,6 +3,12 @@ export interface RestrictionRule {
   hours: string[]
 }
 
+export interface Avenant {
+  effectiveDate: string
+  weeklyCapHours: number
+  label?: string
+}
+
 export interface Employee {
   id: string
   name: string
@@ -13,6 +19,7 @@ export interface Employee {
   restrictions?: RestrictionRule[]
   primeComportement?: number
   primePonctualite?: number
+  avenants?: Avenant[]
 }
 
 export type HoursMap = Record<string, string[]>

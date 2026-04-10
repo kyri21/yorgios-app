@@ -56,3 +56,12 @@ export function calcPrime(
 export function monthKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
 }
+
+export function getContractAt(emp: { weeklyCapHours: number; avenants?: { effectiveDate: string; weeklyCapHours: number }[] }, weekStartDate: Date): number {
+  if (!emp.avenants || emp.avenants.length === 0) return emp.weeklyCapHours
+  const dateStr = weekStartDate.toISOString().slice(0, 10)
+  const applicable = emp.avenants
+    .filter(a => a.effectiveDate <= dateStr)
+    .sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate))
+  return applicable.length > 0 ? applicable[0].weeklyCapHours : emp.weeklyCapHours
+}

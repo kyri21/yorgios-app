@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { deleteField } from 'firebase/firestore'
-import type { Employee, RestrictionRule } from '../../types'
+import type { Employee, RestrictionRule, Avenant } from '../../types'
 import { HOURS, DAYS_LABELS } from '../../types'
 import { createEmployee, updateEmployee, deactivateEmployee } from '../../firebase/employees'
 import { getBareme } from '../../utils/primes'
@@ -23,10 +23,11 @@ export function EmployeeManager({ employees, onClose }: Props) {
   const [restrictions, setRestrictions] = useState<RestrictionRule[]>([])
   const [primeComp, setPrimeComp]   = useState<number | ''>('')
   const [primePonct, setPrimePonct] = useState<number | ''>('')
+  const [avenants, setAvenants] = useState<Avenant[]>([])
   const [saving, setSaving] = useState(false)
 
   function openNew() {
-    setEditing(null); setName(''); setInitials(''); setColor(PRESET_COLORS[0]); setCap(35); setRestrictions([]); setPrimeComp(''); setPrimePonct(''); setMode('edit')
+    setEditing(null); setName(''); setInitials(''); setColor(PRESET_COLORS[0]); setCap(35); setRestrictions([]); setPrimeComp(''); setPrimePonct(''); setAvenants([]); setMode('edit')
   }
 
   function openEdit(emp: Employee) {
@@ -37,6 +38,7 @@ export function EmployeeManager({ employees, onClose }: Props) {
     else setRestrictions([r as RestrictionRule])
     setPrimeComp(emp.primeComportement !== undefined ? emp.primeComportement : '')
     setPrimePonct(emp.primePonctualite !== undefined ? emp.primePonctualite : '')
+    setAvenants(emp.avenants ?? [])
     setMode('edit')
   }
 
@@ -64,6 +66,7 @@ export function EmployeeManager({ employees, onClose }: Props) {
       restrictions: restrictions.filter(r => r.days.length > 0 && r.hours.length > 0),
       primeComportement: primeComp !== '' ? Number(primeComp) : (editing ? deleteField() as any : undefined),
       primePonctualite:  primePonct !== '' ? Number(primePonct) : (editing ? deleteField() as any : undefined),
+      avenants: avenants.length > 0 ? avenants : [],
     }
     try {
       editing ? await updateEmployee(editing.id, data) : await createEmployee(data)
@@ -266,6 +269,69 @@ export function EmployeeManager({ employees, onClose }: Props) {
                 <div style={{ fontSize: '10px', color: 'var(--on-surface-3)', marginTop: 4 }}>
                   Laisser vide = barème par défaut selon les heures contrat
                 </div>
+              </div>
+
+              {/* Avenants contrat */}
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                  <label style={{ fontFamily: 'Epilogue, sans-serif', fontWeight: 600, fontSize: '0.875rem', color: 'var(--on-surface)' }}>
+                    Avenants contrat
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setAvenants(prev => [...prev, { effectiveDate: '', weeklyCapHours: cap, label: '' }])}
+                    className="btn-secondary"
+                    style={{ fontSize: '0.75rem', padding: '4px 12px' }}
+                  >
+                    + Ajouter
+                  </button>
+                </div>
+                {avenants.length === 0 && (
+                  <p style={{ color: 'var(--on-surface-3)', fontSize: '0.78rem', fontStyle: 'italic' }}>
+                    Aucun avenant — les heures contrat actuelles s'appliquent toujours.
+                  </p>
+                )}
+                {avenants.map((av, ai) => (
+                  <div key={ai} style={{ background: 'var(--surface-low)', border: '1px solid var(--border)', borderRadius: '10px', padding: '10px 12px', marginBottom: '8px' }}>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: '10px', color: 'var(--on-surface-3)', marginBottom: 3 }}>À partir du</div>
+                        <input
+                          type="date"
+                          value={av.effectiveDate}
+                          onChange={e => setAvenants(prev => prev.map((a, i) => i === ai ? { ...a, effectiveDate: e.target.value } : a))}
+                          className="input-filled w-full"
+                        />
+                      </div>
+                      <div style={{ width: '70px' }}>
+                        <div style={{ fontSize: '10px', color: 'var(--on-surface-3)', marginBottom: 3 }}>Heures</div>
+                        <input
+                          type="number" min={1} max={45}
+                          value={av.weeklyCapHours}
+                          onChange={e => setAvenants(prev => prev.map((a, i) => i === ai ? { ...a, weeklyCapHours: Number(e.target.value) } : a))}
+                          className="input-filled w-full"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setAvenants(prev => prev.filter((_, i) => i !== ai))}
+                        style={{ color: 'var(--danger)', fontSize: '0.75rem', paddingBottom: '6px', background: 'none', border: 'none', cursor: 'pointer' }}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    <div style={{ marginTop: '6px' }}>
+                      <input
+                        type="text"
+                        value={av.label ?? ''}
+                        onChange={e => setAvenants(prev => prev.map((a, i) => i === ai ? { ...a, label: e.target.value } : a))}
+                        className="input-filled w-full"
+                        placeholder="Note (optionnel, ex: Passage à 35h)"
+                        style={{ fontSize: '0.75rem' }}
+                      />
+                    </div>
+                  </div>
+                ))}
               </div>
 
               {/* Indisponibilités */}

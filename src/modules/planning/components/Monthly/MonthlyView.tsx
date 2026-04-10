@@ -8,7 +8,7 @@ import { exportMonthlyPDF } from '../../utils/pdfExport'
 import { exportMonthlyExcel } from '../../utils/exports'
 import { PrimesTab } from './PrimesTab'
 import type { PrimeMois, PrimeEmploye } from '../../firebase/primes'
-import { calcPrime, calcCaPrime, hygieneBonus, getBareme } from '../../utils/primes'
+import { calcPrime, calcCaPrime, hygieneBonus, getBareme, getContractAt } from '../../utils/primes'
 
 interface Props {
   month: Date
@@ -56,7 +56,11 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
             if (allowedISOs.has(dateISO)) filteredEvents[dateISO] = evts
           })
 
-          const counter = computeWeekCounters(filteredDraft, filteredEvents, [emp])[0]
+          const effectiveHours = getContractAt(emp, mon)
+          const empForWeek = effectiveHours !== emp.weeklyCapHours
+            ? { ...emp, weeklyCapHours: effectiveHours }
+            : emp
+          const counter = computeWeekCounters(filteredDraft, filteredEvents, [empForWeek])[0]
 
           // Heures supp = 0 sur semaine incomplète
           if (isPartialWeek) return { ...counter, heuresSupp: 0 }
