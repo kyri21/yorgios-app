@@ -11,14 +11,17 @@ export function computeWeekCounters(
   employees: Employee[]
 ): EmpWeekCounter[] {
   return employees.map(emp => {
-    let heuresTravaillees = 0
+    let heuresTravaillees = 0, heuresDimanche = 0
     for (let i = 0; i < 7; i++) {
       const hours = draft[i]?.hours ?? {}
       Object.values(hours).forEach(emps => {
-        if (emps.includes(emp.id)) heuresTravaillees++
+        if (emps.includes(emp.id)) {
+          heuresTravaillees++
+          if (i === 6) heuresDimanche++  // dimanche = index 6
+        }
       })
     }
-    let conges = 0, sansSolde = 0, absences = 0, retardMinutes = 0, joursOff = 0
+    let conges = 0, sansSolde = 0, absences = 0, retardMinutes = 0, joursOff = 0, maladesHeures = 0, partiTotHeures = 0
     Object.values(weekEvents).forEach(dayEvents => {
       dayEvents.filter(e => e.empId === emp.id).forEach(e => {
         if (e.type === 'conge') conges++
@@ -26,6 +29,8 @@ export function computeWeekCounters(
         else if (e.type === 'absence') absences++
         else if (e.type === 'retard') retardMinutes += e.minutes ?? 0
         else if (e.type === 'jour_off') joursOff++
+        else if (e.type === 'malade') maladesHeures += e.hours ?? 0
+        else if (e.type === 'parti_tot') partiTotHeures += e.hours ?? 0
       })
     })
     return {
@@ -33,7 +38,7 @@ export function computeWeekCounters(
       heuresTravaillees,
       heuresContrat: emp.weeklyCapHours,
       heuresSupp: Math.max(0, heuresTravaillees - emp.weeklyCapHours),
-      conges, sansSolde, absences, retardMinutes, joursOff,
+      heuresDimanche, conges, sansSolde, absences, retardMinutes, joursOff, maladesHeures, partiTotHeures,
     }
   })
 }
@@ -148,10 +153,12 @@ export function usePlanning(user: { uid: string } | null) {
   }
 
   const setEventRange = useCallback(async (
-    startISO: string, endISO: string, empId: string, type: AbsenceType, minutes?: number
+    startISO: string, endISO: string, empId: string, type: AbsenceType, minutes?: number, hours?: number
   ) => {
     if (!user) return
-    const event: DayEvent = minutes !== undefined ? { empId, type, minutes } : { empId, type }
+    const event: DayEvent = { empId, type }
+    if (minutes !== undefined) event.minutes = minutes
+    if (hours   !== undefined) event.hours   = hours
     const dates: string[] = []
     const d = new Date(startISO + 'T12:00:00')
     const end = new Date(endISO + 'T12:00:00')

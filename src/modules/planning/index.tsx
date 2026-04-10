@@ -356,7 +356,7 @@ export default function PlanningModule() {
             />
           )
         ) : (
-          <MonthlyView month={currentMonth} employees={employees} />
+          <MonthlyView month={currentMonth} employees={employees} canEdit={isEditor} uid={user?.uid ?? ''} />
         )}
       </div>
 

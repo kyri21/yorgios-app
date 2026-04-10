@@ -15,12 +15,14 @@ interface Props {
 }
 
 const EVENT_META: Record<AbsenceType, { emoji: string; label: string; color: string }> = {
-  jour_off:    { emoji: '🌙', label: 'Jour off',     color: '#6366f1' },
-  conge:       { emoji: '🏖', label: 'Congé',        color: '#0ea5e9' },
-  sans_solde:  { emoji: '📋', label: 'Sans solde',   color: '#b45309' },
-  absence:     { emoji: '⚠️', label: 'Absence',      color: '#c0392b' },
-  retard:      { emoji: '⏰', label: 'Retard',        color: '#b45309' },
-  heures_supp: { emoji: '➕', label: 'Heures supp',  color: '#2d7a4f' },
+  jour_off:    { emoji: '🌙', label: 'Jour off',        color: '#6366f1' },
+  conge:       { emoji: '🏖', label: 'Congé',           color: '#0ea5e9' },
+  sans_solde:  { emoji: '📋', label: 'Sans solde',      color: '#b45309' },
+  absence:     { emoji: '⚠️', label: 'Absence',         color: '#c0392b' },
+  retard:      { emoji: '⏰', label: 'Retard',           color: '#b45309' },
+  heures_supp: { emoji: '➕', label: 'Heures supp',     color: '#2d7a4f' },
+  malade:      { emoji: '🤒', label: 'Malade',          color: '#dc2626' },
+  parti_tot:   { emoji: '🚪', label: 'Parti plus tôt',  color: '#9333ea' },
 }
 
 function toLocalISO(d: Date): string {

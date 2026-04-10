@@ -46,11 +46,14 @@ export type AbsenceType =
   | 'retard'
   | 'heures_supp'
   | 'jour_off'
+  | 'malade'
+  | 'parti_tot'
 
 export interface DayEvent {
   empId: string
   type: AbsenceType
-  minutes?: number
+  minutes?: number   // pour retard
+  hours?: number     // pour malade / parti_tot (heures manquées)
   note?: string
 }
 
@@ -61,11 +64,14 @@ export interface EmpWeekCounter {
   heuresTravaillees: number
   heuresContrat: number
   heuresSupp: number
+  heuresDimanche: number
   conges: number
   sansSolde: number
   absences: number
   retardMinutes: number
   joursOff: number
+  maladesHeures: number
+  partiTotHeures: number
 }
 
 export interface MonthlyEmployeeStats {
@@ -75,11 +81,14 @@ export interface MonthlyEmployeeStats {
   total: {
     heuresTravaillees: number
     heuresSupp: number
+    heuresDimanche: number
     conges: number
     sansSolde: number
     absences: number
     retardMinutes: number
     joursOff: number
+    maladesHeures: number
+    partiTotHeures: number
   }
 }
 
