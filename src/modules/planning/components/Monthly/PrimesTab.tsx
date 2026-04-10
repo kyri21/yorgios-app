@@ -47,7 +47,10 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
       setPrimeMois(pm)
       // Build empMap with defaults for employees not yet saved
       const map: Record<string, PrimeEmploye> = {}
-      emps.forEach(e => { map[e.empId] = e })
+      const excludedIds = new Set(
+        employees.filter(e => EXCLUDED_NAMES.includes(e.name)).map(e => e.id)
+      )
+      emps.filter(e => !excludedIds.has(e.empId)).forEach(e => { map[e.empId] = e })
       employees.filter(e => !EXCLUDED_NAMES.includes(e.name)).forEach(emp => {
         if (!map[emp.id]) {
           const retard = stats.find(s => s.empId === emp.id)?.total.retardMinutes ?? 0
