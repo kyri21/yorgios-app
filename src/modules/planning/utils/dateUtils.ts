@@ -37,6 +37,19 @@ export function monthLabel(date: Date): string {
   return date.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })
 }
 
+export function weekDaysInMonth(monday: Date, monthDate: Date): number[] {
+  const year = monthDate.getFullYear()
+  const month = monthDate.getMonth()
+  const result: number[] = []
+  for (let i = 0; i < 7; i++) {
+    const day = addDays(monday, i)
+    if (day.getFullYear() === year && day.getMonth() === month) {
+      result.push(i)
+    }
+  }
+  return result
+}
+
 export function weeksInMonth(monthDate: Date): Date[] {
   const year = monthDate.getFullYear()
   const month = monthDate.getMonth()

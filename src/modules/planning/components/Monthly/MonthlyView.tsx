@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react'
 import type { Employee, MonthlyEmployeeStats } from '../../types'
-import { loadWeek, loadWeekEvents } from '../../firebase/planning'
+import { loadWeek, loadWeekEvents, addDays } from '../../firebase/planning'
 import { computeWeekCounters } from '../../hooks/usePlanning'
-import { weeksInMonth, weekLabel } from '../../utils/dateUtils'
+import { weeksInMonth, weekLabel, weekDaysInMonth } from '../../utils/dateUtils'
+import type { WeekDraft, WeekEvents } from '../../types'
 import { exportMonthlyPDF } from '../../utils/pdfExport'
 import { exportMonthlyExcel } from '../../utils/exports'
 import { PrimesTab } from './PrimesTab'
@@ -37,7 +38,30 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
         return { mon, draft, events }
       }))
       const empStats: MonthlyEmployeeStats[] = employees.map(emp => {
-        const weekCounters = weekData.map(({ draft, events }) => computeWeekCounters(draft, events, [emp])[0])
+        const weekCounters = weekData.map(({ mon, draft, events }) => {
+          const allowedIndices = weekDaysInMonth(mon, month)
+          const isPartialWeek = allowedIndices.length < 7
+
+          // Filtre le draft : ne garder que les jours du mois cible
+          const filteredDraft: WeekDraft = {}
+          allowedIndices.forEach(i => { if (draft[i]) filteredDraft[i] = draft[i] })
+
+          // Filtre les events : ne garder que les ISO dates du mois cible
+          const allowedISOs = new Set(allowedIndices.map(i => {
+            const d = addDays(mon, i)
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+          }))
+          const filteredEvents: WeekEvents = {}
+          Object.entries(events).forEach(([dateISO, evts]) => {
+            if (allowedISOs.has(dateISO)) filteredEvents[dateISO] = evts
+          })
+
+          const counter = computeWeekCounters(filteredDraft, filteredEvents, [emp])[0]
+
+          // Heures supp = 0 sur semaine incomplète
+          if (isPartialWeek) return { ...counter, heuresSupp: 0 }
+          return counter
+        })
         const total = weekCounters.reduce((acc, c) => ({
           heuresTravaillees: acc.heuresTravaillees + c.heuresTravaillees,
           heuresSupp:        acc.heuresSupp        + c.heuresSupp,
