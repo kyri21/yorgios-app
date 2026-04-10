@@ -23,18 +23,28 @@ export function hygieneBonus(score: number | null): number {
   return 0
 }
 
+export function calcCaPrime(caRealise: number | null, caObjectif: number | null): number {
+  if (!caRealise || !caObjectif || caObjectif <= 0) return 0
+  const ratio = caRealise / caObjectif
+  if (ratio >= 1.10) return 250
+  if (ratio >= 1.00) return 175
+  if (ratio >= 0.90) return 100
+  if (ratio >= 0.80) return 50
+  return 0
+}
+
 export function calcPrime(
   weeklyCapHours: number,
   comportementOk: boolean,
   ponctualiteOk: boolean,
-  performanceOk: boolean,
+  caPrime: number,
   hygBonus: number,
 ): number {
   const b = getBareme(weeklyCapHours)
   return (
     (comportementOk ? b.comp / 2 : 0) +
     (ponctualiteOk  ? b.comp / 2 : 0) +
-    (performanceOk  ? b.perf     : 0) +
+    caPrime +
     hygBonus
   )
 }

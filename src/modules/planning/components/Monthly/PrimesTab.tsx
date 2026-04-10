@@ -4,7 +4,7 @@ import { db } from '../../../../firebase/config'
 import type { Employee, MonthlyEmployeeStats } from '../../types'
 import { loadPrimeMois, savePrimeMois, loadPrimesEmployes, savePrimesEmployes } from '../../firebase/primes'
 import type { PrimeMois, PrimeEmploye } from '../../firebase/primes'
-import { calcPrime, getBareme, hygieneBonus, monthKey, HYGIENE_BONUS, EXCLUDED_NAMES } from '../../utils/primes'
+import { calcPrime, calcCaPrime, getBareme, hygieneBonus, monthKey, HYGIENE_BONUS, EXCLUDED_NAMES } from '../../utils/primes'
 
 interface Props {
   month: Date
@@ -34,16 +34,20 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
       loadPrimesEmployes(month),
       getDoc(doc(db, 'objectifs_ca', mk)),
     ]).then(([mois, emps, caSnap]) => {
+      let loadedCaObjectif: number | null = null
+      let loadedCaRealise: number | null = null
       if (caSnap.exists()) {
         const d = caSnap.data() as any
-        setCaObjectif(d.objectif != null ? Number(d.objectif) : null)
-        setCaRealise(d.resultat != null ? Number(d.resultat) : null)
+        loadedCaObjectif = d.objectif != null ? Number(d.objectif) : null
+        loadedCaRealise  = d.resultat != null ? Number(d.resultat) : null
+        setCaObjectif(loadedCaObjectif)
+        setCaRealise(loadedCaRealise)
       } else {
         setCaObjectif(null)
         setCaRealise(null)
       }
       const base: PrimeMois = { month: mk, caObjectif: null, caRealise: null, hygieneActif: false, hygieneScore: null }
-      const pm = mois ?? base
+      const pm: PrimeMois = { ...(mois ?? base), caObjectif: loadedCaObjectif, caRealise: loadedCaRealise }
       setPrimeMois(pm)
       // Build empMap with defaults for employees not yet saved
       const map: Record<string, PrimeEmploye> = {}
@@ -63,8 +67,7 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
     })
   }, [month])
 
-  const perfOk = (caRealise ?? 0) > 0 && (caObjectif ?? 0) > 0
-    && (caRealise ?? 0) > (caObjectif ?? 1)
+  const caPrime = calcCaPrime(caRealise, caObjectif)
   const hygBonus = primeMois.hygieneActif ? hygieneBonus(primeMois.hygieneScore) : 0
 
   function updateMois(patch: Partial<PrimeMois>) {
@@ -141,10 +144,11 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', paddingBottom: '2px' }}>
           <span style={{
             fontSize: '11px', fontWeight: 700, padding: '3px 8px', borderRadius: '5px',
-            background: perfOk ? 'rgba(45,122,79,0.12)' : 'rgba(28,28,24,0.06)',
-            color: perfOk ? '#2d7a4f' : 'var(--on-surface-3)',
+            background: caPrime > 0 ? 'rgba(45,122,79,0.12)' : 'rgba(28,28,24,0.06)',
+            color: caPrime > 0 ? '#2d7a4f' : 'var(--on-surface-3)',
           }}>
-            📈 Performance : {perfOk ? 'Objectif atteint ✓' : 'Objectif non atteint'}
+            📈 Performance CA : {caPrime > 0 ? `+${caPrime}€/pers.` : 'Objectif non atteint'}
+            {caObjectif && caRealise ? ` (${Math.round((caRealise / caObjectif) * 100)}%)` : ''}
           </span>
         </div>
       </div>
@@ -155,7 +159,7 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
         if (!ep) return null
         const retard = stats.find(s => s.empId === emp.id)?.total.retardMinutes ?? 0
         const b = getBareme(emp.weeklyCapHours)
-        const prime = calcPrime(emp.weeklyCapHours, ep.comportementOk, ep.ponctualiteOk, perfOk, hygBonus)
+        const prime = calcPrime(emp.weeklyCapHours, ep.comportementOk, ep.ponctualiteOk, caPrime, hygBonus)
         const compHalf = b.comp / 2
 
         return (
@@ -166,7 +170,7 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
                 <span style={{ background: emp.color, color: '#fff', borderRadius: '7px', padding: '3px 8px', fontSize: '12px', fontWeight: 800 }}>{emp.initials}</span>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: '13px' }}>{emp.name}</div>
-                  <div style={{ fontSize: '10px', color: 'var(--on-surface-3)' }}>Contrat {emp.weeklyCapHours}h · max {b.comp + b.perf}€{primeMois.hygieneActif ? ` + ${hygBonus}€ hyg.` : ''}</div>
+                  <div style={{ fontSize: '10px', color: 'var(--on-surface-3)' }}>Contrat {emp.weeklyCapHours}h · comp. max {b.comp}€{primeMois.hygieneActif ? ` + ${hygBonus}€ hyg.` : ''}</div>
                 </div>
               </div>
               <div style={{ fontSize: '17px', fontWeight: 800, color: prime > 0 ? 'var(--primary)' : 'var(--on-surface-3)' }}>
@@ -191,10 +195,11 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
                 onChange={v => updateEmp(emp.id, { ponctualiteOk: v })}
               />
               <CriteriaRow
-                emoji="📈" label="Performance CA" tag={perfOk ? 'Objectif atteint ✓' : 'Objectif non atteint'}
-                tagWarn={!perfOk}
-                amount={b.perf} earned={perfOk}
-                checked={perfOk} disabled={true}
+                emoji="📈" label="Performance CA"
+                tag={caPrime > 0 ? `${Math.round((caRealise! / caObjectif!) * 100)}% ✓` : 'Objectif non atteint'}
+                tagWarn={caPrime === 0}
+                amount={caPrime} earned={caPrime > 0}
+                checked={caPrime > 0} disabled={true}
                 onChange={() => {}}
               />
               {primeMois.hygieneActif && (
@@ -210,7 +215,7 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
 
             <div style={{ borderTop: '1px solid var(--border-soft)', marginTop: '8px', paddingTop: '8px', display: 'flex', justifyContent: 'flex-end', gap: '12px', alignItems: 'center' }}>
               <span style={{ fontSize: '10px', color: 'var(--on-surface-3)' }}>
-                {b.comp + b.perf}€ max{primeMois.hygieneActif ? ` + ${hygBonus}€ hyg.` : ''}
+                comp. {b.comp}€ + CA {caPrime}€{primeMois.hygieneActif ? ` + ${hygBonus}€ hyg.` : ''}
               </span>
               <span style={{ fontSize: '14px', fontWeight: 800, color: prime > 0 ? 'var(--primary)' : 'var(--on-surface-3)' }}>= {prime}€ brut</span>
             </div>

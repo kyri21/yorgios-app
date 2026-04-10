@@ -7,7 +7,7 @@ import { exportMonthlyPDF } from '../../utils/pdfExport'
 import { exportMonthlyExcel } from '../../utils/exports'
 import { PrimesTab } from './PrimesTab'
 import type { PrimeMois, PrimeEmploye } from '../../firebase/primes'
-import { calcPrime, hygieneBonus, getBareme } from '../../utils/primes'
+import { calcPrime, calcCaPrime, hygieneBonus, getBareme } from '../../utils/primes'
 
 interface Props {
   month: Date
@@ -68,9 +68,9 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
     const emp = employees.find(e => e.id === empId)
     const ep  = primesEmp.find(p => p.empId === empId)
     if (!emp || !ep || !primeMois) return null
-    const perfOk = (primeMois.caRealise ?? 0) > 0 && (primeMois.caObjectif ?? 0) > 0 && (primeMois.caRealise ?? 0) > (primeMois.caObjectif ?? 1)
+    const caPrime = calcCaPrime(primeMois.caRealise, primeMois.caObjectif)
     const hb = primeMois.hygieneActif ? hygieneBonus(primeMois.hygieneScore) : 0
-    return calcPrime(emp.weeklyCapHours, ep.comportementOk, ep.ponctualiteOk, perfOk, hb)
+    return calcPrime(emp.weeklyCapHours, ep.comportementOk, ep.ponctualiteOk, caPrime, hb)
   }
 
   if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--on-surface-2)', fontSize: '13px' }}>Chargement du mois…</div>
