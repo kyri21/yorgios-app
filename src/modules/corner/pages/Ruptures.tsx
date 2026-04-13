@@ -216,6 +216,19 @@ export default function Ruptures() {
         text, createdAt: now, expiresAt,
       })
 
+      // Write structured rupture data for cuisine dashboard
+      const ruptureItems = ruptures.filter(r => r.produit.trim()).map(r => r.produit.trim())
+      const presqueItems = presqueRuptures.filter(r => r.produit.trim()).map(r => r.produit.trim())
+      if (ruptureItems.length > 0 || presqueItems.length > 0) {
+        await addDoc(collection(db, 'ruptures_actives'), {
+          ruptures: ruptureItems,
+          presqueRuptures: presqueItems,
+          personne: senderName,
+          createdAt: now,
+          viewed: false,
+        })
+      }
+
       const photosToSend = photos.filter(p => p.file)
       await Promise.all(photosToSend.map(async (slot, i) => {
         const path = `messages/${uid}_${now.toMillis()}_${i}_${slot.file!.name}`

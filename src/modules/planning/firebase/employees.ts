@@ -10,14 +10,30 @@ const COL = 'employees'
 export async function fetchEmployees(): Promise<Employee[]> {
   const q = query(collection(db, COL), where('active', '==', true))
   const snap = await getDocs(q)
-  return snap.docs.map(d => ({ id: d.id, ...d.data() } as Employee))
+  return snap.docs
+    .map(d => ({ id: d.id, ...d.data() } as Employee))
+    .filter(e => !e.suspended)
 }
 
 export function subscribeEmployees(cb: (emps: Employee[]) => void) {
   const q = query(collection(db, COL), where('active', '==', true))
   return onSnapshot(q, snap => {
+    cb(snap.docs
+      .map(d => ({ id: d.id, ...d.data() } as Employee))
+      .filter(e => !e.suspended)
+    )
+  })
+}
+
+export function subscribeAllEmployees(cb: (emps: Employee[]) => void) {
+  const q = query(collection(db, COL), where('active', '==', true))
+  return onSnapshot(q, snap => {
     cb(snap.docs.map(d => ({ id: d.id, ...d.data() } as Employee)))
   })
+}
+
+export async function suspendEmployee(id: string, suspended: boolean) {
+  return updateDoc(doc(db, COL, id), { suspended, updatedAt: serverTimestamp() })
 }
 
 export async function createEmployee(data: Omit<Employee, 'id'>) {

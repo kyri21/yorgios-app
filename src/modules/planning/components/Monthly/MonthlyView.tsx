@@ -8,7 +8,8 @@ import { exportMonthlyPDF } from '../../utils/pdfExport'
 import { exportMonthlyExcel } from '../../utils/exports'
 import { PrimesTab } from './PrimesTab'
 import type { PrimeMois, PrimeEmploye } from '../../firebase/primes'
-import { calcPrime, calcCaPrime, hygieneBonus, getBareme, getContractAt } from '../../utils/primes'
+import { calcPrime, calcCaPrime, hygieneBonus, getBareme, getContractAt, DEFAULT_CA_PALIERS, DEFAULT_CA_MAX_PRIMES } from '../../utils/primes'
+import type { CaPalier, CaMaxPrimes } from '../../utils/primes'
 
 interface Props {
   month: Date
@@ -26,6 +27,7 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
   const [tab, setTab]             = useState<Tab>('stats')
   const [primeMois, setPrimeMois]   = useState<PrimeMois | null>(null)
   const [primesEmp, setPrimesEmp]   = useState<PrimeEmploye[]>([])
+  const [primeSettings, setPrimeSettings] = useState<{ paliers: CaPalier[]; maxPrimes: CaMaxPrimes }>({ paliers: DEFAULT_CA_PALIERS, maxPrimes: DEFAULT_CA_MAX_PRIMES })
 
   useEffect(() => {
     if (employees.length === 0) return
@@ -60,7 +62,7 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
           const empForWeek = effectiveHours !== emp.weeklyCapHours
             ? { ...emp, weeklyCapHours: effectiveHours }
             : emp
-          const counter = computeWeekCounters(filteredDraft, filteredEvents, [empForWeek])[0]
+          const counter = computeWeekCounters(filteredDraft, filteredEvents, [empForWeek], mon)[0]
 
           // Heures supp = 0 sur semaine incomplète
           if (isPartialWeek) return { ...counter, heuresSupp: 0 }
@@ -70,6 +72,7 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
           heuresTravaillees: acc.heuresTravaillees + c.heuresTravaillees,
           heuresSupp:        acc.heuresSupp        + c.heuresSupp,
           heuresDimanche:    acc.heuresDimanche    + c.heuresDimanche,
+          heuresFerie:       acc.heuresFerie       + c.heuresFerie,
           conges:            acc.conges            + c.conges,
           sansSolde:         acc.sansSolde         + c.sansSolde,
           absences:          acc.absences          + c.absences,
@@ -77,7 +80,7 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
           joursOff:          acc.joursOff          + c.joursOff,
           maladesHeures:     acc.maladesHeures     + c.maladesHeures,
           partiTotHeures:    acc.partiTotHeures    + c.partiTotHeures,
-        }), { heuresTravaillees: 0, heuresSupp: 0, heuresDimanche: 0, conges: 0, sansSolde: 0, absences: 0, retardMinutes: 0, joursOff: 0, maladesHeures: 0, partiTotHeures: 0 })
+        }), { heuresTravaillees: 0, heuresSupp: 0, heuresDimanche: 0, heuresFerie: 0, conges: 0, sansSolde: 0, absences: 0, retardMinutes: 0, joursOff: 0, maladesHeures: 0, partiTotHeures: 0 })
         return { empId: emp.id, name: emp.name, weeks: weekCounters, total }
       })
       setStats(empStats)
@@ -86,9 +89,10 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
     load()
   }, [month, employees])
 
-  function handlePrimesChange(mois: PrimeMois | null, emps: PrimeEmploye[]) {
+  function handlePrimesChange(mois: PrimeMois | null, emps: PrimeEmploye[], settings?: { paliers: CaPalier[]; maxPrimes: CaMaxPrimes }) {
     setPrimeMois(mois)
     setPrimesEmp(emps)
+    if (settings) setPrimeSettings(settings)
   }
 
   // Calcul prime par empId pour affichage dans stats
@@ -96,10 +100,10 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
     const emp = employees.find(e => e.id === empId)
     const ep  = primesEmp.find(p => p.empId === empId)
     if (!emp || !ep || !primeMois) return null
-    const caPrime = calcCaPrime(primeMois.caRealise, primeMois.caObjectif)
-    const hb = primeMois.hygieneActif ? hygieneBonus(primeMois.hygieneScore) : 0
     const lastDay = new Date(month.getFullYear(), month.getMonth() + 1, 0)
     const effectiveHours = getContractAt(emp, lastDay)
+    const caPrime = calcCaPrime(primeMois.caRealise, primeMois.caObjectif, effectiveHours, primeSettings.paliers, primeSettings.maxPrimes)
+    const hb = primeMois.hygieneActif ? hygieneBonus(primeMois.hygieneScore) : 0
     return calcPrime(effectiveHours, ep.comportementOk, ep.ponctualiteOk, caPrime, hb, emp.primeComportement, emp.primePonctualite)
   }
 
@@ -149,6 +153,7 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
                 <th style={thSt}>Heures</th>
                 <th style={thSt}>Supp</th>
                 <th style={{ ...thSt, background: '#6366f1' }}>🌙 Dim</th>
+                <th style={{ ...thSt, background: '#b45309' }}>🎆 Férié</th>
                 <th style={thSt}>Congés</th>
                 <th style={thSt}>S.Solde</th>
                 <th style={thSt}>Absences</th>
@@ -176,6 +181,7 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
                         <td style={tdSt}>{wc.heuresTravaillees}h</td>
                         <td style={{ ...tdSt, color: wc.heuresSupp > 0 ? 'var(--success)' : 'var(--on-surface-3)' }}>{wc.heuresSupp > 0 ? `${wc.heuresSupp}h` : '—'}</td>
                         <td style={{ ...tdSt, color: wc.heuresDimanche > 0 ? '#6366f1' : 'var(--on-surface-3)', fontWeight: wc.heuresDimanche > 0 ? 700 : 400 }}>{wc.heuresDimanche > 0 ? `${wc.heuresDimanche}h` : '—'}</td>
+                        <td style={{ ...tdSt, color: wc.heuresFerie > 0 ? 'var(--warning)' : 'var(--on-surface-3)', fontWeight: wc.heuresFerie > 0 ? 700 : 400 }}>{wc.heuresFerie > 0 ? `${wc.heuresFerie}h` : '—'}</td>
                         <td style={{ ...tdSt, color: wc.conges > 0 ? 'var(--primary)' : 'var(--on-surface-3)' }}>{wc.conges > 0 ? `${wc.conges}j` : '—'}</td>
                         <td style={{ ...tdSt, color: wc.sansSolde > 0 ? 'var(--warning)' : 'var(--on-surface-3)' }}>{wc.sansSolde > 0 ? `${wc.sansSolde}j` : '—'}</td>
                         <td style={{ ...tdSt, color: wc.absences > 0 ? 'var(--danger)' : 'var(--on-surface-3)' }}>{wc.absences > 0 ? `${wc.absences}j` : '—'}</td>
@@ -199,6 +205,7 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
                       <td style={{ ...tdSt, fontWeight: 700 }}>{stat.total.heuresTravaillees}h</td>
                       <td style={{ ...tdSt, fontWeight: 700, color: stat.total.heuresSupp > 0 ? 'var(--success)' : 'var(--on-surface-3)' }}>{stat.total.heuresSupp > 0 ? `${stat.total.heuresSupp}h` : '—'}</td>
                       <td style={{ ...tdSt, fontWeight: 700, color: stat.total.heuresDimanche > 0 ? '#6366f1' : 'var(--on-surface-3)' }}>{stat.total.heuresDimanche > 0 ? `${stat.total.heuresDimanche}h` : '—'}</td>
+                      <td style={{ ...tdSt, fontWeight: 700, color: stat.total.heuresFerie > 0 ? 'var(--warning)' : 'var(--on-surface-3)' }}>{stat.total.heuresFerie > 0 ? `${stat.total.heuresFerie}h` : '—'}</td>
                       <td style={{ ...tdSt, fontWeight: 700, color: stat.total.conges > 0 ? 'var(--primary)' : 'var(--on-surface-3)' }}>{stat.total.conges > 0 ? `${stat.total.conges}j` : '—'}</td>
                       <td style={{ ...tdSt, fontWeight: 700, color: stat.total.sansSolde > 0 ? 'var(--warning)' : 'var(--on-surface-3)' }}>{stat.total.sansSolde > 0 ? `${stat.total.sansSolde}j` : '—'}</td>
                       <td style={{ ...tdSt, fontWeight: 700, color: stat.total.absences > 0 ? 'var(--danger)' : 'var(--on-surface-3)' }}>{stat.total.absences > 0 ? `${stat.total.absences}j` : '—'}</td>

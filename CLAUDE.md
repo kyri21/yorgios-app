@@ -439,3 +439,79 @@ Payload :
 5. Notifications FCM dans la CF
 6. Son + WakeLock iPad Corner
 7. Ajout dans ModuleGridPanel + router
+
+---
+
+## ✅ PLANNING — Chantiers réalisés (session 2026-04-10/11)
+
+Branche mergée : `feature/planning-primes-refonte`
+
+| # | Chantier | Fichiers clés |
+|---|----------|---------------|
+| 1 | Fix bug Layal — `EXCLUDED_NAMES` exporte depuis `primes.ts`, filtre `empMap` + filtre chargement Firestore | `PrimesTab.tsx`, `primes.ts` |
+| 2 | Prime CA progressive — `calcCaPrime()` barème 5 paliers, remplace `perfOk` binaire | `primes.ts`, `PrimesTab.tsx`, `MonthlyView.tsx` |
+| 3 | Montants primes custom par employé — champs `primeComportement`/`primePonctualite` sur `employees`, UI dans EmployeeManager, `deleteField()` pour effacement | `EmployeeManager.tsx`, `types.ts`, `primes.ts` |
+| 4 | Fix Stats → colonne 🏆 Prime se rafraîchit — `caRealise`/`caObjectif` désormais inclus dans `primeMois` passé à MonthlyView via `onPrimesChange` | `PrimesTab.tsx`, `MonthlyView.tsx` |
+| 5 | Colonne "Parti tôt" dans Stats mensuel — affiche `partiTotHeures` | `MonthlyView.tsx` |
+| 6 | Découpe heures par mois — semaines frontière filtrées jour par jour, heures supp = 0 sur semaine incomplète | `dateUtils.ts`, `MonthlyView.tsx` |
+| 7 | Avenants contrat — `Avenant` interface, `getContractAt(emp, date)`, UI EmployeeManager, `getPrime()` utilise heures effectives fin de mois | `types.ts`, `primes.ts`, `MonthlyView.tsx`, `EmployeeManager.tsx` |
+
+### Où modifier les barèmes
+
+- **Barème CA progressif** → `/admin/settings` → section "Barème primes CA progressif" (tableau éditable, sauvegardé dans `settings/primes_ca`)
+- **Barème global comportement/ponctualité** → `src/modules/planning/utils/primes.ts`, constante `BAREME` (`comp` = total comportement, chaque critère = `comp/2`)
+- **Prime hygiène** → même fichier, constante `HYGIENE_BONUS = 50`
+- **Montants custom par employé** → `/planning` → 👥 Employés → modifier → section "Primes personnalisées"
+- **Avenants contrat** → même UI → section "Avenants contrat" (date d'effet + heures)
+
+---
+
+## ✅ PLANNING — Chantiers réalisés (session 2026-04-11)
+
+| # | Chantier | Fichiers clés |
+|---|----------|---------------|
+| 8 | Employé suspendu — champ `suspended`, filtre dans `subscribeEmployees`/`fetchEmployees`, bouton ⏸/▶ dans EmployeeManager, badge "Suspendu", invisible partout ailleurs | `types.ts`, `firebase/employees.ts`, `EmployeeManager.tsx` |
+| 9 | Barème CA modifiable depuis l'app — `CaPalier` interface, `DEFAULT_CA_PALIERS`, `calcCaPrime` accepte paliers en param, UI dans `/admin/settings`, Firestore `settings/primes_ca` | `primes.ts`, `PrimesTab.tsx`, `AdminSettings.tsx` |
+
+## ✅ DASHBOARDS — Restauration depuis stash (session 2026-04-11)
+
+| Élément | Fichier |
+|---------|---------|
+| Météo semaine (Open-Meteo, 7 jours) | `corner/Dashboard.tsx`, `cuisine/Dashboard.tsx` |
+| Ruptures corner actives temps réel (consolidées, dédupliquées, bouton "✓ On s'en occupe") | `cuisine/Dashboard.tsx` |
+| Commandes clients de la semaine | `cuisine/Dashboard.tsx` |
+| Bouton ← retour dans header mobile (sous-pages) | `Layout.tsx` |
+
+---
+
+## ✅ BUGS & FONCTIONNALITÉS — Session 2026-04-13 (audit complet)
+
+| # | Fix | Fichiers |
+|---|-----|----------|
+| B1 | **Bug géoloc** — clé localStorage `pointageGateDate` désormais par UID (`pointageGateDate_${uid}`). Sans ça un user pouvait bypasser la gate si quelqu'un d'autre l'avait dismissée sur l'appareil | `DailyPointageGate.tsx`, `Layout.tsx` |
+| B2 | **Corner Températures** — bouton ± restauré pour saisir des températures négatives | `corner/Temperatures.tsx` |
+| B3 | **Corner Dashboard** — suppression bandeau TooGoodToGo (bouton vert) ; bannière commandes pleine largeur si commandes du jour/semaine | `corner/Dashboard.tsx` |
+| B4 | **Bannière ruptures cuisine vide** — `Ruptures.tsx` n'écrivait que dans `messages`, jamais dans `ruptures_actives`. Fix : double write + règles Firestore + filtre fenêtre 13h J-1 dans Dashboard cuisine | `corner/Ruptures.tsx`, `cuisine/Dashboard.tsx`, `firestore.rules` |
+| B5 | **Pertes rapport crash** — accès à `item.categorie`/`item.prixUnitaire`/`item.unite` inexistants. Fix : `defaultCategory`, `prix`, guards null | `corner/Pertes.tsx` |
+| B6 | **Hygiène onglet Historique** — crash TypeScript (`ITEMS['historique']` undefined) + grille 7 jours avec statuts ✅/🟡/❌ implémentée | `corner/Hygiene.tsx` |
+
+### Collection `ruptures_actives` — structure (créée session 2026-04-13)
+```
+{ ruptures: string[], presqueRuptures: string[], personne: string, createdAt: Timestamp, viewed: boolean }
+```
+- Écrite par `corner/Ruptures.tsx` à chaque envoi
+- Lue par `cuisine/Dashboard.tsx` (filtre `viewed==false` + `createdAt >= hier 13h`)
+- Règles : corner create, cuisine/patron/admin/manager update (`viewed=true`)
+
+## ✅ PLANNING — Chantiers réalisés (session 2026-04-13)
+
+| # | Chantier | Fichiers clés |
+|---|----------|---------------|
+| 10 | Heures dimanche + jours fériés dans Stats mensuel — colonne 🎆 Férié, calcul via algorithme Pâques de Gauss, 11 fériés légaux français, `getFrenchHolidays(year)` exportée depuis `usePlanning.ts` | `types.ts`, `hooks/usePlanning.ts`, `components/Monthly/MonthlyView.tsx`, `utils/exports.ts` |
+
+### Comment fonctionne le calcul fériés
+- `computeWeekCounters` accepte un 4e param `monday?: Date`
+- Si fourni, les ISO dates des 7 jours sont calculées et vérifiées contre `getFrenchHolidays(year)`
+- Les heures travaillées un jour férié incrémentent `heuresFerie` (indépendamment de `heuresDimanche`)
+- Un dimanche férié (ex. 1er janvier 2023 = dimanche) incrémente **les deux**
+- Export Excel inclut les colonnes H. Dimanche et H. Fériés

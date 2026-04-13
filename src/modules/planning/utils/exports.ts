@@ -66,11 +66,13 @@ export function exportMonthlyExcel(month: Date, employees: Employee[], stats: Mo
   const monthLabel = month.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })
 
   // Feuille récap mois
-  const headers = ['Employé', 'Heures travaillées', 'Heures supp', 'Congés', 'Sans solde', 'Absences', 'Retard (min)', 'Jours off']
+  const headers = ['Employé', 'Heures travaillées', 'Heures supp', 'H. Dimanche', 'H. Fériés', 'Congés', 'Sans solde', 'Absences', 'Retard (min)', 'Jours off']
   const rows = stats.map(s => [
     s.name,
     s.total.heuresTravaillees,
     s.total.heuresSupp,
+    s.total.heuresDimanche,
+    s.total.heuresFerie,
     s.total.conges,
     s.total.sansSolde,
     s.total.absences,
@@ -82,7 +84,7 @@ export function exportMonthlyExcel(month: Date, employees: Employee[], stats: Mo
   const ws = XLSX.utils.aoa_to_sheet(wsData)
 
   // Largeurs colonnes
-  ws['!cols'] = [{ wch: 20 }, { wch: 18 }, { wch: 14 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 10 }]
+  ws['!cols'] = [{ wch: 20 }, { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 10 }]
 
   // Style headers (gras)
   headers.forEach((_, i) => {

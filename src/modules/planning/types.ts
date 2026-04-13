@@ -16,6 +16,7 @@ export interface Employee {
   color: string
   weeklyCapHours: number
   active: boolean
+  suspended?: boolean
   restrictions?: RestrictionRule[]
   primeComportement?: number
   primePonctualite?: number
@@ -74,6 +75,7 @@ export interface EmpWeekCounter {
   heuresContrat: number
   heuresSupp: number
   heuresDimanche: number
+  heuresFerie: number
   conges: number
   sansSolde: number
   absences: number
@@ -91,6 +93,7 @@ export interface MonthlyEmployeeStats {
     heuresTravaillees: number
     heuresSupp: number
     heuresDimanche: number
+    heuresFerie: number
     conges: number
     sansSolde: number
     absences: number

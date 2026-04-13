@@ -22,6 +22,16 @@ type LivraisonHisto = {
   isManual?: boolean
 }
 
+type ReceptionSource = {
+  id: string
+  productName: string
+  fournisseur: string
+  receivedAt: Timestamp
+  category: string
+  supplierLot: string | null
+  decision: string
+}
+
 type Produit = {
   id: string
   name: string
@@ -82,7 +92,12 @@ export default function Fabrication() {
   const [produitsLoaded, setProduitsLoaded] = useState(false)
 
   // Mode formulaire
-  const [formMode, setFormMode] = useState<'catalogue' | 'manuel'>('catalogue')
+  const [formMode, setFormMode] = useState<'catalogue' | 'manuel' | 'reception'>('catalogue')
+
+  // Mode "depuis réception"
+  const [receptions, setReceptions] = useState<ReceptionSource[]>([])
+  const [receptionsLoaded, setReceptionsLoaded] = useState(false)
+  const [selectedReceptionId, setSelectedReceptionId] = useState('')
 
   // Formulaire
   const [producedDate, setProducedDate] = useState(nowLocalDateValue())
@@ -134,6 +149,18 @@ export default function Fabrication() {
     setProduits(list)
   }
 
+  async function loadReceptions() {
+    setReceptionsLoaded(false)
+    try {
+      const snap = await getDocs(query(collection(db, 'receptions'), orderBy('receivedAt', 'desc'), limit(40)))
+      setReceptions(snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as ReceptionSource[])
+    } catch {
+      // silently ignore
+    } finally {
+      setReceptionsLoaded(true)
+    }
+  }
+
   async function loadHistorique() {
     setHistoLoading(true)
     try {
@@ -172,15 +199,29 @@ export default function Fabrication() {
     if (!Number.isFinite(q) || q <= 0) return setError('Quantité invalide (doit être > 0).')
 
     const isManuel = formMode === 'manuel'
-    if (!isManuel && !selectedProduit) return setError('Produit obligatoire.')
-    if (isManuel && !manualName.trim()) return setError('Nom du produit obligatoire.')
+    const isReception = formMode === 'reception'
+    const selectedReception = receptions.find(r => r.id === selectedReceptionId) || null
 
-    const productName = isManuel ? manualName.trim() : selectedProduit!.name
+    if (!isManuel && !isReception && !selectedProduit) return setError('Produit obligatoire.')
+    if (isManuel && !manualName.trim()) return setError('Nom du produit obligatoire.')
+    if (isReception && !selectedReception) return setError('Sélectionner une réception source.')
+
+    const productName = isManuel
+      ? manualName.trim()
+      : isReception
+        ? selectedReception!.productName
+        : selectedProduit!.name
     const abrv = isManuel
       ? manualName.trim().slice(0, 4).toUpperCase().replace(/\s+/g, '')
-      : (selectedProduit!.abrv || selectedProduit!.name.slice(0, 3)).trim().toUpperCase()
-    const dlcDays = isManuel ? Number(manualDlcDays) || 3 : Number(selectedProduit!.dlcDays ?? 3)
-    const category = isManuel ? manualCategory : (selectedProduit!.gepCategory ?? selectedProduit!.defaultCategory ?? 'AUTRE')
+      : isReception
+        ? productName.slice(0, 4).toUpperCase().replace(/\s+/g, '')
+        : (selectedProduit!.abrv || selectedProduit!.name.slice(0, 3)).trim().toUpperCase()
+    const dlcDays = isManuel ? Number(manualDlcDays) || 3 : Number(selectedProduit?.dlcDays ?? 3)
+    const category = isManuel
+      ? manualCategory
+      : isReception
+        ? (selectedReception!.category || 'PLAT_CUISINE')
+        : (selectedProduit!.gepCategory ?? selectedProduit!.defaultCategory ?? 'AUTRE')
 
     setLoading(true)
     try {
@@ -194,7 +235,7 @@ export default function Fabrication() {
       await setDoc(lotRef, {
         producedAt: Timestamp.fromDate(producedAtDate),
         dlcAt: Timestamp.fromDate(dlcAtDate),
-        productId: isManuel ? null : selectedProduit!.id,
+        productId: isManuel || isReception ? null : selectedProduit!.id,
         productName,
         abrv,
         category,
@@ -202,6 +243,8 @@ export default function Fabrication() {
         dlcDays,
         lotCode,
         archived: false,
+        receptionId: isReception ? selectedReceptionId : null,
+        fournisseur: isReception ? selectedReception!.fournisseur : null,
         createdAt: Timestamp.now(),
         createdBy: uid,
       })
@@ -209,6 +252,7 @@ export default function Fabrication() {
       setProductId('')
       setManualName('')
       setManualDlcDays('3')
+      setSelectedReceptionId('')
       setProducedDate(nowLocalDateValue())
       setSavedOk(true)
       show('Lot créé')
@@ -352,16 +396,26 @@ export default function Fabrication() {
           display: 'flex', gap: 4, marginBottom: 16,
           background: 'var(--surface-mid)', borderRadius: 12, padding: 4,
         }}>
-          {(['catalogue', 'manuel'] as const).map(m => (
-            <button key={m} type="button" onClick={() => { setFormMode(m); setProductId(''); setManualName('') }} style={{
+          {([
+            { id: 'catalogue', label: '📋 Catalogue' },
+            { id: 'reception', label: '📦 Réception' },
+            { id: 'manuel', label: '✏️ Libre' },
+          ] as const).map(m => (
+            <button key={m.id} type="button" onClick={() => {
+              setFormMode(m.id)
+              setProductId('')
+              setManualName('')
+              setSelectedReceptionId('')
+              if (m.id === 'reception' && !receptionsLoaded) loadReceptions()
+            }} style={{
               flex: 1, padding: '8px 0', borderRadius: 9, fontSize: 12, fontWeight: 700,
               border: 'none', cursor: 'pointer', fontFamily: 'Manrope, sans-serif',
-              background: formMode === m ? 'var(--surface)' : 'transparent',
-              color: formMode === m ? 'var(--primary)' : 'var(--on-surface-3)',
-              boxShadow: formMode === m ? '0 1px 6px rgba(28,28,24,0.08)' : 'none',
+              background: formMode === m.id ? 'var(--surface)' : 'transparent',
+              color: formMode === m.id ? 'var(--primary)' : 'var(--on-surface-3)',
+              boxShadow: formMode === m.id ? '0 1px 6px rgba(28,28,24,0.08)' : 'none',
               transition: 'all 0.15s',
             }}>
-              {m === 'catalogue' ? '📋 Catalogue' : '✏️ Produit libre'}
+              {m.label}
             </button>
           ))}
         </div>
@@ -446,6 +500,58 @@ export default function Fabrication() {
             </>
           )}
 
+          {formMode === 'reception' && (
+            <>
+              <label style={{ ...labelStyle, marginTop: 14 }}>Réception source *</label>
+              {!receptionsLoaded ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {[1,2,3].map(i => <div key={i} className="skeleton" style={{ height: 52, borderRadius: 10 }} />)}
+                </div>
+              ) : receptions.length === 0 ? (
+                <p style={{ fontSize: 13, color: 'var(--on-surface-3)' }}>Aucune réception enregistrée.</p>
+              ) : (
+                <div style={{ maxHeight: 220, overflowY: 'auto', borderRadius: 10, background: 'var(--surface-mid)' }}>
+                  {receptions.map(r => {
+                    const pad2 = (n: number) => String(n).padStart(2, '0')
+                    const d = r.receivedAt?.toDate?.() ?? new Date()
+                    const dateStr = `${pad2(d.getDate())}/${pad2(d.getMonth()+1)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+                    const active = selectedReceptionId === r.id
+                    return (
+                      <div
+                        key={r.id}
+                        onClick={() => setSelectedReceptionId(active ? '' : r.id)}
+                        style={{
+                          padding: '10px 12px', cursor: 'pointer',
+                          borderLeft: active ? '3px solid var(--primary)' : '3px solid transparent',
+                          background: active ? 'rgba(0,66,117,0.07)' : 'transparent',
+                          transition: 'background 0.12s',
+                        }}
+                      >
+                        <div style={{ fontSize: 13, fontWeight: active ? 700 : 500, color: active ? 'var(--primary)' : 'var(--on-surface)' }}>
+                          {r.productName}
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2 }}>
+                          {r.fournisseur} · {dateStr}
+                          {r.supplierLot ? ` · Lot ${r.supplierLot}` : ''}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+              {selectedReceptionId && (() => {
+                const r = receptions.find(r => r.id === selectedReceptionId)
+                if (!r) return null
+                return (
+                  <div style={{ fontSize: 12, color: 'var(--on-surface-2)', marginTop: 8, padding: '8px 12px', borderRadius: 10, background: 'rgba(0,66,117,0.06)', border: '1px solid rgba(0,66,117,0.12)' }}>
+                    Traçabilité : <b>{r.productName}</b> reçu de <b>{r.fournisseur}</b>
+                    {r.supplierLot ? <> (lot <b>{r.supplierLot}</b>)</> : ''}
+                  </div>
+                )
+              })()}
+            </>
+          )}
+
           {error && (
             <div style={{
               padding: '12px 14px', borderRadius: 12, fontSize: 13,
@@ -459,7 +565,11 @@ export default function Fabrication() {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16 }}>
             <button className="btn-primary" type="submit"
-              disabled={loading || !computed.okQty || (formMode === 'catalogue' ? !productId : !manualName.trim())}
+              disabled={loading || !computed.okQty || (
+                formMode === 'catalogue' ? !productId :
+                formMode === 'reception' ? !selectedReceptionId :
+                !manualName.trim()
+              )}
               style={{ flex: 1 }}>
               {loading ? 'Création…' : 'Valider le lot'}
             </button>

@@ -330,24 +330,46 @@ export default function Temperatures() {
                             </div>
                           )}
 
-                          <input
-                            value={slot.temp}
-                            onChange={e => setTemp(f.id, s, e.target.value)}
-                            placeholder="°C"
-                            inputMode="decimal"
-                            style={{
-                              width: '100%', height: 40, textAlign: 'center',
-                              background: 'var(--surface-low)',
-                              border: 'none',
-                              borderBottom: `2px solid ${inputBorder}`,
-                              borderRadius: '8px 8px 0 0',
-                              color: 'var(--on-surface)',
-                              fontSize: 16, fontWeight: 700,
-                              outline: 'none',
-                              fontFamily: 'Epilogue, sans-serif',
-                              transition: 'border-color 0.15s',
-                            }}
-                          />
+                          <div style={{ display: 'flex', gap: 4, alignItems: 'stretch' }}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const current = rows[f.id][s].temp
+                                const toggled = current.startsWith('-') ? current.slice(1) : current ? '-' + current : '-'
+                                setTemp(f.id, s, toggled)
+                              }}
+                              style={{
+                                width: 32, height: 40, borderRadius: '8px 8px 0 0',
+                                border: 'none',
+                                borderBottom: `2px solid ${inputBorder}`,
+                                background: 'var(--surface-mid)',
+                                fontSize: 15, fontWeight: 700,
+                                color: 'var(--on-surface-2)',
+                                cursor: 'pointer', flexShrink: 0,
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                lineHeight: 1,
+                                transition: 'border-color 0.15s',
+                              }}
+                            >±</button>
+                            <input
+                              value={slot.temp}
+                              onChange={e => setTemp(f.id, s, e.target.value)}
+                              placeholder="°C"
+                              inputMode="decimal"
+                              style={{
+                                flex: 1, height: 40, textAlign: 'center',
+                                background: 'var(--surface-low)',
+                                border: 'none',
+                                borderBottom: `2px solid ${inputBorder}`,
+                                borderRadius: '8px 8px 0 0',
+                                color: 'var(--on-surface)',
+                                fontSize: 16, fontWeight: 700,
+                                outline: 'none',
+                                fontFamily: 'Epilogue, sans-serif',
+                                transition: 'border-color 0.15s',
+                              }}
+                            />
+                          </div>
                         </div>
                       )
                     })}

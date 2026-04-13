@@ -4,6 +4,40 @@ import { collection, getDocs, getDoc, doc, orderBy, query, where, limit } from '
 import { db } from '../../../firebase/config'
 import { SkeletonList } from '../../../components/Skeleton'
 
+// Codes météo WMO → emoji
+function wmoToEmoji(code: number): { emoji: string } {
+  if (code === 0) return { emoji: '☀️' }
+  if (code <= 2) return { emoji: '🌤️' }
+  if (code === 3) return { emoji: '☁️' }
+  if (code <= 49) return { emoji: '🌫️' }
+  if (code <= 57) return { emoji: '🌦️' }
+  if (code <= 65) return { emoji: '🌧️' }
+  if (code <= 75) return { emoji: '❄️' }
+  if (code <= 82) return { emoji: '🌦️' }
+  if (code <= 86) return { emoji: '🌨️' }
+  if (code <= 99) return { emoji: '⛈️' }
+  return { emoji: '🌡️' }
+}
+
+type WeatherDay = { date: string; dayLabel: string; maxC: number; minC: number; code: number; isToday: boolean }
+
+function getWeekDays(): string[] {
+  const today = new Date()
+  const dow = today.getDay() === 0 ? 6 : today.getDay() - 1
+  const monday = new Date(today)
+  monday.setDate(today.getDate() - dow)
+  const days: string[] = []
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(monday)
+    d.setDate(monday.getDate() + i)
+    const p = (n: number) => String(n).padStart(2, '0')
+    days.push(`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`)
+  }
+  return days
+}
+
+const DAY_LABELS = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim']
+
 const CORNER_FRIDGES = ['FRIGO_3P', 'VITRINE_1', 'VITRINE_2', 'VITRINE_3', 'GRAND_FRIGO']
 const FRIDGE_NAMES: Record<string, string> = {
   FRIGO_3P:    'Frigo 3P',
@@ -112,6 +146,7 @@ export default function Dashboard() {
   const [soirSaisis, setSoirSaisis] = useState(false)
   const [loading, setLoading] = useState(true)
   const [checks, setChecks] = useState<Record<TaskKey, boolean>>(loadChecks)
+  const [weather, setWeather] = useState<WeatherDay[]>([])
 
   function toggleCheck(key: TaskKey) {
     const next = { ...checks, [key]: !checks[key] }
@@ -182,6 +217,26 @@ export default function Dashboard() {
     loadAll().catch(e => { console.error(e); setLoading(false) })
   }, [])
 
+  // Météo semaine — Open-Meteo (gratuit, sans clé API)
+  useEffect(() => {
+    const weekDays = getWeekDays()
+    const todayStr = todayISO()
+    fetch(`https://api.open-meteo.com/v1/forecast?latitude=48.857&longitude=2.347&daily=temperature_2m_max,temperature_2m_min,weathercode&timezone=Europe%2FParis&start_date=${weekDays[0]}&end_date=${weekDays[6]}`)
+      .then(r => r.json())
+      .then(data => {
+        const dates: string[] = data.daily?.time ?? []
+        const maxT: number[]  = data.daily?.temperature_2m_max ?? []
+        const minT: number[]  = data.daily?.temperature_2m_min ?? []
+        const codes: number[] = data.daily?.weathercode ?? []
+        setWeather(dates.map((date, i) => ({
+          date, dayLabel: DAY_LABELS[i] ?? date,
+          maxC: Math.round(maxT[i] ?? 0), minC: Math.round(minT[i] ?? 0),
+          code: codes[i] ?? 0, isToday: date === todayStr,
+        })))
+      })
+      .catch(() => {})
+  }, [])
+
   if (loading) return (
     <div className="page">
       <SkeletonList count={5} />
@@ -231,6 +286,31 @@ export default function Dashboard() {
           {now.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}
         </span>
       </div>
+
+      {/* ── Météo de la semaine ─────────────────────────────────── */}
+      {weather.length > 0 && (
+        <div className="card" style={{ padding: '12px 14px' }}>
+          <p className="section-label" style={{ marginBottom: 10 }}>Météo Paris — semaine</p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 }}>
+            {weather.map(day => {
+              const { emoji } = wmoToEmoji(day.code)
+              return (
+                <div key={day.date} style={{
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+                  padding: '8px 2px', borderRadius: 10,
+                  background: day.isToday ? 'rgba(0,66,117,0.08)' : 'var(--surface-low)',
+                  border: day.isToday ? '1.5px solid rgba(0,66,117,0.22)' : '1.5px solid transparent',
+                }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: day.isToday ? 'var(--primary)' : 'var(--on-surface-3)', textTransform: 'uppercase' }}>{day.dayLabel}</span>
+                  <span style={{ fontSize: 18, lineHeight: 1.2 }}>{emoji}</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface)' }}>{day.maxC}°</span>
+                  <span style={{ fontSize: 10, color: 'var(--on-surface-3)' }}>{day.minC}°</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* ── À faire aujourd'hui ─────────────────────────────────── */}
       <div
@@ -478,6 +558,92 @@ export default function Dashboard() {
         )}
       </div>
 
+      {/* ── Commandes clients — bannière pleine largeur ──────────── */}
+      {commandesToday.length > 0 && (
+        <div
+          className="card"
+          style={{
+            cursor: 'pointer',
+            background: 'rgba(136,0,20,0.04)',
+            border: '1.5px solid rgba(192,57,43,0.35)',
+            borderLeft: '4px solid var(--danger)',
+            borderRadius: 16,
+            padding: '14px 16px',
+          }}
+          onClick={() => navigate('commandes')}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 20 }}>📬</span>
+              <div>
+                <p className="section-label" style={{ marginBottom: 1, color: 'var(--danger)' }}>Commandes clients</p>
+                <h2 style={{ fontSize: 15, fontWeight: 700, color: 'var(--on-surface)', margin: 0, fontFamily: 'Epilogue, sans-serif' }}>
+                  {commandesToday.length} livraison{commandesToday.length > 1 ? 's' : ''} aujourd'hui
+                </h2>
+              </div>
+            </div>
+            <span className="chip-danger">{commandesToday.length}</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            {commandesToday.map(c => (
+              <div key={c.id} style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                borderRadius: 8, padding: '8px 12px',
+                background: 'rgba(192,57,43,0.06)',
+              }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--on-surface)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 8 }}>
+                  {c.prenom ? `${c.prenom} ${c.nom ?? ''}`.trim() : c.nom ?? `Commande #${c.id.slice(-4)}`}
+                </span>
+                <span className={c.statut === 'livree' ? 'chip-ok' : c.statut === 'prete' ? 'chip-warn' : 'chip-warn'} style={{ fontSize: 10, padding: '2px 8px' }}>
+                  {c.statut === 'livree' ? 'Livrée' : c.statut === 'prete' ? 'Prête' : c.statut === 'acceptee' ? 'Acceptée' : 'En attente'}
+                </span>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginTop: 8, gap: 4 }}>
+            <span style={{ fontSize: 11, color: 'var(--danger)', fontWeight: 600 }}>Voir les commandes</span>
+            <svg width="6" height="10" fill="none" viewBox="0 0 6 10">
+              <path d="M1 1l4 4-4 4" stroke="var(--danger)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </div>
+        </div>
+      )}
+
+      {commandesToday.length === 0 && commandesWeek.length > 0 && (
+        <div
+          className="card"
+          style={{
+            cursor: 'pointer',
+            background: 'rgba(0,66,117,0.04)',
+            border: '1.5px solid rgba(0,66,117,0.20)',
+            borderLeft: '4px solid var(--primary)',
+            borderRadius: 16,
+            padding: '14px 16px',
+          }}
+          onClick={() => navigate('commandes')}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 20 }}>📬</span>
+              <div>
+                <p className="section-label" style={{ marginBottom: 1, color: 'var(--primary)' }}>Commandes clients</p>
+                <h2 style={{ fontSize: 15, fontWeight: 700, color: 'var(--on-surface)', margin: 0, fontFamily: 'Epilogue, sans-serif' }}>
+                  {commandesWeek.length} livraison{commandesWeek.length > 1 ? 's' : ''} cette semaine
+                </h2>
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary)', background: 'rgba(0,66,117,0.10)', borderRadius: 20, padding: '3px 10px' }}>
+                {commandesWeek.length}
+              </span>
+              <svg width="6" height="10" fill="none" viewBox="0 0 6 10">
+                <path d="M1 1l4 4-4 4" stroke="var(--primary)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Hygiène + Commandes (grille 2 col) ──────────────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <div className="card" style={{ cursor: 'pointer' }} onClick={() => navigate('hygiene')}>
@@ -516,42 +682,6 @@ export default function Dashboard() {
           )}
         </div>
       </div>
-
-      {/* ── TooGoodToGo ─────────────────────────────────────────── */}
-      <button
-        onClick={() => {
-          window.location.href = 'toogoodtogo://fr-fr'
-          const fallback = setTimeout(() => {
-            if (!document.hidden) {
-              window.open('https://www.toogoodtogo.com/fr-fr', '_blank')
-            }
-          }, 1500)
-          const onHide = () => {
-            clearTimeout(fallback)
-            document.removeEventListener('visibilitychange', onHide)
-          }
-          document.addEventListener('visibilitychange', onHide)
-        }}
-        style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
-          width: '100%', padding: '14px 16px',
-          background: 'linear-gradient(135deg, #1DB954 0%, #158A3E 100%)',
-          border: 'none', borderRadius: 16,
-          cursor: 'pointer', transition: 'opacity 0.15s ease',
-          WebkitTapHighlightColor: 'transparent',
-        }}
-        onMouseEnter={e => (e.currentTarget as HTMLElement).style.opacity = '0.88'}
-        onMouseLeave={e => (e.currentTarget as HTMLElement).style.opacity = '1'}
-      >
-        <span style={{ fontSize: 22 }}>🥡</span>
-        <div style={{ textAlign: 'left', flex: 1 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: '#fff', letterSpacing: '-0.01em' }}>TooGoodToGo</div>
-          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)' }}>Ouvrir l'application</div>
-        </div>
-        <svg style={{ flexShrink: 0 }} width="16" height="16" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-          <path d="M5 12h14M12 5l7 7-7 7"/>
-        </svg>
-      </button>
     </div>
   )
 }

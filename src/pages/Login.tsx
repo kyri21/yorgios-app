@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { auth } from '../firebase/config';
 import { useAuth } from '../auth/useAuth';
 import { getRoleHome } from '../auth/AuthGuard';
+import { registerDeviceAsIPad } from '../firebase/messaging';
 
 const IPAD_CORNER_EMAIL  = 'ipad@yorgios.fr'
 const IPAD_CUISINE_EMAIL = 'ipad.cuisine@yorgios.fr'
@@ -29,7 +30,10 @@ export default function Login() {
       const loginEmail = quickMode === 'corner'  ? IPAD_CORNER_EMAIL
                        : quickMode === 'cuisine' ? IPAD_CUISINE_EMAIL
                        : email.trim();
-      await signInWithEmailAndPassword(auth, loginEmail, password);
+      const cred = await signInWithEmailAndPassword(auth, loginEmail, password);
+      if (quickMode === 'corner') {
+        registerDeviceAsIPad(cred.user.uid, 'iPad Corner')
+      }
     } catch {
       setError('Identifiants incorrects. Réessayez.');
     } finally {

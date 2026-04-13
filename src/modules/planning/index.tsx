@@ -387,7 +387,7 @@ export default function PlanningModule() {
 
       {/* ── Modal employés ──────────────────────────────────────────── */}
       {showEmpManager && (
-        <EmployeeManager employees={employees} onClose={() => setShowEmpManager(false)} />
+        <EmployeeManager onClose={() => setShowEmpManager(false)} />
       )}
 
       {/* ── Modal import CSV/ICS ────────────────────────────────────── */}

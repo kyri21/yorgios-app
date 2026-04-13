@@ -112,6 +112,14 @@ service cloud.firestore {
       allow read, write: if isCorner();
     }
 
+    // ─── Ruptures actives (corner → cuisine dashboard) ───────────
+    match /ruptures_actives/{id} {
+      allow read: if isAuth();
+      allow create: if isCorner();
+      allow update: if isCuisine();
+      allow delete: if false;
+    }
+
     // ─── Messagerie ─────────────────────────────────────────────
     match /messages/{doc} {
       allow read, write: if isAnyRole();
@@ -162,6 +170,15 @@ service cloud.firestore {
     match /crm_sync_log/{doc} {
       allow read:  if isPatronOrManager();
       allow write: if false; // Cloud Functions admin SDK uniquement
+    }
+
+    // ─── Devices (enregistrement iPad / tokens FCM) ───────────────
+    match /devices/{uid} {
+      allow read: if isAnyRole();
+      // Chaque appareil peut écrire son propre doc ; patron/admin peuvent écrire aussi
+      allow write: if isAuth() && (
+        request.auth.uid == uid || role() in ['patron', 'administrateur']
+      );
     }
 
     // ─── Deliveries (suivi Twilio) ────────────────────────────────

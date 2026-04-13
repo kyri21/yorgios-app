@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { deleteField } from 'firebase/firestore'
 import type { Employee, RestrictionRule, Avenant } from '../../types'
 import { HOURS, DAYS_LABELS } from '../../types'
-import { createEmployee, updateEmployee, deactivateEmployee } from '../../firebase/employees'
+import { createEmployee, updateEmployee, deactivateEmployee, subscribeAllEmployees, suspendEmployee } from '../../firebase/employees'
 import { getBareme } from '../../utils/primes'
 
 const PRESET_COLORS = [
@@ -11,10 +11,21 @@ const PRESET_COLORS = [
   '#F06292','#FF7043','#26A69A','#AB47BC','#5C6BC0'
 ]
 
-interface Props { employees: Employee[]; onClose: () => void }
+interface Props { onClose: () => void }
 
-export function EmployeeManager({ employees, onClose }: Props) {
+export function EmployeeManager({ onClose }: Props) {
+  const [allEmployees, setAllEmployees] = useState<Employee[]>([])
   const [mode, setMode] = useState<'list' | 'edit'>('list')
+
+  useEffect(() => {
+    return subscribeAllEmployees(emps => {
+      setAllEmployees(emps.slice().sort((a, b) => {
+        if (a.suspended && !b.suspended) return 1
+        if (!a.suspended && b.suspended) return -1
+        return a.name.localeCompare(b.name)
+      }))
+    })
+  }, [])
   const [editing, setEditing] = useState<Employee | null>(null)
   const [name, setName] = useState('')
   const [initials, setInitials] = useState('')
@@ -74,8 +85,17 @@ export function EmployeeManager({ employees, onClose }: Props) {
     } finally { setSaving(false) }
   }
 
+  async function handleSuspend(emp: Employee) {
+    if (emp.suspended) {
+      await suspendEmployee(emp.id, false)
+    } else {
+      if (!confirm(`Suspendre ${emp.name} ? Il n'apparaîtra plus dans le planning ni les stats.`)) return
+      await suspendEmployee(emp.id, true)
+    }
+  }
+
   async function handleDelete(emp: Employee) {
-    if (!confirm(`Désactiver ${emp.name} ?`)) return
+    if (!confirm(`Désactiver définitivement ${emp.name} ?`)) return
     await deactivateEmployee(emp.id)
   }
 
@@ -118,14 +138,17 @@ export function EmployeeManager({ employees, onClose }: Props) {
                 + Ajouter un employé
               </button>
               <div className="space-y-2">
-                {employees.map(emp => (
+                {allEmployees.map(emp => (
                   <div
                     key={emp.id}
                     className="flex items-center gap-3 px-3 py-3 rounded-xl"
-                    style={{ background: 'var(--surface-low)' }}
+                    style={{
+                      background: emp.suspended ? 'var(--surface-mid)' : 'var(--surface-low)',
+                      opacity: emp.suspended ? 0.65 : 1,
+                    }}
                   >
                     <span style={{
-                      background: emp.color,
+                      background: emp.suspended ? 'var(--on-surface-3)' : emp.color,
                       width: 36,
                       height: 36,
                       borderRadius: 8,
@@ -140,8 +163,23 @@ export function EmployeeManager({ employees, onClose }: Props) {
                       {emp.initials}
                     </span>
                     <div className="flex-1 min-w-0">
-                      <div style={{ color: 'var(--on-surface)', fontSize: '0.875rem', fontWeight: 600 }} className="truncate">
-                        {emp.name}
+                      <div className="flex items-center gap-2 truncate">
+                        <span style={{ color: 'var(--on-surface)', fontSize: '0.875rem', fontWeight: 600 }}>
+                          {emp.name}
+                        </span>
+                        {emp.suspended && (
+                          <span style={{
+                            fontSize: '0.65rem',
+                            fontWeight: 700,
+                            color: 'var(--on-surface-2)',
+                            background: 'var(--surface-high)',
+                            borderRadius: 4,
+                            padding: '1px 6px',
+                            whiteSpace: 'nowrap',
+                          }}>
+                            Suspendu
+                          </span>
+                        )}
                       </div>
                       <div style={{ color: 'var(--on-surface-2)', fontSize: '0.75rem' }}>
                         {emp.weeklyCapHours}h/semaine
@@ -153,6 +191,14 @@ export function EmployeeManager({ employees, onClose }: Props) {
                       </div>
                     </div>
                     <div className="flex gap-1">
+                      <button
+                        onClick={() => handleSuspend(emp)}
+                        className="btn-secondary"
+                        style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                        title={emp.suspended ? 'Réactiver' : 'Suspendre'}
+                      >
+                        {emp.suspended ? '▶' : '⏸'}
+                      </button>
                       <button
                         onClick={() => openEdit(emp)}
                         className="btn-secondary"

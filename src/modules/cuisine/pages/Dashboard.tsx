@@ -1,9 +1,49 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { collection, getDocs, getDoc, doc, query, where, orderBy, limit } from 'firebase/firestore'
+import { collection, getDocs, getDoc, doc, query, where, orderBy, limit, onSnapshot, writeBatch, Timestamp } from 'firebase/firestore'
 import { db } from '../../../firebase/config'
 import { SkeletonList } from '../../../components/Skeleton'
 import { EmptyState } from '../../../components/EmptyState'
+
+function endOfWeekISO() {
+  const d = new Date()
+  const dow = d.getDay() === 0 ? 6 : d.getDay() - 1
+  d.setDate(d.getDate() + (6 - dow))
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+// ── Météo ────────────────────────────────────────────────────────
+function wmoToEmoji(code: number): { emoji: string } {
+  if (code === 0) return { emoji: '☀️' }
+  if (code <= 2) return { emoji: '🌤️' }
+  if (code === 3) return { emoji: '☁️' }
+  if (code <= 48) return { emoji: '🌫️' }
+  if (code <= 57) return { emoji: '🌦️' }
+  if (code <= 67) return { emoji: '🌧️' }
+  if (code <= 77) return { emoji: '🌨️' }
+  if (code <= 82) return { emoji: '🌧️' }
+  if (code <= 99) return { emoji: '⛈️' }
+  return { emoji: '🌡️' }
+}
+
+type WeatherDay = { date: string; dayLabel: string; maxC: number; minC: number; code: number; isToday: boolean }
+const DAY_LABELS = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim']
+
+function getWeekDays(): string[] {
+  const today = new Date()
+  const dow = today.getDay() === 0 ? 6 : today.getDay() - 1
+  const monday = new Date(today)
+  monday.setDate(today.getDate() - dow)
+  const days: string[] = []
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(monday)
+    d.setDate(monday.getDate() + i)
+    const p = (n: number) => String(n).padStart(2, '0')
+    days.push(`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`)
+  }
+  return days
+}
 
 const CUISINE_FRIDGES = [
   { id: 'CUI_FRIGO1_ENTREE',     name: 'Frigo 1' },
@@ -29,6 +69,8 @@ function timeAgo(ts: any): string {
 type TempInfo = { id: string; name: string; tempC: number | null; status: string | null }
 type LotInfo  = { id: string; productName: string; quantite: number; unite: string; fabricatedAt: any; lotCode?: string }
 type ReceptionInfo = { id: string; productName: string; fournisseur: string; createdAt: any; tempC?: number }
+type RuptureActive = { id: string; ruptures: string[]; presqueRuptures: string[]; personne: string; createdAt: any; viewed: boolean }
+type CommandeClient = { id: string; statut: string; dateLivraison: string; nom?: string; prenom?: string }
 
 function dotColor(s: string): string {
   if (s === 'ok')   return 'var(--success)'
@@ -54,10 +96,15 @@ export default function CuisineDashboard() {
   const [derniereReception, setDerniereReception] = useState<ReceptionInfo | null>(null)
   const [livraisonsEnAttente, setLivraisonsEnAttente] = useState(0)
   const [matinSaisis, setMatinSaisis] = useState(false)
+  const [rupturesActives, setRupturesActives] = useState<RuptureActive[]>([])
+  const [commandesToday, setCommandesToday] = useState<CommandeClient[]>([])
+  const [commandesWeek, setCommandesWeek] = useState<CommandeClient[]>([])
+  const [weather, setWeather] = useState<WeatherDay[]>([])
 
   useEffect(() => {
     async function load() {
       const today = todayISO()
+      const endWeek = endOfWeekISO()
       try {
         const [tempsData, lotsSnap, recepSnap, livrSnap] = await Promise.all([
           Promise.all(CUISINE_FRIDGES.map(async f => {
@@ -99,11 +146,65 @@ export default function CuisineDashboard() {
         setLivraisonsEnAttente(pending.length)
       } catch (e) {
         console.error(e)
-      } finally {
-        setLoading(false)
       }
+
+      // Commandes clients
+      try {
+        const cmdSnap = await getDocs(query(
+          collection(db, 'commandes_externes'),
+          where('dateLivraison', '>=', today),
+          where('dateLivraison', '<=', endWeek),
+          orderBy('dateLivraison', 'asc'),
+        ))
+        const allCmds: CommandeClient[] = cmdSnap.docs.map(d => ({ id: d.id, ...(d.data() as any) }))
+        setCommandesToday(allCmds.filter(c => c.dateLivraison === today))
+        setCommandesWeek(allCmds.filter(c => c.dateLivraison > today))
+      } catch (e) {
+        console.error('[dashboard cuisine] commandes:', e)
+      }
+
+      setLoading(false)
     }
     load()
+  }, [])
+
+  // Ruptures actives corner — temps réel
+  useEffect(() => {
+    const yesterday13h = new Date()
+    yesterday13h.setDate(yesterday13h.getDate() - 1)
+    yesterday13h.setHours(13, 0, 0, 0)
+    const q = query(
+      collection(db, 'ruptures_actives'),
+      where('viewed', '==', false),
+      where('createdAt', '>=', Timestamp.fromDate(yesterday13h)),
+      orderBy('createdAt', 'desc'),
+      limit(20)
+    )
+    return onSnapshot(q, snap => {
+      const docs = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as RuptureActive[]
+      docs.sort((a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0))
+      setRupturesActives(docs)
+    }, err => console.error('[ruptures_actives]', err))
+  }, [])
+
+  // Météo semaine — Open-Meteo (gratuit, sans clé API)
+  useEffect(() => {
+    const weekDays = getWeekDays()
+    const todayStr = todayISO()
+    fetch(`https://api.open-meteo.com/v1/forecast?latitude=48.857&longitude=2.347&daily=temperature_2m_max,temperature_2m_min,weathercode&timezone=Europe%2FParis&start_date=${weekDays[0]}&end_date=${weekDays[6]}`)
+      .then(r => r.json())
+      .then(data => {
+        const dates: string[] = data.daily?.time ?? []
+        const maxT: number[]  = data.daily?.temperature_2m_max ?? []
+        const minT: number[]  = data.daily?.temperature_2m_min ?? []
+        const codes: number[] = data.daily?.weathercode ?? []
+        setWeather(dates.map((date, i) => ({
+          date, dayLabel: DAY_LABELS[i] ?? date,
+          maxC: Math.round(maxT[i] ?? 0), minC: Math.round(minT[i] ?? 0),
+          code: codes[i] ?? 0, isToday: date === todayStr,
+        })))
+      })
+      .catch(() => {})
   }, [])
 
   if (loading) return (
@@ -172,6 +273,68 @@ export default function CuisineDashboard() {
           {todayLabel}
         </span>
       </div>
+
+      {/* ── Alerte ruptures corner ──────────────────────────────────── */}
+      {rupturesActives.length > 0 && (() => {
+        const allRuptures = [...new Set(rupturesActives.flatMap(r => r.ruptures))]
+        const allPresque  = [...new Set(rupturesActives.flatMap(r => r.presqueRuptures).filter(p => !allRuptures.includes(p)))]
+        const personnes   = [...new Set(rupturesActives.map(r => r.personne))].join(', ')
+        const latestTime  = rupturesActives[0]?.createdAt?.toDate
+          ? rupturesActives[0].createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+        return (
+          <div style={{ background: 'rgba(192,57,43,0.10)', border: '2px solid rgba(192,57,43,0.35)', borderRadius: 14, padding: '14px 16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 18 }}>🔴</span>
+                <span style={{ fontFamily: 'Epilogue, sans-serif', fontSize: 14, fontWeight: 800, color: 'var(--danger)' }}>
+                  CORNER — {rupturesActives.length > 1 ? `${rupturesActives.length} DEMANDES` : 'RUPTURE SIGNALÉE'}
+                </span>
+              </div>
+              <span style={{ fontSize: 11, color: 'var(--on-surface-3)' }}>{personnes}{latestTime ? ` · ${latestTime}` : ''}</span>
+            </div>
+            {allRuptures.length > 0 && (
+              <div style={{ marginBottom: 6 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--danger)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Rupture totale</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+                  {allRuptures.map(p => <span key={p} style={{ background: 'rgba(192,57,43,0.12)', color: 'var(--danger)', borderRadius: 6, padding: '3px 8px', fontSize: 12, fontWeight: 700 }}>{p}</span>)}
+                </div>
+              </div>
+            )}
+            {allPresque.length > 0 && (
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--warning)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Presque rupture</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+                  {allPresque.map(p => <span key={p} style={{ background: 'rgba(180,83,9,0.10)', color: 'var(--warning)', borderRadius: 6, padding: '3px 8px', fontSize: 12, fontWeight: 700 }}>{p}</span>)}
+                </div>
+              </div>
+            )}
+            <button onClick={async () => { const b = writeBatch(db); rupturesActives.forEach(r => b.update(doc(db, 'ruptures_actives', r.id), { viewed: true })); await b.commit() }}
+              style={{ fontSize: 12, fontWeight: 700, color: 'var(--danger)', background: 'rgba(192,57,43,0.10)', border: '1px solid rgba(192,57,43,0.25)', borderRadius: 8, padding: '7px 14px', cursor: 'pointer' }}>
+              ✓ On s'en occupe
+            </button>
+          </div>
+        )
+      })()}
+
+      {/* ── Météo de la semaine ─────────────────────────────────── */}
+      {weather.length > 0 && (
+        <div className="card" style={{ padding: '12px 14px' }}>
+          <p className="section-label" style={{ marginBottom: 10 }}>Météo Paris — semaine</p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 }}>
+            {weather.map(day => {
+              const { emoji } = wmoToEmoji(day.code)
+              return (
+                <div key={day.date} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, padding: '8px 2px', borderRadius: 10, background: day.isToday ? 'rgba(0,66,117,0.08)' : 'var(--surface-low)', border: day.isToday ? '1.5px solid rgba(0,66,117,0.22)' : '1.5px solid transparent' }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: day.isToday ? 'var(--primary)' : 'var(--on-surface-3)', textTransform: 'uppercase' }}>{day.dayLabel}</span>
+                  <span style={{ fontSize: 18, lineHeight: 1.2 }}>{emoji}</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface)' }}>{day.maxC}°</span>
+                  <span style={{ fontSize: 10, color: 'var(--on-surface-3)' }}>{day.minC}°</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* ── Score cockpit + statut global ───────────────────────────── */}
       <div
@@ -464,6 +627,44 @@ export default function CuisineDashboard() {
         </div>
 
       </div>
+
+      {/* ── Commandes clients ──────────────────────────────────────── */}
+      <div className="card" style={{ cursor: 'pointer' }} onClick={() => navigate('/corner/commandes')}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <div>
+            <p className="section-label" style={{ marginBottom: 2 }}>Commandes</p>
+            <h2 style={{ fontFamily: 'Epilogue, sans-serif', fontSize: 15, fontWeight: 700, color: 'var(--on-surface)', margin: 0, letterSpacing: '-0.02em' }}>
+              Cette semaine
+            </h2>
+          </div>
+          {commandesToday.length > 0
+            ? <span className="chip-warn">{commandesToday.length} aujourd'hui</span>
+            : commandesWeek.length > 0
+              ? <span style={{ fontSize: 12, color: 'var(--warning)', fontWeight: 700 }}>{commandesWeek.length} à venir</span>
+              : <span className="chip-ok">RAS</span>
+          }
+        </div>
+        {commandesToday.length === 0 && commandesWeek.length === 0 ? (
+          <p style={{ fontSize: 12, color: 'var(--on-surface-3)', margin: 0 }}>Aucune commande cette semaine.</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {[...commandesToday, ...commandesWeek].slice(0, 4).map(c => (
+              <div key={c.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderRadius: 8, padding: '6px 10px', fontSize: 12, background: commandesToday.find(x => x.id === c.id) ? 'rgba(180,83,9,0.06)' : 'var(--surface-low)' }}>
+                <span style={{ fontWeight: 600, color: 'var(--on-surface)' }}>{c.prenom || ''} {c.nom || 'Client'}</span>
+                <span style={{ color: 'var(--on-surface-3)' }}>
+                  {c.dateLivraison ? new Date(c.dateLivraison + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' }) : '—'}
+                </span>
+              </div>
+            ))}
+            {commandesToday.length + commandesWeek.length > 4 && (
+              <p style={{ fontSize: 11, color: 'var(--on-surface-3)', textAlign: 'center', margin: '2px 0 0' }}>
+                +{commandesToday.length + commandesWeek.length - 4} autres
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
     </div>
   )
 }

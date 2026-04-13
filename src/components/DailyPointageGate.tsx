@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react'
-import { Timestamp, addDoc, collection, getDocs, query, where } from 'firebase/firestore'
-import { db, auth } from '../firebase/config'
+import { getDocs, query, where, collection } from 'firebase/firestore'
+import { httpsCallable } from 'firebase/functions'
+import { signOut } from 'firebase/auth'
+import { db, functions, auth } from '../firebase/config'
 import { useAuth } from '../auth/useAuth'
-import { haversineDistance } from '../utils/geo'
-import { POINTAGE_ZONES, GPS_ACCURACY_LIMIT } from '../config/pointageZones'
+import { POINTAGE_ZONES } from '../config/pointageZones'
 
-const GATE_KEY = 'pointageGateDate'
+function gateKey(uid: string) { return `pointageGateDate_${uid}` }
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10)
@@ -15,24 +16,39 @@ function formatTime(ts: any): string {
   return ts.toDate().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
 }
 
-/** Vérifie si la gate doit s'afficher aujourd'hui */
-export function shouldShowGate(role: string): boolean {
-  if (role === 'manager') return false
-  return localStorage.getItem(GATE_KEY) !== todayStr()
+function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371000
+  const dLat = (lat2 - lat1) * Math.PI / 180
+  const dLng = (lng2 - lng1) * Math.PI / 180
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
 
-export function dismissGate() {
-  localStorage.setItem(GATE_KEY, todayStr())
+function isInAnyZone(lat: number, lng: number, accuracy: number): boolean {
+  return POINTAGE_ZONES.some(z => haversineMeters(lat, lng, z.lat, z.lng) - accuracy <= z.radiusMeters)
+}
+
+/** Vérifie si la gate doit s'afficher aujourd'hui */
+export function shouldShowGate(role: string, uid: string): boolean {
+  // patron, administrateur, chef → jamais de gate (pas de géoloc requise)
+  if (role === 'patron' || role === 'administrateur' || role === 'chef') return false
+  return localStorage.getItem(gateKey(uid)) !== todayStr()
+}
+
+export function dismissGate(uid: string) {
+  localStorage.setItem(gateKey(uid), todayStr())
 }
 
 interface Props { onDismiss: () => void }
 
 export default function DailyPointageGate({ onDismiss }: Props) {
   const { user } = useAuth()
-  const [status, setStatus] = useState<'checking' | 'idle' | 'loading' | 'success' | 'error' | 'already'>('checking')
+  const [status, setStatus] = useState<'checking' | 'idle' | 'loading' | 'success' | 'error' | 'already' | 'verifying'>('checking')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [arriveeTime, setArriveeTime] = useState<string | null>(null)
-  const [showSkip, setShowSkip] = useState(false)
+
+  // corner et cuisine doivent re-vérifier la géoloc même s'ils ont déjà pointé
+  const needsGeoCheck = user?.role === 'corner' || user?.role === 'cuisine'
 
   useEffect(() => {
     if (!user?.uid) return
@@ -43,73 +59,86 @@ export default function DailyPointageGate({ onDismiss }: Props) {
       where('typePointage', '==', 'arrivée'),
       where('statut', '==', 'validé'),
     )
+    // Timeout de sécurité : si Firestore met plus de 6s, on passe en idle
+    const timeout = setTimeout(() => setStatus('idle'), 6000)
     getDocs(q).then(snap => {
+      clearTimeout(timeout)
       if (!snap.empty) {
         setArriveeTime(formatTime(snap.docs[0].data().timestamp))
         setStatus('already')
       } else {
         setStatus('idle')
-        setTimeout(() => setShowSkip(true), 10000)
       }
-    })
+    }).catch(() => { clearTimeout(timeout); setStatus('idle') })
   }, [user?.uid])
 
-  function dismiss() { dismissGate(); onDismiss() }
+  function dismiss() { dismissGate(user!.uid); onDismiss() }
+
+  // Re-vérification géoloc pour corner/cuisine déjà pointés
+  function verifyLocation() {
+    setStatus('verifying')
+    setErrorMsg(null)
+    if (!navigator.geolocation) {
+      setErrorMsg('Géolocalisation non disponible sur cet appareil.')
+      setStatus('already')
+      return
+    }
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => {
+        if (isInAnyZone(coords.latitude, coords.longitude, coords.accuracy)) {
+          dismiss()
+        } else {
+          setErrorMsg("Vous devez être sur le lieu de travail pour accéder à l'application.")
+          setStatus('already')
+        }
+      },
+      (err) => {
+        if (err.code === err.PERMISSION_DENIED) {
+          setErrorMsg("Localisation refusée. Activez-la dans Réglages → Safari → Localisation.")
+        } else {
+          setErrorMsg("Impossible d'obtenir votre position. Vérifiez que la localisation est activée.")
+        }
+        setStatus('already')
+      },
+      { enableHighAccuracy: false, timeout: 30000, maximumAge: 60000 },
+    )
+  }
 
   async function handlePointage() {
     setStatus('loading')
     setErrorMsg(null)
+
     if (!navigator.geolocation) {
       setErrorMsg('Géolocalisation non disponible sur cet appareil.')
-      setStatus('error'); setShowSkip(true); return
+      setStatus('error')
+      return
     }
+
     navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        const { latitude, longitude, accuracy } = pos.coords
-        if (accuracy > GPS_ACCURACY_LIMIT) {
-          setErrorMsg(`Signal GPS trop imprécis (±${Math.round(accuracy)} m). Approchez-vous d'une fenêtre.`)
-          setStatus('error'); setShowSkip(true); return
-        }
-        let detectedZone = null
-        let minDistance = Infinity
-        for (const zone of POINTAGE_ZONES) {
-          const dist = Math.round(haversineDistance(latitude, longitude, zone.lat, zone.lng))
-          if (dist < minDistance) minDistance = dist
-          if (dist <= zone.radiusMeters) { detectedZone = { zone, dist }; break }
-        }
-        const statut: 'validé' | 'refusé' = detectedZone ? 'validé' : 'refusé'
-        await addDoc(collection(db, 'pointages'), {
-          userId: auth.currentUser?.uid ?? '',
-          userName: user?.displayName || user?.email?.split('@')[0] || 'Inconnu',
-          date: todayStr(),
-          typePointage: 'arrivée',
-          zoneId: detectedZone?.zone.id ?? 'hors_zone',
-          zoneLabel: detectedZone?.zone.label ?? 'Hors zone',
-          timestamp: Timestamp.now(),
-          latitude, longitude,
-          accuracy: Math.round(accuracy),
-          distanceToZone: detectedZone?.dist ?? minDistance,
-          statut,
-          deviceInfo: navigator.userAgent,
-        })
-        if (statut === 'validé') {
+      async (position) => {
+        const { latitude, longitude, accuracy } = position.coords
+        try {
+          const createPointageFn = httpsCallable(functions, 'createPointage')
+          await createPointageFn({ latitude, longitude, accuracy, typePointage: 'arrivée' })
           setStatus('success')
           setTimeout(() => dismiss(), 2200)
-        } else {
-          const info = POINTAGE_ZONES.map(z =>
-            `${z.label} (${Math.round(haversineDistance(latitude, longitude, z.lat, z.lng))} m)`
-          ).join(' — ')
-          setErrorMsg(`Hors zone autorisée. ${info}.`)
-          setStatus('error'); setShowSkip(true)
+        } catch (e: any) {
+          const msg: string = e?.message || "Accès refusé : vous devez être sur site pour accéder à l'application."
+          setErrorMsg(msg)
+          setStatus('error')
         }
       },
       (err) => {
-        setErrorMsg(err.code === err.PERMISSION_DENIED
-          ? 'Permission refusée. Activez la géolocalisation dans les réglages.'
-          : "Impossible d'obtenir votre position. Réessayez.")
-        setStatus('error'); setShowSkip(true)
+        if (err.code === err.PERMISSION_DENIED) {
+          setErrorMsg("Localisation refusée. Activez-la dans Réglages → Safari → Localisation, puis réessayez.")
+        } else if (err.code === err.TIMEOUT) {
+          setErrorMsg("Délai dépassé. Vérifiez que la localisation est activée dans les Réglages iOS.")
+        } else {
+          setErrorMsg("Position indisponible. Vérifiez que la localisation est activée dans Réglages → Confidentialité → Service de localisation.")
+        }
+        setStatus('error')
       },
-      { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 },
+      { enableHighAccuracy: false, timeout: 30000, maximumAge: 60000 },
     )
   }
 
@@ -151,16 +180,37 @@ export default function DailyPointageGate({ onDismiss }: Props) {
           <div className="spinner" style={{ margin: '24px auto' }} />
         )}
 
-        {status === 'already' && (
+        {(status === 'already' || status === 'verifying') && (
           <>
             <div style={{ fontSize: 44, marginBottom: 10 }}>✅</div>
             <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--on-surface)', marginBottom: 6, fontFamily: 'Epilogue, sans-serif' }}>
               Arrivée déjà pointée
             </div>
-            <div style={{ fontSize: 14, color: 'var(--on-surface-3)', marginBottom: 28, fontFamily: 'Manrope, sans-serif' }}>
+            <div style={{ fontSize: 14, color: 'var(--on-surface-3)', marginBottom: 20, fontFamily: 'Manrope, sans-serif' }}>
               Aujourd'hui à {arriveeTime}
             </div>
-            <button className="btn-primary" onClick={dismiss}>Accéder à l'app</button>
+            {errorMsg && (
+              <div style={{
+                background: 'rgba(136,0,20,0.08)', border: '1px solid rgba(136,0,20,0.2)',
+                borderRadius: 12, padding: '11px 14px',
+                fontSize: 13, color: 'var(--danger)', textAlign: 'left', marginBottom: 16,
+                fontFamily: 'Manrope, sans-serif',
+              }}>
+                {errorMsg}
+              </div>
+            )}
+            {status === 'verifying' ? (
+              <>
+                <div className="spinner" style={{ margin: '0 auto 10px' }} />
+                <div style={{ fontSize: 13, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif' }}>Vérification de la position…</div>
+              </>
+            ) : needsGeoCheck ? (
+              <button className="btn-primary" onClick={verifyLocation} style={{ fontSize: 15, padding: '14px 0' }}>
+                Confirmer ma présence
+              </button>
+            ) : (
+              <button className="btn-primary" onClick={dismiss}>Accéder à l'app</button>
+            )}
           </>
         )}
 
@@ -194,14 +244,18 @@ export default function DailyPointageGate({ onDismiss }: Props) {
               Pointer mon arrivée
             </button>
 
-            {showSkip && (
-              <button onClick={dismiss} style={{
-                marginTop: 16, background: 'none', border: 'none',
-                color: 'var(--on-surface-3)', fontSize: 13,
-                cursor: 'pointer', textDecoration: 'underline',
-                fontFamily: 'Manrope, sans-serif',
-              }}>
-                Passer (je ne suis pas sur site)
+            {/* Manager : peut bypasser la gate (pas de zone imposée) */}
+            {user?.role === 'manager' && (
+              <button
+                onClick={dismiss}
+                style={{
+                  marginTop: 8, fontSize: 13, color: 'var(--on-surface-3)',
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  width: '100%', textAlign: 'center', padding: '8px 0',
+                  fontFamily: 'Manrope, sans-serif',
+                }}
+              >
+                Je ne suis pas sur zone
               </button>
             )}
           </>
@@ -226,6 +280,18 @@ export default function DailyPointageGate({ onDismiss }: Props) {
           </>
         )}
       </div>
+
+      {/* Bouton de déconnexion en bas */}
+      <button
+        onClick={() => signOut(auth)}
+        style={{
+          marginTop: 24, background: 'none', border: 'none', cursor: 'pointer',
+          fontSize: 13, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif',
+          textDecoration: 'underline', padding: 8, minHeight: 44,
+        }}
+      >
+        Se déconnecter
+      </button>
     </div>
   )
 }

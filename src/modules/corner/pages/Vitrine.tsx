@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Timestamp, addDoc, collection, getDocs, query, updateDoc, doc, where, limit, orderBy } from 'firebase/firestore'
+import { createPortal } from 'react-dom'
+import { Timestamp, addDoc, collection, getDocs, getDocsFromServer, query, updateDoc, deleteDoc, doc, where, limit, orderBy } from 'firebase/firestore'
 import { db, auth } from '../../../firebase/config'
 import { useToast } from '../../../hooks/useToast'
 
@@ -44,7 +45,7 @@ function dlcStatus(dlcAt: any): 'expire' | 'today' | 'tomorrow' | 'ok' {
 
 export default function Vitrine() {
   const { show } = useToast()
-  const [mainTab, setMainTab] = useState<'stock' | 'historique'>('stock')
+  const [mainTab, setMainTab] = useState<'stock' | 'lots' | 'historique'>('stock')
   const [items, setItems]         = useState<StockItem[]>([])
   const [loading, setLoading]     = useState(false)
   const [saving, setSaving]       = useState(false)
@@ -72,10 +73,47 @@ export default function Vitrine() {
   const [selected, setSelected]     = useState<Set<string>>(new Set())
   const [search, setSearch]         = useState('')
 
-  // Mode lot cuisine
+  // Mode lot cuisine (formulaire)
   const [lots, setLots]             = useState<LotCuisine[]>([])
   const [lotsLoading, setLotsLoading] = useState(false)
-  const [selectedLot, setSelectedLot] = useState<LotCuisine | null>(null)
+  const [selectedLotIds, setSelectedLotIds] = useState<Set<string>>(new Set())
+
+  // Onglet Lots — gestion lots reçus
+  type LotRecu = { id: string; lotCode: string; productName: string; producedAt: any; dlcAt: any; sentToCornerAt: any }
+  const [lotsRecus, setLotsRecus]         = useState<LotRecu[]>([])
+  const [lotsRecusLoading, setLotsRecusLoading] = useState(false)
+  const [lotsRecusSearch, setLotsRecusSearch]   = useState('')
+  const [lotActionItem, setLotActionItem] = useState<LotRecu | null>(null)
+
+  async function loadLotsRecus() {
+    setLotsRecusLoading(true)
+    try {
+      const snap = await getDocs(query(
+        collection(db, 'lots_cuisine'),
+        where('sent', '==', true),
+        limit(200),
+      ))
+      const docs = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as LotRecu[]
+      docs.sort((a, b) => (b.sentToCornerAt?.seconds ?? 0) - (a.sentToCornerAt?.seconds ?? 0))
+      setLotsRecus(docs)
+    } catch { /* silencieux */ }
+    finally { setLotsRecusLoading(false) }
+  }
+
+  async function renvoyerLotCuisine(lot: LotRecu) {
+    setLotActionItem(null)
+    await updateDoc(doc(db, 'lots_cuisine', lot.id), { sent: false, sentToCornerAt: null })
+    show(`"${lot.productName}" renvoyé en cuisine`)
+    await loadLotsRecus()
+  }
+
+  async function supprimerLot(lot: LotRecu) {
+    setLotActionItem(null)
+    if (!confirm(`Supprimer définitivement le lot "${lot.lotCode}" (${lot.productName}) ?\nCette action est irréversible.`)) return
+    await deleteDoc(doc(db, 'lots_cuisine', lot.id))
+    show(`Lot "${lot.lotCode}" supprimé`)
+    await loadLotsRecus()
+  }
 
   const dlcAuto = addDays(dateFab, 3)
 
@@ -84,10 +122,12 @@ export default function Vitrine() {
     try {
       const snap = await getDocs(query(collection(db, 'corner_stock'), where('active', '==', true), limit(300)))
       const loaded = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as StockItem[]
+      const dlcOrder = { expire: 0, today: 1, tomorrow: 2, ok: 3 }
       loaded.sort((a, b) => {
-        const ta = a.dlcAt?.toDate ? a.dlcAt.toDate().getTime() : 0
-        const tb = b.dlcAt?.toDate ? b.dlcAt.toDate().getTime() : 0
-        return ta - tb
+        const sa = dlcOrder[dlcStatus(a.dlcAt)]
+        const sb = dlcOrder[dlcStatus(b.dlcAt)]
+        if (sa !== sb) return sa - sb
+        return (a.productName || '').localeCompare(b.productName || '', 'fr', { sensitivity: 'base' })
       })
       setItems(loaded)
     } catch (e: any) { setError(e?.message) }
@@ -115,12 +155,13 @@ export default function Vitrine() {
 
   useEffect(() => { load() }, [])
   useEffect(() => { if (mainTab === 'historique') loadHistorique() }, [mainTab, histFrom, histTo])
+  useEffect(() => { if (mainTab === 'lots') loadLotsRecus() }, [mainTab])
 
   async function loadProduits() {
     setProduitsLoading(true)
     try {
       const snap = await getDocs(query(
-        collection(db, 'produits'),
+        collection(db, 'catalogue'),
         where('inVitrine', '==', true),
         where('active', '==', true),
       ))
@@ -136,13 +177,49 @@ export default function Vitrine() {
   async function loadLots() {
     setLotsLoading(true)
     try {
-      const snap = await getDocs(query(
-        collection(db, 'lots_cuisine'),
-        where('archived', '==', true),
-        orderBy('archivedAt', 'desc'),
-        limit(30),
-      ))
-      setLots(snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as LotCuisine[])
+      // getDocs (pas getDocsFromServer) pour compatibilité iPad WiFi + lots sans sentToCornerAt
+      const [snap, vitrineSnap] = await Promise.all([
+        getDocs(query(
+          collection(db, 'lots_cuisine'),
+          where('sent', '==', true),
+          limit(100),
+        )),
+        getDocs(query(collection(db, 'corner_stock'), limit(300))),
+      ])
+
+      const allRaw = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as (LotCuisine & { archived?: boolean; sentToCornerAt?: any })[]
+      // Tri JS par sentToCornerAt desc (remplace l'orderBy Firestore supprimé)
+      allRaw.sort((a, b) => (b.sentToCornerAt?.seconds ?? 0) - (a.sentToCornerAt?.seconds ?? 0))
+
+      // Déduplication par lotCode (garde le plus récent vu le tri desc)
+      const seenLotCodes = new Set<string>()
+      const all = allRaw.filter(l => {
+        if (!l.lotCode || seenLotCodes.has(l.lotCode)) return false
+        seenLotCodes.add(l.lotCode)
+        return true
+      })
+
+      // Tous les lots avec sent:true sont proposables — le filtre Firestore exclut déjà
+      // les lots ajoutés en vitrine (sent: false) et les lots masqués (sent: false, archived: true).
+      // On n'exige plus archived: true : en pratique la validation de réception peut ne pas
+      // avoir été faite numériquement même si le produit est physiquement arrivé au corner.
+
+      const vitrineData = vitrineSnap.docs.map(d => (d.data() as any))
+      // LotCodes dans TOUS les docs corner_stock (actifs ou non) — si le lotCode a déjà été traité, ne pas re-proposer
+      const allVitrineLosCodes = new Set(vitrineSnap.docs.map(d => (d.data() as any).lotCode).filter(Boolean))
+      // ProductNames ACTIFS en vitrine — permet de re-stocker un produit déjà vendu
+      const vitrineNamesLower = new Set(vitrineData.filter(d => d.active !== false).map(d => (d.productName as string)?.toLowerCase()?.trim()).filter(Boolean))
+
+      // Auto-réparer les lots bloqués avec sent:true alors qu'ils sont déjà dans corner_stock
+      const lotsOrphelins = all.filter(l => l.lotCode && allVitrineLosCodes.has(l.lotCode))
+      if (lotsOrphelins.length > 0) {
+        Promise.all(lotsOrphelins.map(l =>
+          updateDoc(doc(db, 'lots_cuisine', l.id), { sent: false, archived: true })
+        )).catch(() => {})
+      }
+
+      // Exclure : lotCode déjà dans corner_stock (tout statut) OU productName actif en vitrine
+      setLots(all.filter(l => !allVitrineLosCodes.has(l.lotCode) && !vitrineNamesLower.has(l.productName?.toLowerCase()?.trim())))
     } catch (e: any) { setError(e?.message) }
     finally { setLotsLoading(false) }
   }
@@ -150,13 +227,13 @@ export default function Vitrine() {
   function openForm() {
     const next = !showForm
     setShowForm(next)
-    setSelected(new Set()); setSearch(''); setSelectedLot(null)
+    setSelected(new Set()); setSearch(''); setSelectedLotIds(new Set())
     if (next) { loadProduits(); setFormMode('manuel') }
   }
 
   function switchMode(m: 'manuel' | 'lot') {
     setFormMode(m)
-    setSelected(new Set()); setSearch(''); setSelectedLot(null)
+    setSelected(new Set()); setSearch(''); setSelectedLotIds(new Set())
     if (m === 'lot') loadLots()
   }
 
@@ -170,6 +247,17 @@ export default function Vitrine() {
 
   async function saveLot() {
     if (selected.size === 0) return
+    // Anti-doublon : même productName + même date fabrication déjà actif en vitrine
+    const dups = Array.from(selected).filter(productName =>
+      items.some(i =>
+        i.productName === productName &&
+        i.fabricationAt?.toDate &&
+        localISO(i.fabricationAt.toDate()) === dateFab
+      )
+    )
+    if (dups.length > 0) {
+      if (!confirm(`Doublon détecté !\n"${dups.join(', ')}" du ${dateFab} existe déjà en vitrine.\nAjouter quand même ?`)) return
+    }
     setSaving(true); setError(null)
     try {
       const uid = auth.currentUser?.uid || ''
@@ -189,21 +277,38 @@ export default function Vitrine() {
     finally { setSaving(false) }
   }
 
+  async function masquerLot(lot: LotCuisine) {
+    await updateDoc(doc(db, 'lots_cuisine', lot.id), {
+      archived: true, archivedAt: Timestamp.now(), sent: false,
+    })
+    setLots(prev => prev.filter(l => l.id !== lot.id))
+    setSelectedLotIds(prev => { const n = new Set(prev); n.delete(lot.id); return n })
+  }
+
   async function saveLotCuisine() {
-    if (!selectedLot) return
+    if (selectedLotIds.size === 0) return
+    const toAdd = lots.filter(l => selectedLotIds.has(l.id))
     setSaving(true); setError(null)
     try {
       const uid = auth.currentUser?.uid || ''
-      await addDoc(collection(db, 'corner_stock'), {
-        productName: selectedLot.productName,
-        fabricationAt: selectedLot.producedAt,
-        dlcAt: selectedLot.dlcAt,
-        dateAjout: Timestamp.now(),
-        lotCode: selectedLot.lotCode,
-        active: true, createdAt: Timestamp.now(), createdBy: uid,
-      })
-      setSelectedLot(null); setShowForm(false)
-      show('Produit(s) ajouté(s) en vitrine')
+      for (const lot of toAdd) {
+        const fabDay = lot.producedAt?.toDate ? localISO(lot.producedAt.toDate()) : null
+        if (fabDay) {
+          const dup = items.find(i => i.productName === lot.productName && i.fabricationAt?.toDate && localISO(i.fabricationAt.toDate()) === fabDay)
+          if (dup && !confirm(`Doublon : "${lot.productName}" du ${fabDay} existe déjà en vitrine.\nAjouter quand même ?`)) continue
+        }
+        await addDoc(collection(db, 'corner_stock'), {
+          productName: lot.productName, fabricationAt: lot.producedAt, dlcAt: lot.dlcAt,
+          dateAjout: Timestamp.now(), lotCode: lot.lotCode,
+          active: true, createdAt: Timestamp.now(), createdBy: uid,
+        })
+        // Archiver le lot dans lots_cuisine + sent: false → double protection (filtre serveur + filtre JS)
+        await updateDoc(doc(db, 'lots_cuisine', lot.id), {
+          archived: true, archivedAt: Timestamp.now(), sent: false,
+        })
+      }
+      setSelectedLotIds(new Set()); setShowForm(false)
+      show(`${toAdd.length} produit(s) ajouté(s) en vitrine`)
       await load()
     } catch (e: any) { setError(e?.message) }
     finally { setSaving(false) }
@@ -214,6 +319,37 @@ export default function Vitrine() {
     await updateDoc(doc(db, 'corner_stock', id), {
       active: false, retireAt: Timestamp.now(), retireBy: auth.currentUser?.uid || '',
     })
+    await load()
+  }
+
+  async function renvoyerCuisine(item: StockItem) {
+    await updateDoc(doc(db, 'corner_stock', item.id), {
+      active: false,
+      retireAt: Timestamp.now(),
+      retireBy: auth.currentUser?.uid || '',
+      retireReason: 'returned_to_kitchen',
+    })
+    // Si l'item vient d'un lot cuisine, remettre sent à false pour qu'il réapparaisse côté cuisine
+    if (item.lotCode) {
+      try {
+        const snap = await getDocs(query(
+          collection(db, 'lots_cuisine'),
+          where('lotCode', '==', item.lotCode),
+          limit(1),
+        ))
+        if (!snap.empty) {
+          await updateDoc(snap.docs[0].ref, { sent: false, sentToCornerAt: null })
+        }
+      } catch { /* silencieux */ }
+    }
+    show(`"${item.productName}" renvoyé en cuisine`)
+    await load()
+  }
+
+  async function supprimerItem(item: StockItem) {
+    if (!confirm(`Supprimer définitivement "${item.productName}" ?\nCette action est irréversible.`)) return
+    await deleteDoc(doc(db, 'corner_stock', item.id))
+    show(`"${item.productName}" supprimé`)
     await load()
   }
 
@@ -256,6 +392,7 @@ export default function Vitrine() {
       <div style={{ display: 'flex', gap: 4, padding: 4, background: 'var(--surface-mid)', borderRadius: 14 }}>
         {([
           { key: 'stock', label: 'Vitrine' },
+          { key: 'lots', label: 'Lots' },
           { key: 'historique', label: 'Historique' },
         ] as const).map(({ key, label }) => (
           <button key={key} onClick={() => setMainTab(key)} style={{
@@ -334,8 +471,8 @@ export default function Vitrine() {
                         color: 'var(--on-surface-3)', fontSize: 13, margin: 0,
                         fontFamily: 'Manrope, sans-serif',
                       }}>
-                        Aucun lot livré en cuisine.<br />
-                        Marquez des lots comme "Livré" dans Fabrication.
+                        Aucun lot envoyé depuis la cuisine.<br />
+                        Envoyez des lots depuis l'onglet Livraisons en cuisine.
                       </p>
                     </div>
                   ) : (
@@ -346,28 +483,28 @@ export default function Vitrine() {
                       {lots.map(lot => {
                         const prodAt = lot.producedAt?.toDate ? lot.producedAt.toDate() : null
                         const dlcAtD  = lot.dlcAt?.toDate ? lot.dlcAt.toDate() : null
-                        const sel = selectedLot?.id === lot.id
+                        const sel = selectedLotIds.has(lot.id)
                         return (
                           <div
                             key={lot.id}
-                            onClick={() => setSelectedLot(sel ? null : lot)}
                             style={{
                               display: 'flex', alignItems: 'center', gap: 10,
-                              padding: '11px 12px', borderRadius: 12, cursor: 'pointer',
+                              padding: '11px 12px', borderRadius: 12,
                               background: sel ? 'rgba(0,66,117,0.08)' : 'var(--surface-low)',
                               border: `1.5px solid ${sel ? 'rgba(0,66,117,0.3)' : 'var(--border-soft)'}`,
-                              userSelect: 'none', WebkitTapHighlightColor: 'transparent',
                               transition: 'all 0.12s',
                             }}
                           >
                             {/* Checkbox custom */}
-                            <div style={{
-                              width: 20, height: 20, borderRadius: 6, flexShrink: 0,
-                              background: sel ? 'var(--primary)' : 'var(--surface)',
-                              border: `2px solid ${sel ? 'var(--primary)' : 'var(--border)'}`,
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              transition: 'all 0.12s',
-                            }}>
+                            <div
+                              onClick={() => setSelectedLotIds(prev => { const n = new Set(prev); sel ? n.delete(lot.id) : n.add(lot.id); return n })}
+                              style={{
+                                width: 20, height: 20, borderRadius: 6, flexShrink: 0,
+                                background: sel ? 'var(--primary)' : 'var(--surface)',
+                                border: `2px solid ${sel ? 'var(--primary)' : 'var(--border)'}`,
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                cursor: 'pointer', transition: 'all 0.12s',
+                              }}>
                               {sel && (
                                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none"
                                   stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
@@ -375,7 +512,10 @@ export default function Vitrine() {
                                 </svg>
                               )}
                             </div>
-                            <div style={{ flex: 1, minWidth: 0 }}>
+                            <div
+                              onClick={() => setSelectedLotIds(prev => { const n = new Set(prev); sel ? n.delete(lot.id) : n.add(lot.id); return n })}
+                              style={{ flex: 1, minWidth: 0, cursor: 'pointer', userSelect: 'none', WebkitTapHighlightColor: 'transparent' }}
+                            >
                               <div style={{
                                 fontSize: 13, fontWeight: 600, color: 'var(--on-surface)', marginBottom: 2,
                               }}>
@@ -387,13 +527,25 @@ export default function Vitrine() {
                                 {dlcAtD && ` · DLC ${dlcAtD.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })}`}
                               </div>
                             </div>
+                            <button
+                              onClick={e => { e.stopPropagation(); masquerLot(lot) }}
+                              title="Déjà en vitrine — masquer"
+                              style={{
+                                flexShrink: 0, padding: '4px 8px', borderRadius: 8,
+                                border: '1px solid var(--border)', background: 'var(--surface)',
+                                color: 'var(--on-surface-3)', fontSize: 11, cursor: 'pointer',
+                                fontFamily: 'Manrope, sans-serif', lineHeight: 1.2,
+                              }}
+                            >
+                              ✓ déjà là
+                            </button>
                           </div>
                         )
                       })}
                     </div>
                   )}
-                  <button onClick={saveLotCuisine} disabled={saving || !selectedLot} className="btn-primary">
-                    {saving ? 'Enregistrement…' : selectedLot ? `Ajouter "${selectedLot.productName}"` : 'Sélectionner un lot'}
+                  <button onClick={saveLotCuisine} disabled={saving || selectedLotIds.size === 0} className="btn-primary">
+                    {saving ? 'Enregistrement…' : selectedLotIds.size > 0 ? `Ajouter ${selectedLotIds.size} lot(s)` : 'Sélectionner des lots'}
                   </button>
                 </div>
               ) : (
@@ -559,7 +711,7 @@ export default function Vitrine() {
                       border: '1px solid rgba(192,57,43,0.2)',
                     }}>
                       <div style={{
-                        display: 'grid', gridTemplateColumns: '1fr 80px 80px 80px', gap: 4,
+                        display: 'grid', gridTemplateColumns: '1fr 52px 52px 44px', gap: 4,
                         padding: '6px 12px', background: 'rgba(192,57,43,0.08)',
                       }}>
                         {['Produit', 'Fabrication', 'DLC', ''].map(h => (
@@ -580,7 +732,7 @@ export default function Vitrine() {
                           : '—'
                         return (
                           <div key={item.id} style={{
-                            display: 'grid', gridTemplateColumns: '1fr 80px 80px 80px',
+                            display: 'grid', gridTemplateColumns: '1fr 52px 52px 44px',
                             gap: 4, alignItems: 'center', padding: '8px 12px', fontSize: 12,
                             background: idx % 2 === 0 ? 'rgba(192,57,43,0.04)' : 'transparent',
                             borderTop: '1px solid rgba(192,57,43,0.08)',
@@ -598,7 +750,7 @@ export default function Vitrine() {
                               style={{
                                 background: 'rgba(192,57,43,0.10)', border: '1px solid rgba(192,57,43,0.2)',
                                 borderRadius: 8, color: 'var(--danger)', fontSize: 11, fontWeight: 700,
-                                cursor: 'pointer', padding: '3px 8px',
+                                cursor: 'pointer', padding: '3px 8px', whiteSpace: 'nowrap',
                               }}
                             >
                               Retirer
@@ -621,7 +773,7 @@ export default function Vitrine() {
                       border: '1px solid rgba(180,83,9,0.2)',
                     }}>
                       <div style={{
-                        display: 'grid', gridTemplateColumns: '1fr 80px 80px 80px', gap: 4,
+                        display: 'grid', gridTemplateColumns: '1fr 52px 52px 44px', gap: 4,
                         padding: '6px 12px', background: 'rgba(180,83,9,0.06)',
                       }}>
                         {['Produit', 'Fabrication', 'DLC', ''].map(h => (
@@ -642,7 +794,7 @@ export default function Vitrine() {
                           : '—'
                         return (
                           <div key={item.id} style={{
-                            display: 'grid', gridTemplateColumns: '1fr 80px 80px 80px',
+                            display: 'grid', gridTemplateColumns: '1fr 52px 52px 44px',
                             gap: 4, alignItems: 'center', padding: '8px 12px', fontSize: 12,
                             background: idx % 2 === 0 ? 'rgba(180,83,9,0.03)' : 'transparent',
                             borderTop: '1px solid rgba(180,83,9,0.08)',
@@ -726,18 +878,113 @@ export default function Vitrine() {
                     <button
                       onClick={() => retirer(item.id, item.productName)}
                       style={{
-                        background: 'none', border: 'none', color: 'var(--on-surface-3)',
-                        cursor: 'pointer', fontSize: 16, padding: '0 2px', lineHeight: 1,
-                        flexShrink: 0,
+                        background: 'rgba(192,57,43,0.07)', border: '1px solid rgba(192,57,43,0.2)',
+                        borderRadius: 8, color: 'var(--danger)', fontSize: 11, fontWeight: 700,
+                        cursor: 'pointer', padding: '4px 10px', flexShrink: 0,
+                        fontFamily: 'Manrope, sans-serif', whiteSpace: 'nowrap',
                       }}
                     >
-                      ✕
+                      Retirer
                     </button>
                   </div>
                 )
               })}
             </div>
           )}
+        </>
+      )}
+
+      {/* ════════════════ LOTS REÇUS ════════════════ */}
+      {mainTab === 'lots' && (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <input
+              className="input-filled"
+              placeholder="Rechercher un lot ou produit…"
+              value={lotsRecusSearch}
+              onChange={e => setLotsRecusSearch(e.target.value)}
+              style={{ flex: 1 }}
+            />
+            <button onClick={loadLotsRecus} className="btn-secondary"
+              style={{ width: 'auto', padding: '10px 14px', fontSize: 13, flexShrink: 0 }}>
+              ↺
+            </button>
+          </div>
+
+          {lotsRecusLoading && (
+            <div style={{ textAlign: 'center', padding: '40px 0' }}>
+              <div className="spinner" style={{ margin: '0 auto' }} />
+            </div>
+          )}
+
+          {!lotsRecusLoading && (() => {
+            const filtered = lotsRecus.filter(l =>
+              !lotsRecusSearch ||
+              l.productName?.toLowerCase().includes(lotsRecusSearch.toLowerCase()) ||
+              l.lotCode?.toLowerCase().includes(lotsRecusSearch.toLowerCase())
+            )
+            if (filtered.length === 0) return (
+              <div className="card" style={{ textAlign: 'center', padding: '40px 20px' }}>
+                <div style={{ fontSize: 36, marginBottom: 10 }}>📦</div>
+                <p style={{
+                  fontFamily: 'Epilogue, sans-serif', fontWeight: 700, fontSize: 15,
+                  color: 'var(--on-surface)', margin: '0 0 6px',
+                }}>
+                  Aucun lot reçu de la cuisine
+                </p>
+                <p style={{ fontSize: 13, color: 'var(--on-surface-3)', margin: 0 }}>
+                  Les lots envoyés depuis la cuisine apparaissent ici
+                </p>
+              </div>
+            )
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {filtered.map(lot => {
+                  const prodAt = lot.producedAt?.toDate ? lot.producedAt.toDate() : null
+                  const dlcAtD = lot.dlcAt?.toDate ? lot.dlcAt.toDate() : null
+                  const sentAt = lot.sentToCornerAt?.toDate ? lot.sentToCornerAt.toDate() : null
+                  const now = new Date(); now.setHours(0,0,0,0)
+                  const dlcExpired = dlcAtD && dlcAtD < now
+                  return (
+                    <div key={lot.id} style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '12px 14px', borderRadius: 12,
+                      background: dlcExpired ? 'rgba(192,57,43,0.04)' : 'var(--surface-low)',
+                      border: `1px solid ${dlcExpired ? 'rgba(192,57,43,0.18)' : 'var(--border-soft)'}`,
+                    }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{
+                          fontSize: 13, fontWeight: 700, color: 'var(--on-surface)',
+                          marginBottom: 2, lineHeight: 1.3,
+                        }}>
+                          {lot.productName}
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--on-surface-3)', fontFamily: 'monospace' }}>
+                          {lot.lotCode}
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2 }}>
+                          {prodAt && `Fab. ${prodAt.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })}`}
+                          {dlcAtD && ` · DLC ${dlcAtD.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })}`}
+                          {sentAt && ` · Reçu ${sentAt.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })}`}
+                        </div>
+                      </div>
+                      {dlcExpired && <span className="chip-danger">Expiré</span>}
+                      <button
+                        onClick={() => setLotActionItem(lot)}
+                        style={{
+                          background: 'none', border: 'none', color: 'var(--on-surface-3)',
+                          cursor: 'pointer', fontSize: 18, padding: '0 4px', lineHeight: 1,
+                          flexShrink: 0,
+                        }}
+                      >
+                        ⋯
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })()}
         </>
       )}
 
@@ -858,6 +1105,77 @@ export default function Vitrine() {
           })()}
         </>
       )}
+
+      {/* ════════════════ MENU ACTION LOTS REÇUS ════════════════ */}
+      {lotActionItem && createPortal(
+        <div
+          onClick={() => setLotActionItem(null)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(28,28,24,0.45)',
+            zIndex: 9999, display: 'flex', alignItems: 'flex-end',
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: '100%', background: 'var(--surface)', borderRadius: '20px 20px 0 0',
+              padding: '20px 16px 32px', display: 'flex', flexDirection: 'column', gap: 10,
+            }}
+          >
+            <div style={{ marginBottom: 4 }}>
+              <p style={{
+                fontFamily: 'Epilogue, sans-serif', fontWeight: 800, fontSize: 16,
+                color: 'var(--on-surface)', margin: '0 0 2px',
+              }}>
+                {lotActionItem.productName}
+              </p>
+              <p style={{ fontSize: 11, color: 'var(--on-surface-3)', margin: 0, fontFamily: 'monospace' }}>
+                {lotActionItem.lotCode}
+              </p>
+            </div>
+
+            <button
+              onClick={() => renvoyerLotCuisine(lotActionItem)}
+              style={{
+                width: '100%', padding: '14px 16px', borderRadius: 12,
+                border: '1px solid rgba(0,66,117,0.2)',
+                background: 'rgba(0,66,117,0.06)', color: 'var(--primary)', fontWeight: 600,
+                fontSize: 14, cursor: 'pointer', textAlign: 'left', fontFamily: 'Manrope, sans-serif',
+              }}
+            >
+              🔙 Renvoyer en cuisine
+              <span style={{ fontSize: 11, fontWeight: 400, display: 'block', color: 'var(--on-surface-3)', marginTop: 2 }}>
+                Le lot redevient disponible côté cuisine
+              </span>
+            </button>
+
+            <button
+              onClick={() => supprimerLot(lotActionItem)}
+              style={{
+                width: '100%', padding: '14px 16px', borderRadius: 12,
+                border: '1px solid rgba(192,57,43,0.2)',
+                background: 'rgba(192,57,43,0.06)', color: 'var(--danger)', fontWeight: 600,
+                fontSize: 14, cursor: 'pointer', textAlign: 'left', fontFamily: 'Manrope, sans-serif',
+              }}
+            >
+              🗑️ Supprimer définitivement
+              <span style={{ fontSize: 11, fontWeight: 400, display: 'block', color: 'var(--on-surface-3)', marginTop: 2 }}>
+                Pour les lots de test ou erreurs de saisie
+              </span>
+            </button>
+
+            <button
+              onClick={() => setLotActionItem(null)}
+              className="btn-secondary"
+              style={{ width: '100%', marginTop: 4 }}
+            >
+              Annuler
+            </button>
+          </div>
+        </div>,
+        document.body
+      )}
+
 
     </div>
   )

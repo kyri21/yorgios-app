@@ -141,6 +141,7 @@ const CORNER_ITEMS: GridItem[] = [
   { path: '/corner/ruptures',     label: 'Ruptures',    color: '#FF9500', icon: <IconAlert /> },
   { path: '/corner/commandes',    label: 'Commandes clients', color: '#FF2D55', icon: <IconClipboard /> },
   { path: '/corner/controle',     label: 'Contrôle',    color: '#30B0C7', icon: <IconShield /> },
+  { path: '/livraisons',          label: 'Coursier',    color: '#FF9500', icon: <IconTruck /> },
   { path: '/corner/ca',           label: 'CA',          color: '#30D158', icon: <IconChart />, roles: ['patron', 'administrateur', 'manager'] },
   { path: '/corner/planning',     label: 'Planning',    color: '#5E5CE6', icon: <IconCalendar /> },
   { path: '/crm/captation',       label: 'CRM',         color: '#FF6B35', icon: <IconCRM /> },
@@ -152,6 +153,7 @@ const CUISINE_ITEMS: GridItem[] = [
   { path: '/cuisine/livraisons',   label: 'Livraisons',  color: '#34C759', icon: <IconTruck /> },
   { path: '/cuisine/temperatures', label: 'Températures',color: '#FF3B30', icon: <IconThermo /> },
   { path: '/cuisine/controle',     label: 'Contrôle',    color: '#AF52DE', icon: <IconShield /> },
+  { path: '/livraisons',          label: 'Coursier',    color: '#FF9500', icon: <IconTruck /> },
   { path: '/cuisine/reception-historique', label: 'Photos réception', color: '#5AC8FA', icon: <IconPhoto /> },
   { path: '/crm/captation',        label: 'CRM',         color: '#FF6B35', icon: <IconCRM /> },
 ]

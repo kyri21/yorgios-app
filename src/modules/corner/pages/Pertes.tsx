@@ -19,12 +19,12 @@ import Toast from '../../../components/Toast'
 type PerteType = 'quantite' | 'prix'
 type UniteQuantite = 'kg' | 'g' | 'pièce(s)' | 'L'
 
-interface MercurialeItem {
+interface CatalogueItem {
   id: string
   name: string
-  categorie: string
-  unite: 'KG' | 'PIECE'
-  prixUnitaire: number
+  prix?: number
+  active?: boolean
+  defaultCategory?: string
 }
 
 interface Perte {
@@ -113,13 +113,13 @@ export default function Pertes() {
 
   const [onglet, setOnglet] = useState<'saisie' | 'rapport'>('saisie')
 
-  // ── Mercuriale
-  const [mercuriale, setMercuriale] = useState<MercurialeItem[]>([])
-  const [selectedItem, setSelectedItem] = useState<MercurialeItem | null>(null)
+  // ── Catalogue produits
+  const [catalogue, setCatalogue] = useState<CatalogueItem[]>([])
+  const [selectedItem, setSelectedItem] = useState<CatalogueItem | null>(null)
 
   // ── Autocomplete
   const [productName, setProductName] = useState('')
-  const [suggestions, setSuggestions] = useState<MercurialeItem[]>([])
+  const [suggestions, setSuggestions] = useState<CatalogueItem[]>([])
   const [showSuggestions, setShowSuggestions] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -136,12 +136,12 @@ export default function Pertes() {
   const [pertes, setPertes] = useState<Perte[]>([])
   const [loadingRapport, setLoadingRapport] = useState(false)
 
-  // ── Charger mercuriale
+  // ── Charger catalogue produits
   useEffect(() => {
-    getDocs(query(collection(db, 'mercuriale'), where('active', '==', true), orderBy('name')))
+    getDocs(query(collection(db, 'produits'), where('active', '==', true), orderBy('name', 'asc')))
       .then(snap => {
-        const items = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as MercurialeItem[]
-        setMercuriale(items)
+        const items = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as CatalogueItem[]
+        setCatalogue(items)
       })
       .catch(() => {})
   }, [])
@@ -150,15 +150,15 @@ export default function Pertes() {
   useEffect(() => {
     if (!productName.trim()) { setSuggestions([]); return }
     const q = productName.toLowerCase()
-    setSuggestions(mercuriale.filter(p => p.name.toLowerCase().includes(q)).slice(0, 8))
-  }, [productName, mercuriale])
+    setSuggestions(catalogue.filter(p => p.name.toLowerCase().includes(q)).slice(0, 8))
+  }, [productName, catalogue])
 
   // ── Valeur estimée en € (calculée en temps réel)
   const estimatedEur = useMemo(() => {
-    if (!selectedItem || type !== 'quantite') return null
+    if (!selectedItem || !selectedItem.prix || type !== 'quantite') return null
     const v = parseFloat(valeur)
     if (isNaN(v) || v <= 0) return null
-    return calcEstimatedEur(v, unite, selectedItem.prixUnitaire)
+    return calcEstimatedEur(v, unite, selectedItem.prix)
   }, [selectedItem, type, valeur, unite])
 
   // ── Charger rapport
@@ -197,7 +197,7 @@ export default function Pertes() {
         valeur: val,
         unite: type === 'prix' ? '€' : unite,
         ...(note.trim() ? { note: note.trim() } : {}),
-        ...(selectedItem ? { prixUnitaireRef: selectedItem.prixUnitaire } : {}),
+        ...(selectedItem?.prix != null ? { prixUnitaireRef: selectedItem.prix } : {}),
         ...(estimatedEur !== null ? { valeurEstimeeEur: estimatedEur } : {}),
       })
       show('Perte enregistrée', 'success')
@@ -288,14 +288,14 @@ export default function Pertes() {
                     onMouseDown={() => {
                       setProductName(item.name)
                       setSelectedItem(item)
-                      setUnite(item.unite === 'KG' ? 'kg' : 'pièce(s)')
                       setShowSuggestions(false)
                     }}
                     style={{ padding: '10px 14px', fontSize: 14, color: 'var(--on-surface)', cursor: 'pointer', borderBottom: '1px solid var(--border)' }}
                   >
                     <div style={{ fontWeight: 600, fontFamily: 'Manrope, sans-serif' }}>{item.name}</div>
                     <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginTop: 1 }}>
-                      {item.categorie} · {item.prixUnitaire.toFixed(2)} €/{item.unite === 'KG' ? 'kg' : 'pièce'}
+                      {item.defaultCategory ?? ''}
+                      {item.prix != null ? ` · ${item.prix.toFixed(2)} €` : ''}
                     </div>
                   </div>
                 ))}
@@ -303,12 +303,16 @@ export default function Pertes() {
             )}
             {selectedItem && (
               <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontSize: 12, background: 'rgba(0,66,117,0.08)', color: 'var(--primary)', borderRadius: 20, padding: '3px 10px', fontWeight: 700, fontFamily: 'Manrope, sans-serif' }}>
-                  {selectedItem.categorie}
-                </span>
-                <span style={{ fontSize: 12, color: 'var(--on-surface-3)' }}>
-                  {selectedItem.prixUnitaire.toFixed(2)} €/{selectedItem.unite === 'KG' ? 'kg' : 'pièce'}
-                </span>
+                {selectedItem.defaultCategory && (
+                  <span style={{ fontSize: 12, background: 'rgba(0,66,117,0.08)', color: 'var(--primary)', borderRadius: 20, padding: '3px 10px', fontWeight: 700, fontFamily: 'Manrope, sans-serif' }}>
+                    {selectedItem.defaultCategory}
+                  </span>
+                )}
+                {selectedItem.prix != null && (
+                  <span style={{ fontSize: 12, color: 'var(--on-surface-3)' }}>
+                    {selectedItem.prix.toFixed(2)} €
+                  </span>
+                )}
               </div>
             )}
           </div>
@@ -318,7 +322,7 @@ export default function Pertes() {
             <label className="section-label" style={{ marginBottom: 10 }}>Type de perte</label>
             <div style={{ display: 'flex', gap: 4, padding: 4, background: 'var(--surface-mid)', borderRadius: 14, marginBottom: 16 }}>
               <button
-                onClick={() => { setType('quantite'); setUnite(selectedItem?.unite === 'PIECE' ? 'pièce(s)' : 'kg') }}
+                onClick={() => { setType('quantite'); setUnite('kg') }}
                 style={{
                   flex: 1, padding: '9px 0', borderRadius: 10, border: 'none',
                   background: type === 'quantite' ? 'var(--surface)' : 'transparent',

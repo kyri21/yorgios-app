@@ -23,14 +23,45 @@ export function hygieneBonus(score: number | null): number {
   return 0
 }
 
-export function calcCaPrime(caRealise: number | null, caObjectif: number | null): number {
+/** Palier CA : seuil = ratio CA réalisé/objectif, pct = % du montant max à verser (0-100) */
+export interface CaPalier { seuil: number; pct: number }
+
+/** Montant max de prime CA par contrat hebdomadaire (hors prime hygiène) */
+export type CaMaxPrimes = Record<number, number>
+
+export const DEFAULT_CA_MAX_PRIMES: CaMaxPrimes = { 20: 100, 25: 150, 30: 200, 35: 250 }
+
+export const DEFAULT_CA_PALIERS: CaPalier[] = [
+  { seuil: 0.80, pct: 40 },
+  { seuil: 0.90, pct: 60 },
+  { seuil: 1.00, pct: 80 },
+  { seuil: 1.10, pct: 100 },
+]
+
+/** Montant max de prime CA pour un contrat donné */
+export function getMaxCaPrime(weeklyCapHours: number, maxPrimes: CaMaxPrimes = DEFAULT_CA_MAX_PRIMES): number {
+  const keys = Object.keys(maxPrimes).map(Number).sort((a, b) => a - b)
+  const key = keys.reduce((prev, curr) =>
+    Math.abs(curr - weeklyCapHours) < Math.abs(prev - weeklyCapHours) ? curr : prev
+  )
+  return maxPrimes[key] ?? 0
+}
+
+/** Calcule la prime CA d'un employé selon son contrat, le CA du mois et le barème */
+export function calcCaPrime(
+  caRealise: number | null,
+  caObjectif: number | null,
+  weeklyCapHours: number = 35,
+  paliers: CaPalier[] = DEFAULT_CA_PALIERS,
+  maxPrimes: CaMaxPrimes = DEFAULT_CA_MAX_PRIMES,
+): number {
   if (!caRealise || !caObjectif || caObjectif <= 0) return 0
   const ratio = caRealise / caObjectif
-  if (ratio >= 1.10) return 250
-  if (ratio >= 1.00) return 175
-  if (ratio >= 0.90) return 100
-  if (ratio >= 0.80) return 50
-  return 0
+  const sorted = [...paliers].sort((a, b) => b.seuil - a.seuil)
+  const matched = sorted.find(p => ratio >= p.seuil)
+  if (!matched) return 0
+  const max = getMaxCaPrime(weeklyCapHours, maxPrimes)
+  return Math.round((matched.pct / 100) * max)
 }
 
 export function calcPrime(

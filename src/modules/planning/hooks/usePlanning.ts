@@ -5,19 +5,82 @@ import {
 } from '../firebase/planning'
 import type { WeekDraft, WeekEvents, DayEvent, EmpWeekCounter, AbsenceType, Employee } from '../types'
 
+/** Calcule la date de Pâques (algorithme de Gauss) */
+function easterDate(year: number): Date {
+  const a = year % 19
+  const b = Math.floor(year / 100)
+  const c = year % 100
+  const d = Math.floor(b / 4)
+  const e = b % 4
+  const f = Math.floor((b + 8) / 25)
+  const g = Math.floor((b - f + 1) / 3)
+  const h = (19 * a + b - d - g + 15) % 30
+  const i = Math.floor(c / 4)
+  const k = c % 4
+  const l = (32 + 2 * e + 2 * i - h - k) % 7
+  const m = Math.floor((a + 11 * h + 22 * l) / 451)
+  const month = Math.floor((h + l - 7 * m + 114) / 31)
+  const day = ((h + l - 7 * m + 114) % 31) + 1
+  return new Date(year, month - 1, day)
+}
+
+function shiftDate(d: Date, n: number): Date {
+  const r = new Date(d)
+  r.setDate(r.getDate() + n)
+  return r
+}
+
+/** Retourne l'ensemble des jours fériés français d'une année au format YYYY-MM-DD */
+export function getFrenchHolidays(year: number): Set<string> {
+  const fmt = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  const easter = easterDate(year)
+  return new Set([
+    fmt(new Date(year, 0,  1)),        // 1er janvier
+    fmt(shiftDate(easter, 1)),          // Lundi de Pâques
+    fmt(new Date(year, 4,  1)),        // 1er mai
+    fmt(new Date(year, 4,  8)),        // 8 mai
+    fmt(shiftDate(easter, 39)),         // Ascension
+    fmt(shiftDate(easter, 50)),         // Lundi de Pentecôte
+    fmt(new Date(year, 6,  14)),       // 14 juillet
+    fmt(new Date(year, 7,  15)),       // 15 août
+    fmt(new Date(year, 10, 1)),        // 1er novembre
+    fmt(new Date(year, 10, 11)),       // 11 novembre
+    fmt(new Date(year, 11, 25)),       // 25 décembre
+  ])
+}
+
 export function computeWeekCounters(
   draft: WeekDraft,
   weekEvents: WeekEvents,
-  employees: Employee[]
+  employees: Employee[],
+  monday?: Date,
 ): EmpWeekCounter[] {
+  // Calcul des fériés pour l'année de la semaine (et l'année suivante si la semaine chevauche deux ans)
+  const holidaysByYear = new Map<number, Set<string>>()
+  function isHoliday(dateISO: string): boolean {
+    const year = Number(dateISO.slice(0, 4))
+    if (!holidaysByYear.has(year)) holidaysByYear.set(year, getFrenchHolidays(year))
+    return holidaysByYear.get(year)!.has(dateISO)
+  }
+
+  // Pré-calcul des ISO dates des 7 jours de la semaine si monday est fourni
+  const dayISOs: string[] = monday
+    ? Array.from({ length: 7 }, (_, i) => {
+        const d = addDays(monday, i)
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      })
+    : []
+
   return employees.map(emp => {
-    let heuresTravaillees = 0, heuresDimanche = 0
+    let heuresTravaillees = 0, heuresDimanche = 0, heuresFerie = 0
     for (let i = 0; i < 7; i++) {
       const hours = draft[i]?.hours ?? {}
       Object.values(hours).forEach(emps => {
         if (emps.includes(emp.id)) {
           heuresTravaillees++
-          if (i === 6) heuresDimanche++  // dimanche = index 6
+          if (i === 6) heuresDimanche++
+          if (dayISOs[i] && isHoliday(dayISOs[i])) heuresFerie++
         }
       })
     }
@@ -38,7 +101,7 @@ export function computeWeekCounters(
       heuresTravaillees,
       heuresContrat: emp.weeklyCapHours,
       heuresSupp: Math.max(0, heuresTravaillees - emp.weeklyCapHours),
-      heuresDimanche, conges, sansSolde, absences, retardMinutes, joursOff, maladesHeures, partiTotHeures,
+      heuresDimanche, heuresFerie, conges, sansSolde, absences, retardMinutes, joursOff, maladesHeures, partiTotHeures,
     }
   })
 }

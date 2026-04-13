@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react'
-import { getDoc, doc } from 'firebase/firestore'
+import { getDoc, doc, setDoc } from 'firebase/firestore'
 import { db } from '../../../../firebase/config'
 import type { Employee, MonthlyEmployeeStats } from '../../types'
 import { loadPrimeMois, savePrimeMois, loadPrimesEmployes, savePrimesEmployes } from '../../firebase/primes'
 import type { PrimeMois, PrimeEmploye } from '../../firebase/primes'
-import { calcPrime, calcCaPrime, getBareme, hygieneBonus, monthKey, HYGIENE_BONUS, EXCLUDED_NAMES } from '../../utils/primes'
+import { calcPrime, calcCaPrime, getBareme, hygieneBonus, monthKey, HYGIENE_BONUS, EXCLUDED_NAMES, DEFAULT_CA_PALIERS, DEFAULT_CA_MAX_PRIMES, getMaxCaPrime } from '../../utils/primes'
+import type { CaPalier, CaMaxPrimes } from '../../utils/primes'
 
 interface Props {
   month: Date
@@ -12,7 +13,7 @@ interface Props {
   stats: MonthlyEmployeeStats[]
   canEdit: boolean
   uid: string
-  onPrimesChange: (mois: PrimeMois | null, employes: PrimeEmploye[]) => void
+  onPrimesChange: (mois: PrimeMois | null, employes: PrimeEmploye[], settings: { paliers: CaPalier[]; maxPrimes: CaMaxPrimes }) => void
 }
 
 export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChange }: Props) {
@@ -22,6 +23,9 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
   const [caObjectif, setCaObjectif]   = useState<number | null>(null)
   const [caRealise, setCaRealise]     = useState<number | null>(null)
   const [empMap, setEmpMap]           = useState<Record<string, PrimeEmploye>>({})
+  const [caPaliers, setCaPaliers]     = useState<CaPalier[]>(DEFAULT_CA_PALIERS)
+  const [caMaxPrimes, setCaMaxPrimes] = useState<CaMaxPrimes>(DEFAULT_CA_MAX_PRIMES)
+  const [showSettings, setShowSettings] = useState(false)
   const [saving, setSaving]           = useState(false)
   const [saved, setSaved]             = useState(false)
   const [loading, setLoading]         = useState(true)
@@ -33,7 +37,14 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
       loadPrimeMois(month),
       loadPrimesEmployes(month),
       getDoc(doc(db, 'objectifs_ca', mk)),
-    ]).then(([mois, emps, caSnap]) => {
+      getDoc(doc(db, 'settings', 'primes_ca')),
+    ]).then(([mois, emps, caSnap, caSettingsSnap]) => {
+      if (caSettingsSnap.exists()) {
+        const d = caSettingsSnap.data() as any
+        // Migration : anciens paliers avec `prime` (€ fixe) → ignorer, utiliser defaults
+        if (Array.isArray(d.paliers) && d.paliers.every((p: any) => 'pct' in p)) setCaPaliers(d.paliers)
+        if (d.maxPrimes && typeof d.maxPrimes === 'object') setCaMaxPrimes(d.maxPrimes)
+      }
       let loadedCaObjectif: number | null = null
       let loadedCaRealise: number | null = null
       if (caSnap.exists()) {
@@ -62,18 +73,18 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
         }
       })
       setEmpMap(map)
-      onPrimesChange(pm, Object.values(map))
+      onPrimesChange(pm, Object.values(map), { paliers: DEFAULT_CA_PALIERS, maxPrimes: DEFAULT_CA_MAX_PRIMES })
       setLoading(false)
     })
   }, [month])
 
-  const caPrime = calcCaPrime(caRealise, caObjectif)
   const hygBonus = primeMois.hygieneActif ? hygieneBonus(primeMois.hygieneScore) : 0
+  const caRatio = caRealise && caObjectif && caObjectif > 0 ? caRealise / caObjectif : null
 
   function updateMois(patch: Partial<PrimeMois>) {
     setPrimeMois(prev => {
       const next = { ...prev, ...patch }
-      onPrimesChange(next, Object.values(empMap))
+      onPrimesChange(next, Object.values(empMap), { paliers: caPaliers, maxPrimes: caMaxPrimes })
       return next
     })
   }
@@ -81,7 +92,7 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
   function updateEmp(empId: string, patch: Partial<PrimeEmploye>) {
     setEmpMap(prev => {
       const next = { ...prev, [empId]: { ...prev[empId], ...patch } }
-      onPrimesChange(primeMois, Object.values(next))
+      onPrimesChange(primeMois, Object.values(next), { paliers: caPaliers, maxPrimes: caMaxPrimes })
       return next
     })
   }
@@ -90,6 +101,7 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
     setSaving(true)
     await savePrimeMois(primeMois, uid)
     await savePrimesEmployes(Object.values(empMap), uid)
+    await setDoc(doc(db, 'settings', 'primes_ca'), { paliers: caPaliers, maxPrimes: caMaxPrimes })
     setSaving(false)
     setSaved(true)
     setTimeout(() => setSaved(false), 2500)
@@ -144,14 +156,60 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', paddingBottom: '2px' }}>
           <span style={{
             fontSize: '11px', fontWeight: 700, padding: '3px 8px', borderRadius: '5px',
-            background: caPrime > 0 ? 'rgba(45,122,79,0.12)' : 'rgba(28,28,24,0.06)',
-            color: caPrime > 0 ? '#2d7a4f' : 'var(--on-surface-3)',
+            background: caRatio && caRatio >= 0.80 ? 'rgba(45,122,79,0.12)' : 'rgba(28,28,24,0.06)',
+            color: caRatio && caRatio >= 0.80 ? '#2d7a4f' : 'var(--on-surface-3)',
           }}>
-            📈 Performance CA : {caPrime > 0 ? `+${caPrime}€/pers.` : 'Objectif non atteint'}
-            {caObjectif && caRealise ? ` (${Math.round((caRealise / caObjectif) * 100)}%)` : ''}
+            📈 CA {caRatio ? `${Math.round(caRatio * 100)}%` : '—'} · prime pro-rata contrat
           </span>
+          {canEdit && (
+            <button onClick={() => setShowSettings(s => !s)} style={{ fontSize: '11px', background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '3px 8px', cursor: 'pointer', color: 'var(--on-surface-2)' }}>
+              ⚙️ Barème
+            </button>
+          )}
         </div>
       </div>
+
+      {/* ── Panneau paramètres barème ── */}
+      {showSettings && canEdit && (
+        <div style={{ background: 'var(--surface-low)', border: '1px solid var(--border)', borderRadius: 12, padding: '14px', marginBottom: 14 }}>
+          <div style={{ fontWeight: 700, fontSize: 12, color: 'var(--on-surface)', marginBottom: 12 }}>⚙️ Paramètres du barème CA</div>
+          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+            {/* Paliers % CA → % prime max */}
+            <div style={{ flex: 1, minWidth: 180 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Paliers (seuil CA → % du max)</div>
+              {caPaliers.slice().sort((a, b) => a.seuil - b.seuil).map((p, i) => (
+                <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6 }}>
+                  <span style={{ fontSize: 11, color: 'var(--on-surface-3)' }}>≥</span>
+                  <input type="number" min={50} max={200} step={1} value={Math.round(p.seuil * 100)}
+                    onChange={e => setCaPaliers(prev => prev.map((x, j) => j === i ? { ...x, seuil: (parseInt(e.target.value)||80)/100 } : x))}
+                    style={{ width: 52, border: '1px solid var(--border)', borderRadius: 6, padding: '4px 6px', fontSize: 12, textAlign: 'center', background: 'var(--surface)', color: 'var(--on-surface)' }} />
+                  <span style={{ fontSize: 11, color: 'var(--on-surface-3)' }}>% →</span>
+                  <input type="number" min={0} max={100} step={5} value={p.pct}
+                    onChange={e => setCaPaliers(prev => prev.map((x, j) => j === i ? { ...x, pct: parseInt(e.target.value)||0 } : x))}
+                    style={{ width: 52, border: '1px solid var(--border)', borderRadius: 6, padding: '4px 6px', fontSize: 12, textAlign: 'center', background: 'var(--surface)', color: 'var(--on-surface)' }} />
+                  <span style={{ fontSize: 11, color: 'var(--on-surface-3)' }}>%</span>
+                  <button onClick={() => setCaPaliers(prev => prev.filter((_, j) => j !== i))} style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: 14, padding: '0 4px' }}>✕</button>
+                </div>
+              ))}
+              <button onClick={() => setCaPaliers(prev => [...prev, { seuil: 1.20, pct: 100 }])} style={{ fontSize: 11, padding: '4px 10px', border: '1px dashed var(--border)', borderRadius: 6, background: 'none', cursor: 'pointer', color: 'var(--on-surface-2)' }}>+ Palier</button>
+            </div>
+            {/* Max prime par contrat */}
+            <div style={{ flex: 1, minWidth: 160 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Prime max par contrat</div>
+              {[20, 25, 30, 35].map(h => (
+                <div key={h} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, width: 32, color: 'var(--on-surface)' }}>{h}h</span>
+                  <input type="number" min={0} max={1000} step={10} value={caMaxPrimes[h] ?? 0}
+                    onChange={e => setCaMaxPrimes(prev => ({ ...prev, [h]: parseInt(e.target.value)||0 }))}
+                    style={{ width: 64, border: '1px solid var(--border)', borderRadius: 6, padding: '4px 6px', fontSize: 12, textAlign: 'center', background: 'var(--surface)', color: 'var(--on-surface)' }} />
+                  <span style={{ fontSize: 11, color: 'var(--on-surface-3)' }}>€</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--on-surface-3)', marginTop: 8 }}>Enregistré avec le bouton 💾 ci-dessous.</div>
+        </div>
+      )}
 
       {/* ── Cards par employé ── */}
       {employees.filter(e => !EXCLUDED_NAMES.includes(e.name)).map(emp => {
@@ -161,6 +219,8 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
         const b = getBareme(emp.weeklyCapHours)
         const compAmt  = emp.primeComportement ?? b.comp / 2
         const ponctAmt = emp.primePonctualite  ?? b.comp / 2
+        const caPrime = calcCaPrime(caRealise, caObjectif, emp.weeklyCapHours, caPaliers, caMaxPrimes)
+        const maxCa = getMaxCaPrime(emp.weeklyCapHours, caMaxPrimes)
         const prime = calcPrime(emp.weeklyCapHours, ep.comportementOk, ep.ponctualiteOk, caPrime, hygBonus, emp.primeComportement, emp.primePonctualite)
 
         return (
@@ -171,7 +231,7 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
                 <span style={{ background: emp.color, color: '#fff', borderRadius: '7px', padding: '3px 8px', fontSize: '12px', fontWeight: 800 }}>{emp.initials}</span>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: '13px' }}>{emp.name}</div>
-                  <div style={{ fontSize: '10px', color: 'var(--on-surface-3)' }}>Contrat {emp.weeklyCapHours}h · comp. max {b.comp}€{primeMois.hygieneActif ? ` + ${hygBonus}€ hyg.` : ''}</div>
+                  <div style={{ fontSize: '10px', color: 'var(--on-surface-3)' }}>Contrat {emp.weeklyCapHours}h · comp. max {b.comp}€ · CA max {maxCa}€{primeMois.hygieneActif ? ` + ${hygBonus}€ hyg.` : ''}</div>
                 </div>
               </div>
               <div style={{ fontSize: '17px', fontWeight: 800, color: prime > 0 ? 'var(--primary)' : 'var(--on-surface-3)' }}>
@@ -196,12 +256,8 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
                 onChange={v => updateEmp(emp.id, { ponctualiteOk: v })}
               />
               <CriteriaRow
-                emoji="📈" label="Performance CA"
-                tag={
-                  caPrime > 0 && caRealise != null && caObjectif != null
-                    ? `${Math.round((caRealise / caObjectif) * 100)}% ✓`
-                    : 'Objectif non atteint'
-                }
+                emoji="📈" label={`Performance CA (max ${maxCa}€)`}
+                tag={caRatio ? `${Math.round(caRatio * 100)}%${caPrime > 0 ? ' ✓' : ''}` : 'CA non renseigné'}
                 tagWarn={caPrime === 0}
                 amount={caPrime} earned={caPrime > 0}
                 checked={caPrime > 0} disabled={true}

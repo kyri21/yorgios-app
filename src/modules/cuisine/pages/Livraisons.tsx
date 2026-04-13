@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   Timestamp,
@@ -29,6 +29,8 @@ const RULES: Record<string, Rule> = {
   LEGUME: { min: 0, max: 8, maxTol: 10 },
   VIANDE: { min: 0, max: 3, maxTol: 5 },
   VIANDE_HACHEE: { min: 0, max: 2, maxTol: 3 },
+  POISSON: { min: 0, max: 2, maxTol: 3 },
+  AUTRE: { min: 0, max: 8, maxTol: 10 },
 };
 
 function canon(s: string) {
@@ -61,6 +63,9 @@ const CATEGORY_ALIASES: Record<string, string> = {
 
   viande_hachee: "VIANDE_HACHEE",
   viandes_hachees: "VIANDE_HACHEE",
+
+  poisson: "POISSON",
+  poissons: "POISSON",
 };
 
 function normalizeCategoryKey(cat: string) {
@@ -145,11 +150,14 @@ type LotCuisine = {
   sent?: boolean;
 };
 
+type ManualLine = { id: number; productId: string; category: string; temp: string };
+
 type Produit = {
   id: string;
   name: string;
   abrv?: string;
   defaultCategory?: string;
+  gepCategory?: string;
   active?: boolean;
 };
 
@@ -194,18 +202,12 @@ export default function Livraisons() {
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  const [sendMode, setSendMode] = useState<"LOT" | "MANUEL">("LOT");
-
   const [lots, setLots] = useState<LotCuisine[]>([]);
-  const [lotId, setLotId] = useState("");
-  const [departTemp, setDepartTemp] = useState("");
-  const [departPhoto, setDepartPhoto] = useState<File | null>(null);
+  const [lotSelections, setLotSelections] = useState<Record<string, { selected: boolean; temp: string }>>({});
 
   const [produits, setProduits] = useState<Produit[]>([]);
-  const [manualProductId, setManualProductId] = useState("");
-  const [manualCategory, setManualCategory] = useState("PLAT_CUISINE");
-  const [manualTemp, setManualTemp] = useState("");
-  const [manualPhoto, setManualPhoto] = useState<File | null>(null);
+  const [mercurialeGep, setMercurialeGep] = useState<Record<string, string>>({}); // name → gepCategory
+  const [manualLines, setManualLines] = useState<ManualLine[]>([]);
 
   const [todayLivraisons, setTodayLivraisons] = useState<LivrDoc[]>([]);
   const [todayDepartOnly, setTodayDepartOnly] = useState<LivrDoc[]>([]);
@@ -214,9 +216,6 @@ export default function Livraisons() {
   const [editTemp, setEditTemp] = useState("");
   const [editCategory, setEditCategory] = useState("");
   const [editPhoto, setEditPhoto] = useState<File | null>(null);
-
-  const selectedLot = useMemo(() => lots.find((l) => l.id === lotId) || null, [lots, lotId]);
-  const selectedManualProduit = useMemo(() => produits.find((p) => p.id === manualProductId) || null, [produits, manualProductId]);
 
   const stats = useMemo(() => {
     const total = todayLivraisons.length;
@@ -228,19 +227,30 @@ export default function Livraisons() {
   }, [todayLivraisons]);
 
   async function loadLots() {
-    const qLots = query(collection(db, "lots_cuisine"), orderBy("createdAt", "desc"), limit(120));
+    // Charger uniquement les lots non archivés — les lots archived=true sont terminés (côté fabrication)
+    const qLots = query(
+      collection(db, "lots_cuisine"),
+      where("archived", "==", false),
+      orderBy("createdAt", "desc"),
+      limit(120),
+    );
     const snap = await withTimeout(getDocs(qLots), 20000, "load lots_cuisine");
     const list: LotCuisine[] = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
     setLots(list);
   }
 
   async function loadProduits() {
-    const qP = query(collection(db, "produits"), orderBy("name", "asc"), limit(300));
-    const snap = await withTimeout(getDocs(qP), 20000, "load produits");
+    const snap = await withTimeout(getDocs(collection(db, "catalogue")), 20000, "load catalogue");
     const list: Produit[] = snap.docs
       .map((d) => ({ id: d.id, ...(d.data() as any) }))
-      .filter((p) => p.active !== false);
+      .filter((p) => p.active !== false)
+      .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'fr'));
     setProduits(list);
+
+    // Construire la map gepCategory depuis le catalogue (plus besoin de mercuriale séparée)
+    const map: Record<string, string> = {}
+    list.forEach(p => { if (p.name && p.gepCategory) map[p.name] = p.gepCategory })
+    setMercurialeGep(map)
   }
 
   async function loadLivraisonsForView() {
@@ -301,166 +311,143 @@ export default function Livraisons() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [monthParam]);
 
-  async function submitCuisineDepartLot(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
+  useEffect(() => {
+    setLotSelections(prev => {
+      const next: Record<string, { selected: boolean; temp: string }> = {}
+      lots.filter(l => !l.sent).forEach(l => {
+        next[l.id] = prev[l.id] || { selected: false, temp: '' }
+      })
+      return next
+    })
+  }, [lots])
 
-    if (!selectedLot) return setError("Choisis un lot à livrer.");
-    if (selectedLot.sent) return setError("Ce lot est déjà envoyé (bloqué).");
+  let _manualLineId = 0
 
-    const t = Number(String(departTemp).replace(",", "."));
-    if (!Number.isFinite(t)) return setError("Température départ invalide.");
-
-    setLoading(true);
-    try {
-      setStatus("Connexion…");
-      const user = await withTimeout(ensureAnonAuth(), 30000, "auth");
-
-      const livraisonRef = doc(db, "livraisons", selectedLot.id);
-      const existsSnap = await withTimeout(getDoc(livraisonRef), 20000, "check livraison exists");
-      if (existsSnap.exists()) {
-        throw new Error("Impossible : ce lot a déjà une livraison (déjà envoyé).");
-      }
-
-      const category = normalizeCategoryKey(selectedLot.category || "AUTRE");
-      const evalRes = evaluateTemp(category, t);
-
-      setStatus("Upload photo (optionnel)…");
-      let departPhotoUrl: string | null = null;
-      let departPhotoPath: string | null = null;
-      if (departPhoto) {
-        const ts = Date.now();
-        const path = `livraisons/${selectedLot.lotCode}/depart-${ts}-${departPhoto.name}`;
-        const up = await withTimeout(uploadPhoto(departPhoto, path), 60000, "upload depart photo");
-        departPhotoUrl = up.url;
-        departPhotoPath = up.path;
-      }
-
-      setStatus("Écriture Firestore…");
-      await withTimeout(
-        setDoc(livraisonRef, {
-          lotId: selectedLot.id,
-          lotCode: selectedLot.lotCode,
-          productId: selectedLot.productId,
-          productName: selectedLot.productName,
-          category,
-
-          departTempC: t,
-          departAt: Timestamp.now(),
-          departBy: user.uid,
-          departPhotoUrl,
-          departPhotoPath,
-
-          receptionTempC: null,
-          receptionAt: null,
-          receptionBy: null,
-          receptionPhotoUrl: null,
-          receptionPhotoPath: null,
-
-          result: evalRes.result,
-          ruleMaxTol: evalRes.maxTol,
-
-          isManual: false,
-
-          createdAt: Timestamp.now(),
-        }),
-        60000,
-        "setDoc livraisons (lotId)"
-      );
-
-      const lotRef = doc(db, "lots_cuisine", selectedLot.id);
-      await withTimeout(updateDoc(lotRef, { sent: true, sentToCornerAt: Timestamp.now() }), 60000, "update lot sent");
-
-      setLotId("");
-      setDepartTemp("");
-      setDepartPhoto(null);
-
-      await Promise.all([loadLots(), loadLivraisonsForView()]);
-      alert("Livraison créée ✅");
-    } catch (e: any) {
-      console.error(e);
-      setError(e?.message || "Erreur création livraison");
-    } finally {
-      setLoading(false);
-      setStatus("");
-    }
+  function addManualLine() {
+    setManualLines(prev => [...prev, { id: ++_manualLineId, productId: '', category: 'PLAT_CUISINE', temp: '' }])
+  }
+  function removeManualLine(id: number) {
+    setManualLines(prev => prev.filter(m => m.id !== id))
+  }
+  function updateManualLine(id: number, field: keyof ManualLine, value: string) {
+    setManualLines(prev => prev.map(m => m.id === id ? { ...m, [field]: value } : m))
   }
 
-  async function submitCuisineDepartManual(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
+  async function submitAll(e: React.FormEvent) {
+    e.preventDefault()
+    setError(null)
 
-    if (!selectedManualProduit) return setError("Choisis un produit.");
-    const t = Number(String(manualTemp).replace(",", "."));
-    if (!Number.isFinite(t)) return setError("Température départ invalide.");
+    const availableLots = lots.filter(l => !l.sent)
+    const selectedLots = availableLots.filter(l => lotSelections[l.id]?.selected)
+    const validManualLines = manualLines.filter(m => m.productId.trim() !== '')
 
-    setLoading(true);
+    if (selectedLots.length === 0 && validManualLines.length === 0) {
+      return setError("Sélectionne au moins un lot ou ajoute une saisie manuelle.")
+    }
+
+    const totalItems = selectedLots.length + validManualLines.length
+    const tempsCount = [
+      ...selectedLots.filter(l => {
+        const t = (lotSelections[l.id]?.temp || '').trim()
+        return t !== '' && Number.isFinite(Number(t.replace(',', '.')))
+      }),
+      ...validManualLines.filter(m => {
+        const t = m.temp.trim()
+        return t !== '' && Number.isFinite(Number(t.replace(',', '.')))
+      }),
+    ].length
+    const minTemps = Math.min(2, totalItems)
+    if (tempsCount < minTemps) return setError(`Saisis au minimum ${minTemps} température(s) (${tempsCount}/${minTemps} actuellement).`)
+
+    setLoading(true)
     try {
-      setStatus("Connexion…");
-      const user = await withTimeout(ensureAnonAuth(), 30000, "auth");
+      setStatus("Connexion…")
+      const user = await withTimeout(ensureAnonAuth(), 30000, "auth")
 
-      const now = new Date();
-      const abrv = (selectedManualProduit.abrv || canon(selectedManualProduit.name).slice(0, 6)).toUpperCase();
-      const lotCode = `${ddmmyyyy(now)}-${hhmm(now)}-MAN-${abrv}`;
+      for (const lot of selectedLots) {
+        const tempStr = (lotSelections[lot.id]?.temp || '').trim()
+        const t = tempStr !== '' ? Number(tempStr.replace(',', '.')) : null
+        const category = normalizeCategoryKey(lot.category || "AUTRE")
+        const evalRes = t !== null && Number.isFinite(t)
+          ? evaluateTemp(category, t)
+          : { result: "A_VERIFIER" as const, maxTol: null as number | null, rule: null }
 
-      const category = normalizeCategoryKey(manualCategory || selectedManualProduit.defaultCategory || "AUTRE");
-      const evalRes = evaluateTemp(category, t);
+        const livraisonRef = doc(db, "livraisons", lot.id)
+        const existsSnap = await withTimeout(getDoc(livraisonRef), 20000, "check livraison exists")
+        if (existsSnap.exists()) continue
 
-      setStatus("Upload photo (optionnel)…");
-      let departPhotoUrl: string | null = null;
-      let departPhotoPath: string | null = null;
-      if (manualPhoto) {
-        const ts = Date.now();
-        const path = `livraisons/${lotCode}/depart-${ts}-${manualPhoto.name}`;
-        const up = await withTimeout(uploadPhoto(manualPhoto, path), 60000, "upload manual depart photo");
-        departPhotoUrl = up.url;
-        departPhotoPath = up.path;
+        setStatus(`Envoi ${lot.productName}…`)
+        await withTimeout(
+          setDoc(livraisonRef, {
+            lotId: lot.id,
+            lotCode: lot.lotCode,
+            productId: lot.productId,
+            productName: lot.productName,
+            category,
+            departTempC: t,
+            departAt: Timestamp.now(),
+            departBy: user.uid,
+            departPhotoUrl: null,
+            departPhotoPath: null,
+            receptionTempC: null,
+            receptionAt: null,
+            receptionBy: null,
+            receptionPhotoUrl: null,
+            receptionPhotoPath: null,
+            result: evalRes.result,
+            ruleMaxTol: evalRes.maxTol,
+            isManual: false,
+            createdAt: Timestamp.now(),
+          }),
+          60000,
+          "setDoc livraisons"
+        )
+        await withTimeout(
+          updateDoc(doc(db, "lots_cuisine", lot.id), { sent: true, sentToCornerAt: Timestamp.now() }),
+          60000,
+          "update lot sent"
+        )
       }
 
-      setStatus("Écriture Firestore…");
-      await withTimeout(
-        addDoc(collection(db, "livraisons"), {
-          lotId: null,
-          lotCode,
-          productId: selectedManualProduit.id,
-          productName: selectedManualProduit.name,
-          category,
+      for (const line of validManualLines) {
+        const produit = produits.find(p => p.id === line.productId)
+        if (!produit) continue
+        const t = line.temp.trim() !== '' ? Number(line.temp.trim().replace(',', '.')) : null
+        const category = normalizeCategoryKey(line.category || produit.defaultCategory || "AUTRE")
+        const evalRes = t !== null && Number.isFinite(t)
+          ? evaluateTemp(category, t)
+          : { result: "A_VERIFIER" as const, maxTol: null as number | null, rule: null }
 
-          departTempC: t,
-          departAt: Timestamp.now(),
-          departBy: user.uid,
-          departPhotoUrl,
-          departPhotoPath,
+        const now = new Date()
+        const abrv = (produit.abrv || canon(produit.name).slice(0, 6)).toUpperCase()
+        const lotCode = `${ddmmyyyy(now)}-${hhmm(now)}-MAN-${abrv}`
 
-          receptionTempC: null,
-          receptionAt: null,
-          receptionBy: null,
-          receptionPhotoUrl: null,
-          receptionPhotoPath: null,
+        setStatus(`Envoi ${produit.name}…`)
+        await withTimeout(
+          addDoc(collection(db, "livraisons"), {
+            lotId: null, lotCode,
+            productId: produit.id, productName: produit.name,
+            category, departTempC: t, departAt: Timestamp.now(), departBy: user.uid,
+            departPhotoUrl: null, departPhotoPath: null,
+            receptionTempC: null, receptionAt: null, receptionBy: null,
+            receptionPhotoUrl: null, receptionPhotoPath: null,
+            result: evalRes.result, ruleMaxTol: evalRes.maxTol,
+            isManual: true, createdAt: Timestamp.now(),
+          }),
+          60000, "addDoc livraisons (manual)"
+        )
+      }
 
-          result: evalRes.result,
-          ruleMaxTol: evalRes.maxTol,
-
-          isManual: true,
-
-          createdAt: Timestamp.now(),
-        }),
-        60000,
-        "addDoc livraisons (manual)"
-      );
-
-      setManualProductId("");
-      setManualTemp("");
-      setManualPhoto(null);
-
-      await loadLivraisonsForView();
-      alert("Livraison manuelle créée ✅");
+      setLotSelections({})
+      setManualLines([])
+      await Promise.all([loadLots(), loadLivraisonsForView()])
+      alert(`${totalItems} envoi(s) effectué(s) ✅`)
     } catch (e: any) {
-      console.error(e);
-      setError(e?.message || "Erreur création livraison manuelle");
+      console.error(e)
+      setError(e?.message || "Erreur lors de l'envoi")
     } finally {
-      setLoading(false);
-      setStatus("");
+      setLoading(false)
+      setStatus("")
     }
   }
 
@@ -749,114 +736,170 @@ export default function Livraisons() {
             Départ (cuisine)
           </h2>
 
-          {/* Send mode tabs: LOT / MANUEL */}
-          <div style={{ display: 'flex', gap: 4, background: 'var(--surface)', borderRadius: 12, padding: 4, marginBottom: 16 }}>
-            <button
-              type="button"
-              onClick={() => setSendMode("LOT")}
-              style={{ flex: 1, padding: '8px 12px', borderRadius: 9, fontSize: 13, fontWeight: 600, border: 'none', cursor: 'pointer', background: sendMode === 'LOT' ? 'var(--surface-mid)' : 'transparent', color: sendMode === 'LOT' ? 'var(--on-surface)' : 'var(--on-surface-3)' }}
-            >
-              Envoyer un LOT
-            </button>
-            <button
-              type="button"
-              onClick={() => setSendMode("MANUEL")}
-              style={{ flex: 1, padding: '8px 12px', borderRadius: 9, fontSize: 13, fontWeight: 600, border: 'none', cursor: 'pointer', background: sendMode === 'MANUEL' ? 'var(--surface-mid)' : 'transparent', color: sendMode === 'MANUEL' ? 'var(--on-surface)' : 'var(--on-surface-3)' }}
-            >
-              Manuel (sans lot)
-            </button>
-          </div>
+          {(() => {
+            const availableLots = lots.filter(l => !l.sent)
+            const selectedLots = availableLots.filter(l => lotSelections[l.id]?.selected)
+            const validManualLines = manualLines.filter(m => m.productId.trim() !== '')
+            const totalItems = selectedLots.length + validManualLines.length
+            const tempsCount = [
+              ...selectedLots.filter(l => {
+                const t = (lotSelections[l.id]?.temp || '').trim()
+                return t !== '' && Number.isFinite(Number(t.replace(',', '.')))
+              }),
+              ...validManualLines.filter(m => m.temp.trim() !== '' && Number.isFinite(Number(m.temp.trim().replace(',', '.')))),
+            ].length
+            const minTemps = Math.min(2, totalItems)
+            return (
+              <form onSubmit={submitAll} style={{ marginBottom: 12 }}>
+                {/* Lots disponibles */}
+                {availableLots.length > 0 && (
+                  <>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8, fontFamily: 'Manrope, sans-serif' }}>
+                      LOTS CUISINE
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 12 }}>
+                      {availableLots.map(lot => {
+                        const sel = lotSelections[lot.id] || { selected: false, temp: '' }
+                        return (
+                          <div
+                            key={lot.id}
+                            onClick={() => setLotSelections(prev => ({
+                              ...prev,
+                              [lot.id]: { ...(prev[lot.id] || { selected: false, temp: '' }), selected: !sel.selected },
+                            }))}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: 10,
+                              background: sel.selected ? 'rgba(0,66,117,0.06)' : 'var(--surface-low)',
+                              borderRadius: 10, padding: '10px 12px',
+                              border: `1px solid ${sel.selected ? 'rgba(0,66,117,0.2)' : 'transparent'}`,
+                              cursor: 'pointer', transition: 'all 0.1s',
+                            }}
+                          >
+                            <div style={{
+                              width: 20, height: 20, borderRadius: 6, flexShrink: 0,
+                              border: `2px solid ${sel.selected ? 'var(--primary)' : 'var(--border)'}`,
+                              background: sel.selected ? 'var(--primary)' : 'transparent',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            }}>
+                              {sel.selected && <span style={{ color: '#fff', fontSize: 11, lineHeight: 1 }}>✓</span>}
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--on-surface)', fontFamily: 'Manrope, sans-serif', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {lot.productName}
+                              </div>
+                              <div style={{ fontSize: 11, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif' }}>
+                                {lot.lotCode}
+                              </div>
+                            </div>
+                            {sel.selected && (
+                              <input
+                                className="input"
+                                style={{ width: 76, fontSize: 13, textAlign: 'center', padding: '4px 8px', flexShrink: 0 }}
+                                placeholder="°C"
+                                value={sel.temp}
+                                onClick={e => e.stopPropagation()}
+                                onChange={e => {
+                                  e.stopPropagation()
+                                  setLotSelections(prev => ({
+                                    ...prev,
+                                    [lot.id]: { ...prev[lot.id], temp: e.target.value },
+                                  }))
+                                }}
+                              />
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </>
+                )}
+                {availableLots.length === 0 && manualLines.length === 0 && (
+                  <div style={{ fontSize: 13, color: 'var(--on-surface-3)', padding: '8px 0 12px' }}>Aucun lot disponible.</div>
+                )}
 
-          {sendMode === "LOT" && (
-            <div style={{ background: 'var(--surface)', borderRadius: 14, padding: 16, border: '1px solid var(--border)', marginBottom: 12 }}>
-              <form onSubmit={submitCuisineDepartLot}>
-                <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--on-surface-3)', display: 'block', marginBottom: 6, marginTop: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  Lot à livrer *
-                </label>
-                <select className="input" value={lotId} onChange={(e) => setLotId(e.target.value)}>
-                  <option value="">— Sélectionner un lot —</option>
-                  {lots.map((l) => (
-                    <option key={l.id} value={l.id} disabled={!!l.sent}>
-                      {l.lotCode} — {l.productName}{l.sent ? " (déjà envoyé)" : ""}
-                    </option>
-                  ))}
-                </select>
+                {/* Saisies manuelles */}
+                {manualLines.length > 0 && (
+                  <>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8, fontFamily: 'Manrope, sans-serif' }}>
+                      SAISIES MANUELLES
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+                      {manualLines.map(line => (
+                          <div key={line.id} style={{ background: 'var(--surface-low)', borderRadius: 10, padding: '10px 12px' }}>
+                            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                              <ProduitSearch
+                                productId={line.productId}
+                                produits={produits}
+                                mercurialeGep={mercurialeGep}
+                                onSelect={(id, category) => {
+                                  updateManualLine(line.id, 'productId', id)
+                                  updateManualLine(line.id, 'category', category)
+                                }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => removeManualLine(line.id)}
+                                style={{ width: 36, height: 36, borderRadius: 8, border: 'none', background: 'rgba(136,0,20,0.08)', color: 'var(--danger)', fontSize: 14, cursor: 'pointer', flexShrink: 0 }}
+                              >✕</button>
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px', gap: 8 }}>
+                              <select
+                                className="input"
+                                style={{ fontSize: 12 }}
+                                value={line.category}
+                                onChange={e => updateManualLine(line.id, 'category', e.target.value)}
+                              >
+                                <option value="PLAT_CUISINE">Plat cuisiné</option>
+                                <option value="LEGUME">Légumes</option>
+                                <option value="VIANDE">Viande</option>
+                                <option value="VIANDE_HACHEE">Viande hachée</option>
+                                <option value="POISSON">Poisson</option>
+                                <option value="LAIT">Lait / Laitier</option>
+                                <option value="PATISSERIE">Pâtisserie</option>
+                                <option value="AUTRE">Autre</option>
+                              </select>
+                              <input
+                                className="input"
+                                style={{ fontSize: 13, textAlign: 'center' }}
+                                value={line.temp}
+                                onChange={e => updateManualLine(line.id, 'temp', e.target.value)}
+                                placeholder="°C"
+                              />
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  </>
+                )}
 
-                {selectedLot && (
-                  <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginTop: 4 }}>
-                    Produit : <b style={{ color: 'var(--on-surface)' }}>{selectedLot.productName}</b> · Catégorie : <b style={{ color: 'var(--on-surface)' }}>{normalizeCategoryKey(selectedLot.category || "AUTRE")}</b>
+                {/* Ajouter saisie manuelle */}
+                <button
+                  type="button"
+                  onClick={addManualLine}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 700,
+                    color: 'var(--on-surface-2)', background: 'var(--surface-low)',
+                    border: '1.5px dashed var(--border)',
+                    borderRadius: 10, padding: '9px 14px', cursor: 'pointer', width: '100%', justifyContent: 'center',
+                    fontFamily: 'Manrope, sans-serif', marginBottom: 12,
+                  }}
+                >
+                  + Saisie manuelle (sans lot)
+                </button>
+
+                {/* Résumé températures */}
+                {totalItems > 0 && (
+                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10, fontFamily: 'Manrope, sans-serif', color: tempsCount >= minTemps ? 'var(--success)' : 'var(--warning)' }}>
+                    {tempsCount >= minTemps ? '✓' : '⚠'} {tempsCount} température(s) saisie(s) sur {totalItems} entrée(s){tempsCount < minTemps ? ` — min. ${minTemps} requise(s)` : ''}
                   </div>
                 )}
 
-                <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--on-surface-3)', display: 'block', marginBottom: 6, marginTop: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  Température départ (°C) *
-                </label>
-                <input className="input" value={departTemp} onChange={(e) => setDepartTemp(e.target.value)} placeholder="ex : 3,8" />
-
-                <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--on-surface-3)', display: 'block', marginBottom: 6, marginTop: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  Photo (optionnelle)
-                </label>
-                <input className="input" type="file" accept="image/*" onChange={(e) => setDepartPhoto(e.target.files?.[0] || null)} />
-
-                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                  <button className="btn-primary" type="submit" disabled={loading}>
-                    Créer la livraison
-                  </button>
-                </div>
+                <button className="btn-primary" type="submit" disabled={loading || totalItems === 0}>
+                  {totalItems > 0 ? `Envoyer ${totalItems} entrée(s)` : 'Sélectionne des lots ou ajoute une saisie'}
+                </button>
               </form>
-            </div>
-          )}
-
-          {sendMode === "MANUEL" && (
-            <div style={{ background: 'var(--surface)', borderRadius: 14, padding: 16, border: '1px solid var(--border)', marginBottom: 12 }}>
-              <form onSubmit={submitCuisineDepartManual}>
-                <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--on-surface-3)', display: 'block', marginBottom: 6, marginTop: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  Produit *
-                </label>
-                <select
-                  className="input"
-                  value={manualProductId}
-                  onChange={(e) => {
-                    const id = e.target.value;
-                    setManualProductId(id);
-                    const p = produits.find((x) => x.id === id);
-                    if (p?.defaultCategory) setManualCategory(String(p.defaultCategory));
-                  }}
-                >
-                  <option value="">— Sélectionner un produit —</option>
-                  {produits.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
-
-                <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--on-surface-3)', display: 'block', marginBottom: 6, marginTop: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  Catégorie (modifiable)
-                </label>
-                <input
-                  className="input"
-                  value={manualCategory}
-                  onChange={(e) => setManualCategory(e.target.value)}
-                  placeholder="ex : LEGUMES / VIANDES / plats cuisinés"
-                />
-
-                <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--on-surface-3)', display: 'block', marginBottom: 6, marginTop: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  Température départ (°C) *
-                </label>
-                <input className="input" value={manualTemp} onChange={(e) => setManualTemp(e.target.value)} placeholder="ex : 3,8" />
-
-                <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--on-surface-3)', display: 'block', marginBottom: 6, marginTop: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  Photo (optionnelle)
-                </label>
-                <input className="input" type="file" accept="image/*" onChange={(e) => setManualPhoto(e.target.files?.[0] || null)} />
-
-                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                  <button className="btn-primary" type="submit" disabled={loading}>
-                    Créer la livraison manuelle
-                  </button>
-                </div>
-              </form>
-            </div>
-          )}
+            )
+          })()}
 
           <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '20px 0' }} />
 
@@ -879,13 +922,21 @@ export default function Livraisons() {
                     {l.productName}{l.isManual ? " (manuel)" : ""} — {l.lotCode}
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginTop: 4 }}>
-                    Départ {l.departTempC}°C à {depAt} · Cat. {l.category} · Statut: <b style={{ color: needsReception ? 'var(--warning)' : 'var(--success)' }}>{needsReception ? "à compléter" : `réception OK (${l.result})`}</b>
+                    Départ {l.departTempC != null ? `${l.departTempC}°C` : '—'} à {depAt} · Cat. {l.category} · Statut: <b style={{ color: needsReception ? 'var(--warning)' : 'var(--success)' }}>{needsReception ? "à compléter" : `réception OK (${l.result})`}</b>
                   </div>
 
                   {l.departPhotoUrl && (
-                    <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginTop: 4 }}>
-                      Photo départ : <a href={l.departPhotoUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--primary)' }}>ouvrir</a>
-                    </div>
+                    <a href={l.departPhotoUrl} target="_blank" rel="noreferrer" style={{ display: 'inline-block', marginTop: 8, position: 'relative', borderRadius: 8, overflow: 'hidden', flexShrink: 0 }}>
+                      <img src={l.departPhotoUrl} alt="photo départ" style={{ display: 'block', height: 72, width: 'auto', maxWidth: 120, objectFit: 'cover', borderRadius: 8 }} />
+                      {l.departTempC != null && (
+                        <span style={{
+                          position: 'absolute', bottom: 4, right: 4,
+                          background: 'rgba(0,0,0,0.62)', color: '#fff',
+                          fontSize: 11, fontWeight: 800, padding: '2px 6px', borderRadius: 5,
+                          fontFamily: 'Epilogue, sans-serif', letterSpacing: '-0.01em',
+                        }}>{l.departTempC}°C</span>
+                      )}
+                    </a>
                   )}
 
                   {isEditing ? (
@@ -955,20 +1006,32 @@ export default function Livraisons() {
                     {l.productName}{l.isManual ? " (manuel)" : ""}
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginTop: 4 }}>
-                    Lot <b style={{ color: 'var(--on-surface)' }}>{l.lotCode}</b> · Départ {l.departTempC}°C à {depAt} · Cat. {l.category}
+                    Lot <b style={{ color: 'var(--on-surface)' }}>{l.lotCode}</b> · Départ {l.departTempC != null ? `${l.departTempC}°C` : '—'} à {depAt} · Cat. {l.category}
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginTop: 4 }}>
                     Statut : <b style={{ color: needsReception ? 'var(--warning)' : 'var(--success)' }}>{needsReception ? "À compléter (réception)" : `Réception OK (${l.result})`}</b>
                   </div>
 
-                  {l.departPhotoUrl && (
-                    <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginTop: 4 }}>
-                      Photo départ : <a href={l.departPhotoUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--primary)' }}>ouvrir</a>
-                    </div>
-                  )}
-                  {l.receptionPhotoUrl && (
-                    <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginTop: 4 }}>
-                      Photo réception : <a href={l.receptionPhotoUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--primary)' }}>ouvrir</a>
+                  {(l.departPhotoUrl || l.receptionPhotoUrl) && (
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                      {l.departPhotoUrl && (
+                        <a href={l.departPhotoUrl} target="_blank" rel="noreferrer" style={{ display: 'inline-block', position: 'relative', borderRadius: 8, overflow: 'hidden' }}>
+                          <img src={l.departPhotoUrl} alt="photo départ" style={{ display: 'block', height: 72, width: 'auto', maxWidth: 120, objectFit: 'cover', borderRadius: 8 }} />
+                          <span style={{ position: 'absolute', bottom: 4, left: 4, background: 'rgba(0,0,0,0.62)', color: '#fff', fontSize: 9, fontWeight: 700, padding: '2px 5px', borderRadius: 4, fontFamily: 'Manrope, sans-serif' }}>Départ</span>
+                          {l.departTempC != null && (
+                            <span style={{ position: 'absolute', bottom: 4, right: 4, background: 'rgba(0,0,0,0.62)', color: '#fff', fontSize: 11, fontWeight: 800, padding: '2px 6px', borderRadius: 5, fontFamily: 'Epilogue, sans-serif' }}>{l.departTempC}°C</span>
+                          )}
+                        </a>
+                      )}
+                      {l.receptionPhotoUrl && (
+                        <a href={l.receptionPhotoUrl} target="_blank" rel="noreferrer" style={{ display: 'inline-block', position: 'relative', borderRadius: 8, overflow: 'hidden' }}>
+                          <img src={l.receptionPhotoUrl} alt="photo réception" style={{ display: 'block', height: 72, width: 'auto', maxWidth: 120, objectFit: 'cover', borderRadius: 8 }} />
+                          <span style={{ position: 'absolute', bottom: 4, left: 4, background: 'rgba(0,0,0,0.62)', color: '#fff', fontSize: 9, fontWeight: 700, padding: '2px 5px', borderRadius: 4, fontFamily: 'Manrope, sans-serif' }}>Réception</span>
+                          {l.receptionTempC != null && (
+                            <span style={{ position: 'absolute', bottom: 4, right: 4, background: 'rgba(0,0,0,0.62)', color: '#fff', fontSize: 11, fontWeight: 800, padding: '2px 6px', borderRadius: 5, fontFamily: 'Epilogue, sans-serif' }}>{l.receptionTempC}°C</span>
+                          )}
+                        </a>
+                      )}
                     </div>
                   )}
 
@@ -1032,4 +1095,72 @@ function CornerReceptionForm({
       </div>
     </div>
   );
+}
+
+// ─── ProduitSearch — autocomplete for manual lines ────────────────
+function ProduitSearch({ productId, produits, mercurialeGep, onSelect }: {
+  productId: string
+  produits: Produit[]
+  mercurialeGep: Record<string, string>
+  onSelect: (id: string, category: string) => void
+}) {
+  const [inputVal, setInputVal] = useState(() => produits.find(x => x.id === productId)?.name ?? '')
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const p = produits.find(x => x.id === productId)
+    setInputVal(p ? p.name : '')
+  }, [productId, produits])
+
+  const filtered = inputVal.trim().length > 0
+    ? produits.filter(p => p.name.toLowerCase().includes(inputVal.toLowerCase())).slice(0, 8)
+    : produits.slice(0, 8)
+
+  useEffect(() => {
+    function onClickOutside(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onClickOutside)
+    return () => document.removeEventListener('mousedown', onClickOutside)
+  }, [])
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative', flex: 1 }}>
+      <input
+        className="input"
+        style={{ fontSize: 13, width: '100%' }}
+        value={inputVal}
+        placeholder="Rechercher un produit…"
+        autoComplete="off"
+        onChange={e => { setInputVal(e.target.value); setOpen(true) }}
+        onFocus={() => setOpen(true)}
+      />
+      {open && filtered.length > 0 && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 200,
+          background: 'var(--surface)', borderRadius: 10, marginTop: 4,
+          boxShadow: '0 8px 24px rgba(28,28,24,0.14)', overflow: 'hidden',
+          maxHeight: 220, overflowY: 'auto',
+        }}>
+          {filtered.map(p => (
+            <button
+              key={p.id}
+              type="button"
+              onMouseDown={e => { e.preventDefault(); setInputVal(p.name); setOpen(false); onSelect(p.id, mercurialeGep[p.name] || p.defaultCategory || 'PLAT_CUISINE') }}
+              onTouchEnd={e => { e.preventDefault(); setInputVal(p.name); setOpen(false); onSelect(p.id, mercurialeGep[p.name] || p.defaultCategory || 'PLAT_CUISINE') }}
+              style={{
+                display: 'block', width: '100%', textAlign: 'left',
+                padding: '10px 14px', fontSize: 13, color: 'var(--on-surface)',
+                background: 'none', border: 'none', cursor: 'pointer',
+                borderBottom: '1px solid var(--border-soft)', fontFamily: 'Manrope, sans-serif',
+              }}
+            >
+              {p.name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }

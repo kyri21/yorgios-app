@@ -1,10 +1,11 @@
-import { useMemo, useState, useEffect } from "react";
+import { lazy, Suspense, useMemo, useState, useEffect } from "react";
 import {
   Timestamp,
   collection,
   doc,
   getDoc,
   getDocs,
+  orderBy,
   query,
   setDoc,
   where,
@@ -19,6 +20,8 @@ import {
   TEMP_RULES_V1,
   type HaccpCategory,
 } from "../lib/haccpRules";
+
+const BarcodeScanner = lazy(() => import('../../../components/BarcodeScanner'))
 
 type Produit = {
   id: string;
@@ -111,10 +114,35 @@ async function compressImageToJpegBytes(
   }
 }
 
+type ReceptionHisto = {
+  id: string
+  fournisseur: string
+  receivedAt: Timestamp
+  productName: string
+  temperatureC: number
+  decision: 'ACCEPTE' | 'REFUSE' | 'A_VERIFIER'
+  photoUrl: string | null
+  supplierLot: string | null
+  category: string
+}
+
+function pad(n: number) { return String(n).padStart(2, '0') }
+function formatDate(ts: Timestamp): string {
+  const d = ts.toDate()
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 export default function Reception() {
+  const [tab, setTab] = useState<'saisie' | 'historique'>('saisie')
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  const [showScanner, setShowScanner] = useState(false)
+
+  // Historique
+  const [histoList, setHistoList] = useState<ReceptionHisto[]>([])
+  const [histoLoading, setHistoLoading] = useState(false)
+  const [modalPhoto, setModalPhoto] = useState<string | null>(null)
 
   const [produits, setProduits] = useState<Produit[]>([]);
   const [produitsLoaded, setProduitsLoaded] = useState(false);
@@ -152,6 +180,19 @@ export default function Reception() {
       })
       .catch(() => {})
   }, []);
+
+  function loadHistorique() {
+    setHistoLoading(true)
+    getDocs(query(collection(db, 'receptions'), orderBy('receivedAt', 'desc')))
+      .then(snap => setHistoList(snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as ReceptionHisto[]))
+      .catch(() => {})
+      .finally(() => setHistoLoading(false))
+  }
+
+  useEffect(() => {
+    if (tab === 'historique' && histoList.length === 0) loadHistorique()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab])
 
   const [fournisseur, setFournisseur] = useState("Foodflow");
   const [fournisseurAutre, setFournisseurAutre] = useState("");
@@ -403,8 +444,34 @@ export default function Reception() {
   return (
     <div className="page">
 
+      {/* Scanner modal */}
+      {showScanner && (
+        <Suspense fallback={null}>
+          <BarcodeScanner
+            onScan={(val) => { setSupplierLot(val); setShowScanner(false) }}
+            onClose={() => setShowScanner(false)}
+          />
+        </Suspense>
+      )}
+
+      {/* Modal photo plein écran */}
+      {modalPhoto && (
+        <div
+          onClick={() => setModalPhoto(null)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 500,
+            background: 'rgba(28,28,24,0.88)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: '20px',
+          }}
+        >
+          <img src={modalPhoto} alt="Photo réception"
+            style={{ maxWidth: '100%', maxHeight: '90dvh', borderRadius: 12, objectFit: 'contain' }} />
+        </div>
+      )}
+
       {/* ── Header ── */}
-      <div style={{ marginBottom: 4 }}>
+      <div style={{ marginBottom: 16 }}>
         <p className="section-label" style={{ marginBottom: 4 }}>Cuisine · HACCP</p>
         <h1 style={{
           fontFamily: 'Epilogue, sans-serif',
@@ -420,6 +487,99 @@ export default function Reception() {
           {todayLabel()}
         </p>
       </div>
+
+      {/* ── Onglets ── */}
+      <div className="nav-tabs" style={{ marginBottom: 16 }}>
+        {(['saisie', 'historique'] as const).map(t => (
+          <button
+            key={t}
+            className={`nav-tab ${tab === t ? 'active' : ''}`}
+            onClick={() => setTab(t)}
+          >
+            {t === 'saisie' ? 'Nouvelle réception' : 'Historique'}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Onglet Historique ── */}
+      {tab === 'historique' && (
+        <div>
+          {histoLoading ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {[1,2,3].map(i => <div key={i} className="skeleton" style={{ height: 90, borderRadius: 14 }} />)}
+            </div>
+          ) : histoList.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--on-surface-3)' }}>
+              <p style={{ fontSize: 32, margin: '0 0 8px' }}>📦</p>
+              <p style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>Aucune réception enregistrée</p>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <button
+                type="button"
+                onClick={loadHistorique}
+                style={{
+                  alignSelf: 'flex-end', background: 'var(--surface-mid)',
+                  border: 'none', borderRadius: 8, padding: '6px 12px',
+                  fontSize: 12, fontWeight: 600, color: 'var(--on-surface-2)', cursor: 'pointer',
+                }}
+              >
+                ↺ Actualiser
+              </button>
+              {histoList.map(r => {
+                const badge = r.decision === 'ACCEPTE'
+                  ? { cls: 'chip-ok', label: 'Accepté' }
+                  : r.decision === 'REFUSE'
+                    ? { cls: 'chip-danger', label: 'Refusé' }
+                    : { cls: 'chip-warn', label: 'À vérifier' }
+                return (
+                  <div key={r.id} className="card" style={{ padding: '14px 16px' }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                      {/* Photo thumbnail */}
+                      {r.photoUrl ? (
+                        <img
+                          src={r.photoUrl}
+                          alt=""
+                          onClick={() => setModalPhoto(r.photoUrl)}
+                          style={{
+                            width: 56, height: 56, borderRadius: 10,
+                            objectFit: 'cover', flexShrink: 0, cursor: 'pointer',
+                          }}
+                        />
+                      ) : (
+                        <div style={{
+                          width: 56, height: 56, borderRadius: 10, flexShrink: 0,
+                          background: 'var(--surface-mid)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: 22,
+                        }}>📦</div>
+                      )}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--on-surface)' }}>
+                            {r.productName}
+                          </span>
+                          <span className={badge.cls} style={{ fontSize: 11 }}>{badge.label}</span>
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginTop: 3 }}>
+                          {r.fournisseur} · {formatDate(r.receivedAt)}
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--on-surface-2)', marginTop: 2, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                          <span>🌡 {r.temperatureC}°C</span>
+                          {r.supplierLot && <span>📦 {r.supplierLot}</span>}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Onglet Saisie ── */}
+      {tab === 'saisie' && (<>
 
       {/* ── Résultat HACCP — mesure critique ── */}
       <div style={{
@@ -663,14 +823,30 @@ export default function Reception() {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
             <div style={fieldGroup}>
               <span style={sectionLabel}>N° lot fournisseur</span>
-              <input
-                style={underlineInput}
-                value={supplierLot}
-                onChange={(e) => setSupplierLot(e.target.value)}
-                placeholder="Ex: L2309-AP04"
-                onFocus={e => (e.currentTarget.style.borderBottomColor = 'var(--primary)')}
-                onBlur={e => (e.currentTarget.style.borderBottomColor = 'var(--border)')}
-              />
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  style={{ ...underlineInput, flex: 1 }}
+                  value={supplierLot}
+                  onChange={(e) => setSupplierLot(e.target.value)}
+                  placeholder="Ex: L2309-AP04"
+                  onFocus={e => (e.currentTarget.style.borderBottomColor = 'var(--primary)')}
+                  onBlur={e => (e.currentTarget.style.borderBottomColor = 'var(--border)')}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowScanner(true)}
+                  title="Scanner le code-barres"
+                  style={{
+                    flexShrink: 0, width: 40, height: 40,
+                    background: 'var(--surface-mid)', border: 'none',
+                    borderRadius: 10, cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 20,
+                  }}
+                >
+                  📷
+                </button>
+              </div>
             </div>
 
             <div style={fieldGroup}>
@@ -811,6 +987,7 @@ export default function Reception() {
         </button>
 
       </form>
+      </>)}
     </div>
   );
 }
