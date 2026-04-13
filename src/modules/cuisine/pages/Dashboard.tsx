@@ -58,6 +58,18 @@ function todayISO() {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
 
+function firstDayOfMonthISO() {
+  const d = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-01`
+}
+
+function lastDayOfMonthISO() {
+  const d = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
 function timeAgo(ts: any): string {
   if (!ts?.toDate) return ''
   const diff = Math.floor((Date.now() - ts.toDate().getTime()) / 60000)
@@ -99,6 +111,7 @@ export default function CuisineDashboard() {
   const [rupturesActives, setRupturesActives] = useState<RuptureActive[]>([])
   const [commandesToday, setCommandesToday] = useState<CommandeClient[]>([])
   const [commandesWeek, setCommandesWeek] = useState<CommandeClient[]>([])
+  const [commandesMois, setCommandesMois] = useState<CommandeClient[]>([])
   const [weather, setWeather] = useState<WeatherDay[]>([])
 
   useEffect(() => {
@@ -150,15 +163,24 @@ export default function CuisineDashboard() {
 
       // Commandes clients
       try {
-        const cmdSnap = await getDocs(query(
-          collection(db, 'commandes_externes'),
-          where('dateLivraison', '>=', today),
-          where('dateLivraison', '<=', endWeek),
-          orderBy('dateLivraison', 'asc'),
-        ))
+        const [cmdSnap, moisSnap] = await Promise.all([
+          getDocs(query(
+            collection(db, 'commandes_externes'),
+            where('dateLivraison', '>=', today),
+            where('dateLivraison', '<=', endWeek),
+            orderBy('dateLivraison', 'asc'),
+          )),
+          getDocs(query(
+            collection(db, 'commandes_externes'),
+            where('dateLivraison', '>=', firstDayOfMonthISO()),
+            where('dateLivraison', '<=', lastDayOfMonthISO()),
+            orderBy('dateLivraison', 'asc'),
+          )),
+        ])
         const allCmds: CommandeClient[] = cmdSnap.docs.map(d => ({ id: d.id, ...(d.data() as any) }))
         setCommandesToday(allCmds.filter(c => c.dateLivraison === today))
         setCommandesWeek(allCmds.filter(c => c.dateLivraison > today))
+        setCommandesMois(moisSnap.docs.map(d => ({ id: d.id, ...(d.data() as any) })))
       } catch (e) {
         console.error('[dashboard cuisine] commandes:', e)
       }
@@ -170,13 +192,20 @@ export default function CuisineDashboard() {
 
   // Ruptures actives corner — temps réel
   useEffect(() => {
-    const yesterday13h = new Date()
-    yesterday13h.setDate(yesterday13h.getDate() - 1)
-    yesterday13h.setHours(13, 0, 0, 0)
+    const now = new Date()
+    const cutoffStart = new Date()
+    if (now.getHours() < 10) {
+      // Before 10h: show from yesterday 13h
+      cutoffStart.setDate(cutoffStart.getDate() - 1)
+      cutoffStart.setHours(13, 0, 0, 0)
+    } else {
+      // After 10h: only show from today midnight
+      cutoffStart.setHours(0, 0, 0, 0)
+    }
     const q = query(
       collection(db, 'ruptures_actives'),
       where('viewed', '==', false),
-      where('createdAt', '>=', Timestamp.fromDate(yesterday13h)),
+      where('createdAt', '>=', Timestamp.fromDate(cutoffStart)),
       orderBy('createdAt', 'desc'),
       limit(20)
     )
@@ -634,15 +663,20 @@ export default function CuisineDashboard() {
           <div>
             <p className="section-label" style={{ marginBottom: 2 }}>Commandes</p>
             <h2 style={{ fontFamily: 'Epilogue, sans-serif', fontSize: 15, fontWeight: 700, color: 'var(--on-surface)', margin: 0, letterSpacing: '-0.02em' }}>
-              Cette semaine
+              Semaine &amp; mois
             </h2>
           </div>
-          {commandesToday.length > 0
-            ? <span className="chip-warn">{commandesToday.length} aujourd'hui</span>
-            : commandesWeek.length > 0
-              ? <span style={{ fontSize: 12, color: 'var(--warning)', fontWeight: 700 }}>{commandesWeek.length} à venir</span>
-              : <span className="chip-ok">RAS</span>
-          }
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3 }}>
+            {commandesToday.length > 0
+              ? <span className="chip-warn">{commandesToday.length} aujourd'hui</span>
+              : commandesWeek.length > 0
+                ? <span style={{ fontSize: 12, color: 'var(--warning)', fontWeight: 700 }}>{commandesWeek.length} à venir</span>
+                : <span className="chip-ok">RAS</span>
+            }
+            {commandesMois.length > 0 && (
+              <span style={{ fontSize: 11, color: 'var(--on-surface-3)' }}>{commandesMois.length} ce mois</span>
+            )}
+          </div>
         </div>
         {commandesToday.length === 0 && commandesWeek.length === 0 ? (
           <p style={{ fontSize: 12, color: 'var(--on-surface-3)', margin: 0 }}>Aucune commande cette semaine.</p>
