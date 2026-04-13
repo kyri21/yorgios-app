@@ -699,18 +699,38 @@ exports.onLivraisonReception = (0, firestore_2.onDocumentUpdated)({ document: 'l
     const after = (_d = (_c = event.data) === null || _c === void 0 ? void 0 : _c.after) === null || _d === void 0 ? void 0 : _d.data();
     if (!before || !after)
         return;
-    // Ne déclencher que quand receptionTempC passe de null/absent à une valeur
-    if (before.receptionTempC != null)
+    // Ne déclencher que quand receptionAt passe de absent à défini (réception enregistrée)
+    if (before.receptionAt != null)
         return;
-    if (after.receptionTempC == null)
+    if (after.receptionAt == null)
         return;
     const produit = after.productName || 'produit inconnu';
     const lot = after.lotCode || event.params.livId;
     const tempC = after.receptionTempC;
     const result = after.result || 'A_VERIFIER';
     const emoji = result === 'ACCEPTE' ? '✅' : result === 'REFUSE' ? '❌' : '⚠️';
-    await notifyRoles(`${emoji} Réception corner — ${produit}`, `Réception : ${tempC}°C (${result}) · Lot ${lot}`, '/corner/livraison', ['patron', 'administrateur', 'manager']);
-    console.log(`[livraison-reception] Notif envoyée pour lot ${lot} — ${tempC}°C ${result}`);
+    const tempLabel = tempC != null ? `${tempC}°C` : 'sans temp.';
+    await notifyRoles(`${emoji} Réception corner — ${produit}`, `Réception : ${tempLabel} (${result}) · Lot ${lot}`, '/corner/livraison', ['patron', 'administrateur', 'manager']);
+    console.log(`[livraison-reception] Notif envoyée pour lot ${lot} — ${tempLabel} ${result}`);
+    if (result === 'REFUSE') {
+        const gmailUser = process.env.GMAIL_USER;
+        const gmailPass = process.env.GMAIL_APP_PASSWORD;
+        if (gmailUser && gmailPass) {
+            const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } });
+            await transporter.sendMail({
+                from: `"Matias" <${gmailUser}>`,
+                to: 'a.cozzika@gmail.com',
+                subject: `❌ Non-conformité température — ${produit}`,
+                text: [
+                    `Non-conformité détectée au corner Yorgios.`,
+                    `Produit : ${produit}`,
+                    `Lot : ${lot}`,
+                    `Température réception : ${tempC}°C`,
+                    `Résultat : REFUSÉ (hors tolérance GEP)`,
+                ].join('\n'),
+            }).catch((e) => console.error('[livraison-reception] Email error:', e));
+        }
+    }
 });
 /** 15h00 — Urgences corner — aux employés qui ont pointé */
 exports.notifUrgences = (0, scheduler_1.onSchedule)({ schedule: '0 15 * * *', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {

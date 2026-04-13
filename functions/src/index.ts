@@ -833,23 +833,44 @@ export const onLivraisonReception = onDocumentUpdated(
     const after  = event.data?.after?.data()
     if (!before || !after) return
 
-    // Ne déclencher que quand receptionTempC passe de null/absent à une valeur
-    if (before.receptionTempC != null) return
-    if (after.receptionTempC == null) return
+    // Ne déclencher que quand receptionAt passe de absent à défini (réception enregistrée)
+    if (before.receptionAt != null) return
+    if (after.receptionAt == null) return
 
     const produit = (after.productName as string) || 'produit inconnu'
     const lot = (after.lotCode as string) || event.params.livId
-    const tempC = after.receptionTempC as number
+    const tempC = after.receptionTempC as number | null
     const result = (after.result as string) || 'A_VERIFIER'
     const emoji = result === 'ACCEPTE' ? '✅' : result === 'REFUSE' ? '❌' : '⚠️'
 
+    const tempLabel = tempC != null ? `${tempC}°C` : 'sans temp.'
     await notifyRoles(
       `${emoji} Réception corner — ${produit}`,
-      `Réception : ${tempC}°C (${result}) · Lot ${lot}`,
+      `Réception : ${tempLabel} (${result}) · Lot ${lot}`,
       '/corner/livraison',
       ['patron', 'administrateur', 'manager'],
     )
-    console.log(`[livraison-reception] Notif envoyée pour lot ${lot} — ${tempC}°C ${result}`)
+    console.log(`[livraison-reception] Notif envoyée pour lot ${lot} — ${tempLabel} ${result}`)
+
+    if (result === 'REFUSE') {
+      const gmailUser = process.env.GMAIL_USER
+      const gmailPass = process.env.GMAIL_APP_PASSWORD
+      if (gmailUser && gmailPass) {
+        const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } })
+        await transporter.sendMail({
+          from: `"Matias" <${gmailUser}>`,
+          to: 'a.cozzika@gmail.com',
+          subject: `❌ Non-conformité température — ${produit}`,
+          text: [
+            `Non-conformité détectée au corner Yorgios.`,
+            `Produit : ${produit}`,
+            `Lot : ${lot}`,
+            `Température réception : ${tempC}°C`,
+            `Résultat : REFUSÉ (hors tolérance GEP)`,
+          ].join('\n'),
+        }).catch((e: any) => console.error('[livraison-reception] Email error:', e))
+      }
+    }
   }
 )
 

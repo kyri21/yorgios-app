@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react'
-import { Timestamp, addDoc, collection, getDocs, getDoc, doc, limit, onSnapshot, orderBy, query, updateDoc, where, type Unsubscribe } from 'firebase/firestore'
+import { Timestamp, addDoc, collection, getDocs, getDoc, doc, deleteDoc, limit, onSnapshot, orderBy, query, updateDoc, where, type Unsubscribe } from 'firebase/firestore'
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { db, auth, storage } from '../../../firebase/config'
 import { useAuth } from '../../../auth/useAuth'
 
 type LivrDoc = {
   id: string; lotCode: string; productName: string; category: string
-  departTempC: number; departAt: any; departPhotoUrl?: string | null
+  departTempC: number | null | undefined; departAt: any; departPhotoUrl?: string | null
   receptionTempC?: number | null; receptionAt?: any; receptionPhotoUrl?: string | null; result: string
-  isManual?: boolean
+  isManual?: boolean; returned?: boolean
 }
 
 type GalleryItem = LivrDoc
@@ -65,6 +65,7 @@ export default function Livraison() {
   const [error, setError] = useState<string | null>(null)
   const [receptionTemps, setReceptionTemps] = useState<Record<string, string>>({})
   const [receptionPhotos, setReceptionPhotos] = useState<Record<string, File | null>>({})
+  const [receptionChecked, setReceptionChecked] = useState<Record<string, boolean>>({})
   const [ncModal, setNcModal] = useState<NcModalData | null>(null)
   const [ncLoading, setNcLoading] = useState(false)
   const [ncSuccess, setNcSuccess] = useState(false)
@@ -183,6 +184,25 @@ export default function Livraison() {
 
   async function submitReception(l: LivrDoc) {
     setError(null)
+
+    // Items sans temperature de départ → simple checkbox, pas de saisie temp
+    if (l.departTempC == null) {
+      if (!receptionChecked[l.id]) { setError('Cochez la case pour valider la réception'); return }
+      setLoading(true)
+      try {
+        setStatus('Enregistrement…')
+        const uid = auth.currentUser?.uid || ''
+        await updateDoc(doc(db, 'livraisons', l.id), {
+          receptionTempC: null, receptionAt: Timestamp.now(), receptionBy: uid,
+          receptionPhotoUrl: null, result: 'ACCEPTE',
+        })
+        setReceptionChecked(p => { const n = { ...p }; delete n[l.id]; return n })
+        await load()
+      } catch (e: any) { setError(e?.message) }
+      finally { setLoading(false); setStatus('') }
+      return
+    }
+
     const tempStr = receptionTemps[l.id] || ''
     const t = Number(String(tempStr).replace(',', '.'))
     if (!Number.isFinite(t)) { setError('Température invalide'); return }
@@ -213,6 +233,20 @@ export default function Livraison() {
       if (result === 'REFUSE') setNcModal({ l: { ...l, result }, t })
     } catch (e: any) { setError(e?.message) }
     finally { setLoading(false); setStatus('') }
+  }
+
+  async function retourCuisine(id: string) {
+    try {
+      await updateDoc(doc(db, 'livraisons', id), { returned: true, returnedAt: Timestamp.now() })
+      await load()
+    } catch (e: any) { setError(e?.message) }
+  }
+
+  async function supprimerLivraison(id: string) {
+    try {
+      await deleteDoc(doc(db, 'livraisons', id))
+      await load()
+    } catch (e: any) { setError(e?.message) }
   }
 
   async function markDeliveryDone(id: string) {
@@ -248,8 +282,14 @@ export default function Livraison() {
     finally { setNcLoading(false) }
   }
 
-  const pending = livraisons.filter(l => l.receptionTempC == null)
-  const done = livraisons.filter(l => l.receptionTempC != null)
+  const pending = livraisons
+    .filter(l => l.receptionTempC == null && !l.returned)
+    .sort((a, b) => {
+      const aHasTemp = a.departTempC != null ? 1 : 0
+      const bHasTemp = b.departTempC != null ? 1 : 0
+      return bHasTemp - aHasTemp
+    })
+  const done = livraisons.filter(l => l.receptionTempC != null && !l.returned)
 
   function resultChip(result: string) {
     if (result === 'ACCEPTE') return <span className="chip-ok">ACCEPTÉ</span>
@@ -334,6 +374,7 @@ export default function Livraison() {
               const depAt = l.departAt?.toDate
                 ? l.departAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                 : ''
+              const hasTemp = l.departTempC != null
               return (
                 <div key={l.id} className="card" style={{ border: '1.5px solid rgba(0,66,117,0.15)' }}>
                   {/* Titre produit */}
@@ -351,7 +392,10 @@ export default function Livraison() {
                     )}
                   </div>
                   <p style={{ fontSize: 12, color: 'var(--on-surface-3)', marginBottom: 14, marginTop: 0 }}>
-                    Lot {l.lotCode} · Départ {l.departTempC}°C à {depAt} · Cat. {l.category}
+                    {hasTemp
+                      ? `Lot ${l.lotCode} · Départ ${l.departTempC}°C à ${depAt} · Cat. ${l.category}`
+                      : `Lot ${l.lotCode} · Cat. ${l.category} · Départ à ${depAt}`
+                    }
                   </p>
 
                   {l.departPhotoUrl && (
@@ -367,34 +411,96 @@ export default function Livraison() {
                     </button>
                   )}
 
-                  {/* Température réception */}
-                  <div style={{ marginBottom: 10 }}>
-                    <p className="section-label" style={{ marginBottom: 6 }}>Température réception (°C) *</p>
-                    <input
-                      className="input-filled"
-                      value={receptionTemps[l.id] || ''}
-                      onChange={e => setReceptionTemps(p => ({ ...p, [l.id]: e.target.value }))}
-                      placeholder="ex : 3,8"
-                      inputMode="decimal"
-                    />
-                  </div>
+                  {hasTemp ? (
+                    <>
+                      {/* Température réception */}
+                      <div style={{ marginBottom: 10 }}>
+                        <p className="section-label" style={{ marginBottom: 6 }}>Température réception (°C) *</p>
+                        <input
+                          className="input-filled"
+                          value={receptionTemps[l.id] || ''}
+                          onChange={e => setReceptionTemps(p => ({ ...p, [l.id]: e.target.value }))}
+                          placeholder="ex : 3,8"
+                          inputMode="decimal"
+                        />
+                      </div>
 
-                  {/* Photo optionnelle */}
-                  <div style={{ marginBottom: 16 }}>
-                    <p className="section-label" style={{ marginBottom: 6 }}>Photo (optionnelle)</p>
-                    <input
-                      type="file" accept="image/*" className="input-filled"
-                      onChange={e => setReceptionPhotos(p => ({ ...p, [l.id]: e.target.files?.[0] || null }))}
-                    />
-                  </div>
+                      {/* Photo optionnelle */}
+                      <div style={{ marginBottom: 16 }}>
+                        <p className="section-label" style={{ marginBottom: 6 }}>Photo (optionnelle)</p>
+                        <input
+                          type="file" accept="image/*" className="input-filled"
+                          onChange={e => setReceptionPhotos(p => ({ ...p, [l.id]: e.target.files?.[0] || null }))}
+                        />
+                      </div>
 
-                  <button
-                    onClick={() => submitReception(l)}
-                    disabled={loading || !receptionTemps[l.id]}
-                    className="btn-primary"
-                  >
-                    {loading ? 'Enregistrement…' : 'Valider réception'}
-                  </button>
+                      <button
+                        onClick={() => submitReception(l)}
+                        disabled={loading || !receptionTemps[l.id]}
+                        className="btn-primary"
+                      >
+                        {loading ? 'Enregistrement…' : 'Valider réception'}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {/* Checkbox pour livraisons sans température */}
+                      <label style={{
+                        display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+                        padding: '12px 14px', borderRadius: 10,
+                        background: receptionChecked[l.id] ? 'rgba(45,122,79,0.08)' : 'var(--surface-low)',
+                        border: `1.5px solid ${receptionChecked[l.id] ? 'rgba(45,122,79,0.25)' : 'var(--border)'}`,
+                        marginBottom: 12, transition: 'all 0.15s',
+                      }}>
+                        <input
+                          type="checkbox"
+                          checked={!!receptionChecked[l.id]}
+                          onChange={e => setReceptionChecked(p => ({ ...p, [l.id]: e.target.checked }))}
+                          style={{ width: 20, height: 20, accentColor: 'var(--success)', cursor: 'pointer' }}
+                        />
+                        <span style={{
+                          fontSize: 14, fontWeight: 600,
+                          color: receptionChecked[l.id] ? 'var(--success)' : 'var(--on-surface)',
+                          fontFamily: 'Manrope, sans-serif',
+                        }}>
+                          Livraison reçue ✓
+                        </span>
+                      </label>
+
+                      <button
+                        onClick={() => submitReception(l)}
+                        disabled={loading || !receptionChecked[l.id]}
+                        className="btn-primary"
+                        style={{ marginBottom: 0 }}
+                      >
+                        {loading ? 'Enregistrement…' : 'Valider réception'}
+                      </button>
+                    </>
+                  )}
+
+                  {/* Boutons actions secondaires */}
+                  <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                    <button
+                      onClick={() => retourCuisine(l.id)}
+                      style={{
+                        fontSize: 12, padding: '6px 12px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                        background: 'rgba(0,66,117,0.08)', color: 'var(--primary)', fontWeight: 600,
+                        fontFamily: 'Manrope, sans-serif',
+                      }}
+                    >
+                      ↩ Retour cuisine
+                    </button>
+                    <button
+                      onClick={() => supprimerLivraison(l.id)}
+                      style={{
+                        fontSize: 12, padding: '6px 12px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                        background: 'rgba(192,57,43,0.08)', color: 'var(--danger)', fontWeight: 600,
+                        fontFamily: 'Manrope, sans-serif',
+                      }}
+                    >
+                      🗑 Supprimer
+                    </button>
+                  </div>
                 </div>
               )
             })}
