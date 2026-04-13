@@ -283,13 +283,13 @@ export default function Livraison() {
   }
 
   const pending = livraisons
-    .filter(l => l.receptionTempC == null && !l.returned)
+    .filter(l => l.receptionTempC == null && !l.receptionAt && !l.returned)
     .sort((a, b) => {
       const aHasTemp = a.departTempC != null ? 1 : 0
       const bHasTemp = b.departTempC != null ? 1 : 0
       return bHasTemp - aHasTemp
     })
-  const done = livraisons.filter(l => l.receptionTempC != null && !l.returned)
+  const done = livraisons.filter(l => (l.receptionTempC != null || l.receptionAt != null) && !l.returned)
 
   function resultChip(result: string) {
     if (result === 'ACCEPTE') return <span className="chip-ok">ACCEPTÉ</span>
