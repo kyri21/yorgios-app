@@ -115,17 +115,17 @@ function tempCellStyle(status: string | null): React.CSSProperties {
   return { background: 'var(--surface-mid)' }
 }
 
-const TASK_KEYS = ['tgg', 'cartons', 'plats'] as const
+const TASK_KEYS = ['cartons', 'plats'] as const
 type TaskKey = typeof TASK_KEYS[number]
 
 function loadChecks(): Record<TaskKey, boolean> {
   try {
     const saved = localStorage.getItem('dashboard_checks')
-    if (!saved) return { tgg: false, cartons: false, plats: false }
+    if (!saved) return { cartons: false, plats: false }
     const parsed = JSON.parse(saved)
-    if (parsed.date !== todayISO()) return { tgg: false, cartons: false, plats: false }
+    if (parsed.date !== todayISO()) return { cartons: false, plats: false }
     return parsed.checks
-  } catch { return { tgg: false, cartons: false, plats: false } }
+  } catch { return { cartons: false, plats: false } }
 }
 
 function saveChecks(checks: Record<TaskKey, boolean>) {
@@ -260,7 +260,6 @@ export default function Dashboard() {
       label: dlcExpire > 0 ? `DLC vitrine (${dlcExpire} expirée(s))` : dlcItems.length > 0 ? `DLC vitrine (${dlcItems.length} à surveiller)` : 'DLC vitrine',
       status: dlcStatusVal, nav: 'vitrine', checkKey: null as TaskKey | null,
     },
-    { label: '🥡 Préparer les paniers TooGoodToGo', status: checks.tgg     ? 'ok' : (totalMin >= 9*60     ? 'todo' : 'gray'), nav: '', checkKey: 'tgg'     as TaskKey },
     { label: '📦 Vider les cartons chambre froide',  status: checks.cartons ? 'ok' : (totalMin >= 9*60+30 ? 'todo' : 'gray'), nav: '', checkKey: 'cartons' as TaskKey },
     { label: '🍽️ Faire les plats du jour',            status: checks.plats   ? 'ok' : (totalMin >= 11*60  ? 'todo' : 'gray'), nav: '', checkKey: 'plats'   as TaskKey },
   ]
