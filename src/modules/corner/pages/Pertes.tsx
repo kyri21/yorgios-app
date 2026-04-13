@@ -218,6 +218,7 @@ export default function Pertes() {
   // ── Stats rapport
   const totalPrix   = pertes.filter(p => p.type === 'prix').reduce((acc, p) => acc + p.valeur, 0)
   const totalEstime = pertes.filter(p => p.type === 'quantite' && p.valeurEstimeeEur != null).reduce((acc, p) => acc + (p.valeurEstimeeEur ?? 0), 0)
+  const totalCombined = totalPrix + totalEstime
   const grouped = groupByDate([...pertes].sort((a, b) => a.date.localeCompare(b.date)))
   const sortedDates = Array.from(grouped.keys()).sort((a, b) => a.localeCompare(b))
 
@@ -418,7 +419,7 @@ export default function Pertes() {
                   boxShadow: periode === p ? '0 1px 6px rgba(28,28,24,0.08)' : 'none',
                 }}
               >
-                {p === 'jour' ? "Today" : p === 'semaine' ? 'Semaine' : 'Mois'}
+                {p === 'jour' ? "Aujourd'hui" : p === 'semaine' ? 'Semaine' : 'Mois'}
               </button>
             ))}
           </div>
@@ -439,21 +440,17 @@ export default function Pertes() {
           </div>
 
           {/* Stats KPI */}
-          <div style={{ display: 'grid', gridTemplateColumns: totalEstime > 0 ? '1fr 1fr 1fr' : '1fr 1fr', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <div className="card" style={{ textAlign: 'center', padding: '14px 10px' }}>
               <div style={{ fontSize: 28, fontWeight: 800, color: 'var(--on-surface)', fontFamily: 'Epilogue, sans-serif' }}>{pertes.length}</div>
-              <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2, fontFamily: 'Manrope, sans-serif', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Unités perdues</div>
+              <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2, fontFamily: 'Manrope, sans-serif', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Entrées</div>
             </div>
             <div style={{ background: 'rgba(136,0,20,0.06)', borderRadius: 14, padding: '14px 10px', textAlign: 'center' }}>
-              <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--danger)', fontFamily: 'Epilogue, sans-serif' }}>{totalPrix.toFixed(2)} €</div>
-              <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2, fontFamily: 'Manrope, sans-serif', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Valeur financière</div>
-            </div>
-            {totalEstime > 0 && (
-              <div style={{ background: 'rgba(180,83,9,0.06)', borderRadius: 14, padding: '14px 10px', textAlign: 'center' }}>
-                <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--warning)', fontFamily: 'Epilogue, sans-serif' }}>~{totalEstime.toFixed(2)} €</div>
-                <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2, fontFamily: 'Manrope, sans-serif', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Estimation</div>
+              <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--danger)', fontFamily: 'Epilogue, sans-serif' }}>
+                {totalCombined > 0 ? `~${totalCombined.toFixed(2)} €` : `${totalPrix.toFixed(2)} €`}
               </div>
-            )}
+              <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2, fontFamily: 'Manrope, sans-serif', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Total pertes</div>
+            </div>
           </div>
 
           {/* Liste */}
