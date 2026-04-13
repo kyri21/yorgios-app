@@ -490,16 +490,18 @@ export default function Livraison() {
                     >
                       ↩ Retour cuisine
                     </button>
-                    <button
-                      onClick={() => supprimerLivraison(l.id)}
-                      style={{
-                        fontSize: 12, padding: '6px 12px', borderRadius: 8, border: 'none', cursor: 'pointer',
-                        background: 'rgba(192,57,43,0.08)', color: 'var(--danger)', fontWeight: 600,
-                        fontFamily: 'Manrope, sans-serif',
-                      }}
-                    >
-                      🗑 Supprimer
-                    </button>
+                    {['patron', 'administrateur', 'manager'].includes(user?.role ?? '') && (
+                      <button
+                        onClick={() => supprimerLivraison(l.id)}
+                        style={{
+                          fontSize: 12, padding: '6px 12px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                          background: 'rgba(192,57,43,0.08)', color: 'var(--danger)', fontWeight: 600,
+                          fontFamily: 'Manrope, sans-serif',
+                        }}
+                      >
+                        🗑 Supprimer
+                      </button>
+                    )}
                   </div>
                 </div>
               )
@@ -530,7 +532,9 @@ export default function Livraison() {
                           {l.productName}
                         </div>
                         <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2 }}>
-                          Réception {l.receptionTempC}°C à {recAt}
+                          {l.receptionTempC != null
+                            ? `Réception ${l.receptionTempC}°C à ${recAt}`
+                            : `Réceptionné à ${recAt}`}
                         </div>
                         <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
                           {l.departPhotoUrl && (
