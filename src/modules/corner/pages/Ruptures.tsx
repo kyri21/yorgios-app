@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { Timestamp, addDoc, collection, doc, getDoc, getDocs, orderBy, query } from 'firebase/firestore'
+import { Timestamp, addDoc, collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore'
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { db, auth, storage } from '../../../firebase/config'
 import { useAuth } from '../../../auth/useAuth'
@@ -8,6 +8,8 @@ import { useAuth } from '../../../auth/useAuth'
 type StockRow = { id: number; produit: string; contenant: string; niveau: string }
 type CmdRow   = { id: number; produit: string; quantite: string }
 type PhotoSlot = { label: string; required: boolean; file: File | null; preview: string | null; url?: string }
+type StockCheckState = 'urgent' | 'moins-urgent' | null
+type CatalogueProduit = { id: string; name: string; defaultCategory: string; active: boolean }
 
 const CONTENANTS = ['Sceau', 'Plaque inox', 'Plat inox', 'Plat en fer blanc et bleu', 'Grand sceau', 'Bac gastro', 'Bac blanc']
 const NIVEAUX    = ['Plein', 'Trois-quarts', 'Moitié', 'Un quart']
@@ -60,10 +62,9 @@ export default function Ruptures() {
   const uid = auth.currentUser?.uid || ''
 
   const [produits, setProduits]   = useState<string[]>(DEFAULT_STOCK_PRODUITS)
+  const [catalogueProduits, setCatalogueProduits] = useState<CatalogueProduit[]>([])
   const [personne, setPersonne]   = useState(user?.displayName || user?.email?.split('@')[0] || '')
-  const [stockChecks, setStockChecks] = useState<Record<string, boolean | null>>(
-    () => Object.fromEntries(DEFAULT_STOCK_PRODUITS.map(p => [p, null]))
-  )
+  const [stockChecks, setStockChecks] = useState<Record<string, StockCheckState>>({})
   const [stock, setStock]         = useState<StockRow[]>([emptyStock()])
   const [ruptures, setRuptures]   = useState<CmdRow[]>([emptyCmd()])
   const [presqueRuptures, setPresqueRuptures] = useState<CmdRow[]>([emptyCmd()])
@@ -76,15 +77,33 @@ export default function Ruptures() {
   const photoRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)]
 
   useEffect(() => {
+    // Load hand-picked list from settings (used for text building)
     getDoc(doc(db, 'settings', 'ruptures'))
       .then(snap => {
         if (snap.exists()) {
           const list = (snap.data() as any).produits as string[]
           if (Array.isArray(list) && list.length > 0) {
             setProduits(list)
-            setStockChecks(Object.fromEntries(list.map(p => [p, null])))
           }
         }
+      })
+      .catch(() => {})
+
+    // Load full catalogue from produits collection for the grid
+    getDocs(query(collection(db, 'produits'), where('active', '==', true)))
+      .then(snap => {
+        const items: CatalogueProduit[] = snap.docs.map(d => ({
+          id: d.id,
+          name: (d.data() as any).name as string,
+          defaultCategory: (d.data() as any).defaultCategory as string || 'Autre',
+          active: true,
+        })).filter(p => p.name)
+        items.sort((a, b) => {
+          const catCmp = a.defaultCategory.localeCompare(b.defaultCategory, 'fr')
+          if (catCmp !== 0) return catCmp
+          return a.name.localeCompare(b.name, 'fr')
+        })
+        setCatalogueProduits(items)
       })
       .catch(() => {})
   }, [])
@@ -92,10 +111,18 @@ export default function Ruptures() {
   function buildText(senderName: string, photoUrls: string[] = []): string {
     const { date, time } = nowISO()
 
-    const checkLines = produits
-      .filter(p => stockChecks[p] !== null)
-      .map(p => `  ${stockChecks[p] ? '✅' : '❌'} ${p}`)
-      .join('\n') || '  Non renseigné'
+    // Catalogue selections
+    const catUrgent = catalogueProduits.filter(p => stockChecks[p.name] === 'urgent').map(p => p.name)
+    const catMoins = catalogueProduits.filter(p => stockChecks[p.name] === 'moins-urgent').map(p => p.name)
+
+    const checkLines = [
+      ...catUrgent.map(p => `  ❌ ${p}`),
+      ...catMoins.map(p => `  🟠 ${p}`),
+      // Also include settings-list produits if they are not in catalogue
+      ...produits
+        .filter(p => stockChecks[p] !== null && !catalogueProduits.some(c => c.name === p))
+        .map(p => `  ${stockChecks[p] === 'urgent' ? '❌' : '🟠'} ${p}`),
+    ].join('\n') || '  Non renseigné'
 
     const stockLines = stock
       .filter(r => r.produit.trim())
@@ -135,32 +162,12 @@ export default function Ruptures() {
     return parts.filter(Boolean).join('\n')
   }
 
-  useEffect(() => {
-    getDocs(query(collection(db, 'produits'), orderBy('nom', 'asc')))
-      .then(snap => {
-        const noms = snap.docs
-          .map(d => (d.data() as any).nom as string)
-          .filter(Boolean)
-        setProduits(noms)
-      })
-      .catch(() => setProduits([]))
-  }, [])
-
-  function setStockCheck(produit: string, val: boolean) {
-    setStockChecks(prev => ({ ...prev, [produit]: val }))
-    if (!val) {
-      setRuptures(rows => {
-        const alreadyIn = rows.some(r => r.produit.trim().toLowerCase() === produit.toLowerCase())
-        if (alreadyIn) return rows
-        const emptyIdx = rows.findIndex(r => !r.produit.trim())
-        if (emptyIdx >= 0) {
-          return rows.map((r, i) => i === emptyIdx ? { ...r, produit } : r)
-        }
-        return [...rows, { id: nextId(), produit, quantite: '' }]
-      })
-    } else {
-      setRuptures(rows => rows.filter(r => r.produit !== produit || r.quantite.trim() !== ''))
-    }
+  function toggleStockCheck(name: string) {
+    setStockChecks(prev => {
+      const current = prev[name] ?? null
+      const next: StockCheckState = current === null ? 'urgent' : current === 'urgent' ? 'moins-urgent' : null
+      return { ...prev, [name]: next }
+    })
   }
 
   function updateStock(id: number, field: keyof StockRow, val: string) {
@@ -217,8 +224,12 @@ export default function Ruptures() {
       })
 
       // Write structured rupture data for cuisine dashboard
-      const ruptureItems = ruptures.filter(r => r.produit.trim()).map(r => r.produit.trim())
-      const presqueItems = presqueRuptures.filter(r => r.produit.trim()).map(r => r.produit.trim())
+      const ruptureManual = ruptures.filter(r => r.produit.trim()).map(r => r.produit.trim())
+      const presqueManual = presqueRuptures.filter(r => r.produit.trim()).map(r => r.produit.trim())
+      const ruptureCat = catalogueProduits.filter(p => stockChecks[p.name] === 'urgent').map(p => p.name)
+      const presqueCat = catalogueProduits.filter(p => stockChecks[p.name] === 'moins-urgent').map(p => p.name)
+      const ruptureItems = [...new Set([...ruptureCat, ...ruptureManual])]
+      const presqueItems = [...new Set([...presqueCat, ...presqueManual])]
       if (ruptureItems.length > 0 || presqueItems.length > 0) {
         await addDoc(collection(db, 'ruptures_actives'), {
           ruptures: ruptureItems,
@@ -242,7 +253,7 @@ export default function Ruptures() {
         })
       }))
 
-      setStockChecks(Object.fromEntries(produits.map(p => [p, null])))
+      setStockChecks({})
       setStock([emptyStock()])
       setRuptures([emptyCmd()])
       setPresqueRuptures([emptyCmd()])
@@ -317,57 +328,99 @@ export default function Ruptures() {
       {/* ── 0. Disponibilité plats ── */}
       <div className="card">
         <SectionTitle num="0" label="EST-CE QUE J'AI DU STOCK ?" />
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {produits.map(produit => {
-            const val = stockChecks[produit]
-            const rowBg = val === false
-              ? 'rgba(136,0,20,0.06)'
-              : val === true
-              ? 'rgba(84,101,30,0.06)'
-              : 'var(--surface-low)'
-            return (
-              <div key={produit} style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                background: rowBg, borderRadius: 10, padding: '11px 12px',
-              }}>
-                <span style={{
-                  fontSize: 14, fontWeight: 600,
-                  color: val === false ? 'var(--danger)' : val === true ? 'var(--secondary)' : 'var(--on-surface)',
-                  fontFamily: 'Manrope, sans-serif',
-                }}>
-                  {produit}
-                </span>
-                {/* Boutons OUI/NON iOS style Aegean */}
-                <div style={{ display: 'flex', gap: 0, borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)' }}>
-                  <button
-                    onClick={() => setStockCheck(produit, true)}
-                    style={{
-                      padding: '7px 16px', fontSize: 13, fontWeight: 700, border: 'none', cursor: 'pointer',
-                      background: val === true ? 'var(--secondary)' : 'var(--surface)',
-                      color: val === true ? '#fff' : 'var(--on-surface-3)',
-                      borderRight: '1px solid var(--border)',
-                      fontFamily: 'Manrope, sans-serif',
-                      transition: 'all 0.1s',
-                    }}
-                  >OUI</button>
-                  <button
-                    onClick={() => setStockCheck(produit, false)}
-                    style={{
-                      padding: '7px 16px', fontSize: 13, fontWeight: 700, border: 'none', cursor: 'pointer',
-                      background: val === false ? 'var(--tertiary)' : 'var(--surface)',
-                      color: val === false ? '#fff' : 'var(--on-surface-3)',
-                      fontFamily: 'Manrope, sans-serif',
-                      transition: 'all 0.1s',
-                    }}
-                  >NON</button>
-                </div>
+
+        {/* Sélection — produits sélectionnés (urgent ou moins-urgent) */}
+        {(() => {
+          const selected = catalogueProduits.filter(p => stockChecks[p.name] != null)
+          if (selected.length === 0) return null
+          return (
+            <div style={{ marginBottom: 12 }}>
+              <p className="section-label" style={{ margin: '0 0 6px' }}>SÉLECTION</p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {selected.map(p => {
+                  const state = stockChecks[p.name]!
+                  const isUrgent = state === 'urgent'
+                  return (
+                    <div key={p.id} style={{
+                      display: 'flex', alignItems: 'center', gap: 8,
+                      background: isUrgent ? 'rgba(192,57,43,0.08)' : 'rgba(180,83,9,0.08)',
+                      borderRadius: 10, padding: '9px 12px',
+                    }}>
+                      <span style={{ fontSize: 15 }}>{isUrgent ? '🔴' : '🟠'}</span>
+                      <span style={{
+                        flex: 1, fontSize: 13, fontWeight: 600,
+                        color: isUrgent ? 'var(--danger)' : 'var(--warning)',
+                        fontFamily: 'Manrope, sans-serif',
+                      }}>{p.name}</span>
+                      <button
+                        onClick={() => toggleStockCheck(p.name)}
+                        style={{
+                          width: 32, height: 32, borderRadius: 8, border: 'none',
+                          background: 'rgba(28,28,24,0.06)', color: 'var(--on-surface-2)',
+                          fontSize: 14, cursor: 'pointer', flexShrink: 0,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        }}
+                        aria-label="Désélectionner"
+                      >✕</button>
+                    </div>
+                  )
+                })}
               </div>
-            )
-          })}
-        </div>
-        {Object.values(stockChecks).some(v => v === false) && (
-          <div style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 600, textAlign: 'center', padding: '8px 0 0', fontFamily: 'Manrope, sans-serif' }}>
-            Les produits manquants ont été ajoutés aux commandes urgentes.
+              <div className="divider" style={{ margin: '12px 0 8px' }} />
+            </div>
+          )
+        })()}
+
+        {/* Grille catalogue par catégorie */}
+        {(() => {
+          if (catalogueProduits.length === 0) return (
+            <p style={{ fontSize: 13, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', textAlign: 'center', padding: '8px 0' }}>
+              Chargement du catalogue…
+            </p>
+          )
+          // Group by category, exclude already selected
+          const unselected = catalogueProduits.filter(p => stockChecks[p.name] == null)
+          const categories = [...new Set(unselected.map(p => p.defaultCategory))]
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {categories.map(cat => {
+                const items = unselected.filter(p => p.defaultCategory === cat)
+                return (
+                  <div key={cat}>
+                    <p className="section-label" style={{ margin: '0 0 6px' }}>{cat.toUpperCase()}</p>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                      {items.map(p => (
+                        <button
+                          key={p.id}
+                          onClick={() => toggleStockCheck(p.name)}
+                          style={{
+                            background: 'var(--surface-low)',
+                            borderRadius: 10, padding: '11px 10px',
+                            border: '1.5px solid var(--border-soft)',
+                            cursor: 'pointer', textAlign: 'left',
+                            minHeight: 44,
+                            display: 'flex', alignItems: 'center',
+                          }}
+                        >
+                          <span style={{
+                            fontSize: 13, fontWeight: 600,
+                            color: 'var(--on-surface)',
+                            fontFamily: 'Manrope, sans-serif',
+                            lineHeight: 1.3,
+                          }}>{p.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )
+        })()}
+
+        {Object.values(stockChecks).some(v => v === 'urgent') && (
+          <div style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 600, textAlign: 'center', padding: '10px 0 0', fontFamily: 'Manrope, sans-serif' }}>
+            Appuyez une fois → 🔴 Rupture · Deux fois → 🟠 Presque · Trois fois → annuler
           </div>
         )}
       </div>
