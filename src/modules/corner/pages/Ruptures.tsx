@@ -120,7 +120,7 @@ export default function Ruptures() {
       ...catMoins.map(p => `  🟠 ${p}`),
       // Also include settings-list produits if they are not in catalogue
       ...produits
-        .filter(p => stockChecks[p] !== null && !catalogueProduits.some(c => c.name === p))
+        .filter(p => stockChecks[p] != null && !catalogueProduits.some(c => c.name === p))
         .map(p => `  ${stockChecks[p] === 'urgent' ? '❌' : '🟠'} ${p}`),
     ].join('\n') || '  Non renseigné'
 
