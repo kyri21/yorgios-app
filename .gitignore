@@ -38,3 +38,5 @@ Thumbs.db
 # Fichiers de référence volumineux (données historiques importées)
 reference/
 storage
+.gitnexus
+.worktrees/
