@@ -3,7 +3,7 @@ import { SkeletonList } from '../../../components/Skeleton'
 import { EmptyState } from '../../../components/EmptyState'
 import {
   Timestamp, collection, deleteDoc, doc, getDocs, getDocsFromServer,
-  limit, orderBy, query, runTransaction, setDoc, updateDoc,
+  limit, orderBy, query, runTransaction, setDoc, updateDoc, where,
 } from 'firebase/firestore'
 import { db, auth } from '../../../firebase/config'
 import { useToast } from '../../../hooks/useToast'
@@ -230,6 +230,18 @@ export default function Fabrication() {
       const seq = await nextLotSequence(producedAtDate, abrv)
       const lotCode = `${toDDMMYYYY(producedAtDate)}-${String(seq).padStart(2, '0')}-${abrv}`
       const dlcAtDate = new Date(producedAtDate.getTime() + dlcDays * 24 * 3600 * 1000)
+
+      // Anti-doublon: vérifier que ce lotCode n'existe pas déjà
+      const existingSnap = await getDocs(query(
+        collection(db, 'lots_cuisine'),
+        where('lotCode', '==', lotCode),
+        limit(1)
+      ))
+      if (!existingSnap.empty) {
+        setError(`Un lot avec le code ${lotCode} existe déjà. Veuillez vérifier.`)
+        setLoading(false)
+        return
+      }
 
       const lotRef = doc(collection(db, 'lots_cuisine'))
       await setDoc(lotRef, {
