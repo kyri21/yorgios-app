@@ -17,6 +17,15 @@ type LotCuisine = {
   producedAt: any; dlcAt: any
 }
 
+type FrigoArticle = {
+  id: string
+  frigo: string
+  nom: string
+  quantite: string
+  dlc: string
+  createdAt: any
+}
+
 function localISO(d = new Date()) {
   const p = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`
@@ -63,7 +72,7 @@ export default function Vitrine() {
   const [histTo, setHistTo] = useState(localISO())
 
   // Mode formulaire
-  const [formMode, setFormMode]   = useState<'manuel' | 'lot'>('manuel')
+  const [formMode, setFormMode]   = useState<'manuel' | 'lot' | 'frigo'>('manuel')
 
   // Mode manuel — saisie lot
   const [produitsList, setProduitsList] = useState<string[]>([])
@@ -77,6 +86,11 @@ export default function Vitrine() {
   const [lots, setLots]             = useState<LotCuisine[]>([])
   const [lotsLoading, setLotsLoading] = useState(false)
   const [selectedLotIds, setSelectedLotIds] = useState<Set<string>>(new Set())
+
+  // Mode frigo (formulaire)
+  const [frigoArticles, setFrigoArticles] = useState<FrigoArticle[]>([])
+  const [frigoLoading, setFrigoLoading] = useState(false)
+  const [selectedFrigoIds, setSelectedFrigoIds] = useState<Set<string>>(new Set())
 
   // Onglet Lots — gestion lots reçus
   type LotRecu = { id: string; lotCode: string; productName: string; producedAt: any; dlcAt: any; sentToCornerAt: any }
@@ -227,14 +241,15 @@ export default function Vitrine() {
   function openForm() {
     const next = !showForm
     setShowForm(next)
-    setSelected(new Set()); setSearch(''); setSelectedLotIds(new Set())
+    setSelected(new Set()); setSearch(''); setSelectedLotIds(new Set()); setSelectedFrigoIds(new Set())
     if (next) { loadProduits(); setFormMode('manuel') }
   }
 
-  function switchMode(m: 'manuel' | 'lot') {
+  function switchMode(m: 'manuel' | 'lot' | 'frigo') {
     setFormMode(m)
-    setSelected(new Set()); setSearch(''); setSelectedLotIds(new Set())
+    setSelected(new Set()); setSearch(''); setSelectedLotIds(new Set()); setSelectedFrigoIds(new Set())
     if (m === 'lot') loadLots()
+    if (m === 'frigo') loadFrigoArticles()
   }
 
   function toggleProduct(p: string) {
@@ -314,6 +329,50 @@ export default function Vitrine() {
       setSelectedLotIds(new Set()); setShowForm(false)
       show(`${toAdd.length} produit(s) ajouté(s) en vitrine`)
       await load()
+    } catch (e: any) { setError(e?.message) }
+    finally { setSaving(false) }
+  }
+
+  async function loadFrigoArticles() {
+    setFrigoLoading(true)
+    try {
+      const snap = await getDocs(query(
+        collection(db, 'stockage_frigo'),
+        orderBy('createdAt', 'desc'),
+        limit(100),
+      ))
+      setFrigoArticles(snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as FrigoArticle[])
+    } catch (e: any) { setError(e?.message) }
+    finally { setFrigoLoading(false) }
+  }
+
+  async function saveFrigoArticles() {
+    if (selectedFrigoIds.size === 0) return
+    const toAdd = frigoArticles.filter(a => selectedFrigoIds.has(a.id))
+    setSaving(true); setError(null)
+    try {
+      const uid = auth.currentUser?.uid || ''
+      for (const article of toAdd) {
+        const dlcTs = article.dlc ? toTimestamp(article.dlc) : Timestamp.fromDate(new Date())
+        await addDoc(collection(db, 'corner_stock'), {
+          productName: article.nom,
+          fabricationAt: null,
+          dlcAt: dlcTs,
+          dateAjout: Timestamp.now(),
+          active: true,
+          createdAt: Timestamp.now(),
+          createdBy: uid,
+          sourceFromFrigo: true,
+          frigoId: article.frigo,
+        })
+        // Supprimer l'article du stockage_frigo
+        await deleteDoc(doc(db, 'stockage_frigo', article.id))
+      }
+      const addedIds = new Set(toAdd.map(a => a.id))
+      setSelectedFrigoIds(new Set()); setShowForm(false)
+      show(`${toAdd.length} article(s) ajouté(s) en vitrine`)
+      await load()
+      setFrigoArticles(prev => prev.filter(a => !addedIds.has(a.id)))
     } catch (e: any) { setError(e?.message) }
     finally { setSaving(false) }
   }
@@ -447,21 +506,112 @@ export default function Vitrine() {
                 display: 'flex', gap: 4, marginBottom: 16,
                 background: 'var(--surface-mid)', borderRadius: 12, padding: 4,
               }}>
-                {(['manuel', 'lot'] as const).map(m => (
-                  <button key={m} onClick={() => switchMode(m)} style={{
+                {([
+                  { key: 'manuel', label: '✏️ Manuel' },
+                  { key: 'lot', label: '📦 Lot cuisine' },
+                  { key: 'frigo', label: '🧊 Frigo' },
+                ] as const).map(({ key, label }) => (
+                  <button key={key} onClick={() => switchMode(key)} style={{
                     flex: 1, padding: '8px 0', borderRadius: 9, fontSize: 12, fontWeight: 700,
                     border: 'none', cursor: 'pointer', fontFamily: 'Manrope, sans-serif',
-                    background: formMode === m ? 'var(--surface)' : 'transparent',
-                    color: formMode === m ? 'var(--primary)' : 'var(--on-surface-3)',
-                    boxShadow: formMode === m ? '0 1px 6px rgba(28,28,24,0.08)' : 'none',
+                    background: formMode === key ? 'var(--surface)' : 'transparent',
+                    color: formMode === key ? 'var(--primary)' : 'var(--on-surface-3)',
+                    boxShadow: formMode === key ? '0 1px 6px rgba(28,28,24,0.08)' : 'none',
                     transition: 'all 0.15s',
                   }}>
-                    {m === 'manuel' ? '✏️ Saisie manuelle' : '📦 Depuis lot cuisine'}
+                    {label}
                   </button>
                 ))}
               </div>
 
-              {formMode === 'lot' ? (
+              {formMode === 'frigo' ? (
+                /* ── Mode frigo ── */
+                <div>
+                  {frigoLoading ? (
+                    <div style={{ textAlign: 'center', padding: '20px 0' }}>
+                      <div className="spinner" style={{ margin: '0 auto' }} />
+                    </div>
+                  ) : frigoArticles.length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '24px 0' }}>
+                      <div style={{ fontSize: 32, marginBottom: 8 }}>🧊</div>
+                      <p style={{
+                        color: 'var(--on-surface-3)', fontSize: 13, margin: 0,
+                        fontFamily: 'Manrope, sans-serif',
+                      }}>
+                        Aucun article dans les frigos.<br />
+                        Ajoutez des articles depuis l'onglet Stockage frigo.
+                      </p>
+                    </div>
+                  ) : (
+                    <div style={{
+                      display: 'flex', flexDirection: 'column', gap: 6,
+                      maxHeight: 360, overflowY: 'auto', marginBottom: 14,
+                    }}>
+                      {frigoArticles.map(article => {
+                        const sel = selectedFrigoIds.has(article.id)
+                        const dlcDate = article.dlc ? new Date(article.dlc + 'T12:00:00') : null
+                        const dlcStr = dlcDate ? dlcDate.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }) : null
+                        return (
+                          <div
+                            key={article.id}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: 10,
+                              padding: '11px 12px', borderRadius: 12,
+                              background: sel ? 'rgba(0,66,117,0.08)' : 'var(--surface-low)',
+                              border: `1.5px solid ${sel ? 'rgba(0,66,117,0.3)' : 'var(--border-soft)'}`,
+                              transition: 'all 0.12s', cursor: 'pointer',
+                              userSelect: 'none', WebkitTapHighlightColor: 'transparent',
+                            }}
+                            onClick={() => setSelectedFrigoIds(prev => {
+                              const n = new Set(prev); sel ? n.delete(article.id) : n.add(article.id); return n
+                            })}
+                          >
+                            {/* Checkbox custom */}
+                            <div style={{
+                              width: 20, height: 20, borderRadius: 6, flexShrink: 0,
+                              background: sel ? 'var(--primary)' : 'var(--surface)',
+                              border: `2px solid ${sel ? 'var(--primary)' : 'var(--border)'}`,
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              transition: 'all 0.12s',
+                            }}>
+                              {sel && (
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none"
+                                  stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
+                                  <polyline points="20 6 9 17 4 12"/>
+                                </svg>
+                              )}
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{
+                                fontSize: 13, fontWeight: 600, color: 'var(--on-surface)', marginBottom: 2,
+                              }}>
+                                {article.nom}
+                              </div>
+                              <div style={{ fontSize: 11, color: 'var(--on-surface-3)' }}>
+                                {article.frigo}
+                                {article.quantite && ` · ${article.quantite}`}
+                                {dlcStr && ` · DLC ${dlcStr}`}
+                              </div>
+                            </div>
+                            {dlcStr && (
+                              <span style={{
+                                flexShrink: 0, fontSize: 11, fontWeight: 700,
+                                padding: '3px 7px', borderRadius: 6,
+                                background: 'rgba(0,66,117,0.08)', color: 'var(--primary)',
+                              }}>
+                                {dlcStr}
+                              </span>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                  <button onClick={saveFrigoArticles} disabled={saving || selectedFrigoIds.size === 0} className="btn-primary">
+                    {saving ? 'Enregistrement…' : selectedFrigoIds.size > 0 ? `Ajouter ${selectedFrigoIds.size} article(s) en vitrine` : 'Sélectionner des articles'}
+                  </button>
+                </div>
+              ) : formMode === 'lot' ? (
                 /* ── Mode lot cuisine ── */
                 <div>
                   {lotsLoading ? (
