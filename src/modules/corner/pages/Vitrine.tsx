@@ -256,7 +256,8 @@ export default function Vitrine() {
       )
     )
     if (dups.length > 0) {
-      if (!confirm(`Doublon détecté !\n"${dups.join(', ')}" du ${dateFab} existe déjà en vitrine.\nAjouter quand même ?`)) return
+      show(`Doublon : "${dups.join(', ')}" du ${dateFab} est déjà en vitrine.`, 'error')
+      return
     }
     setSaving(true); setError(null)
     try {
@@ -295,7 +296,10 @@ export default function Vitrine() {
         const fabDay = lot.producedAt?.toDate ? localISO(lot.producedAt.toDate()) : null
         if (fabDay) {
           const dup = items.find(i => i.productName === lot.productName && i.fabricationAt?.toDate && localISO(i.fabricationAt.toDate()) === fabDay)
-          if (dup && !confirm(`Doublon : "${lot.productName}" du ${fabDay} existe déjà en vitrine.\nAjouter quand même ?`)) continue
+          if (dup) {
+            show(`"${lot.productName}" du ${fabDay} est déjà en vitrine — lot ignoré`, 'error')
+            continue
+          }
         }
         await addDoc(collection(db, 'corner_stock'), {
           productName: lot.productName, fabricationAt: lot.producedAt, dlcAt: lot.dlcAt,
