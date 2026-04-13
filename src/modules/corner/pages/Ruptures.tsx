@@ -353,7 +353,7 @@ export default function Ruptures() {
                         fontFamily: 'Manrope, sans-serif',
                       }}>{p.name}</span>
                       <button
-                        onClick={() => toggleStockCheck(p.name)}
+                        onClick={() => setStockChecks(prev => ({ ...prev, [p.name]: null }))}
                         style={{
                           width: 32, height: 32, borderRadius: 8, border: 'none',
                           background: 'rgba(28,28,24,0.06)', color: 'var(--on-surface-2)',
@@ -418,7 +418,7 @@ export default function Ruptures() {
           )
         })()}
 
-        {Object.values(stockChecks).some(v => v === 'urgent') && (
+        {Object.values(stockChecks).some(v => v !== null) && (
           <div style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 600, textAlign: 'center', padding: '10px 0 0', fontFamily: 'Manrope, sans-serif' }}>
             Appuyez une fois → 🔴 Rupture · Deux fois → 🟠 Presque · Trois fois → annuler
           </div>
