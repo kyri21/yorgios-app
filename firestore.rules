@@ -63,6 +63,12 @@ service cloud.firestore {
       allow write: if isPatronOrManager();
     }
 
+    // ─── Catalogue (remplace produits — lecture tous, écriture patron/admin/manager) ──
+    match /catalogue/{doc} {
+      allow read:  if isAnyRole();
+      allow write: if isPatronOrManager();
+    }
+
     // ─── Températures (partagé cuisine + corner) ────────────────
     // Les deux sites utilisent la même collection ; lecture par tous,
     // écriture autorisée pour les deux sites (cuisine ET corner ont leurs propres frigos)
