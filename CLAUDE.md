@@ -336,6 +336,174 @@ firebase deploy --only firestore:rules
 
 ---
 
+## ⚠️ ARCHITECTURE MÉTIER — RÈGLES INVIOLABLES
+
+> Ces règles décrivent les dépendances logiques et codépendances entre onglets.  
+> **Ne JAMAIS modifier un onglet sans vérifier que ces invariants sont respectés.**
+
+---
+
+### Cycle de vie d'un lot cuisine (flux principal)
+
+```
+Fabrication (cuisine)
+  → Livraison cuisine (départ + temp)
+    → Livraison corner (arrivée + temp)
+      → Frigo corner (stockage_frigo)  ──→  Vitrine (corner_stock, active=true)
+      → Vitrine directe (corner_stock)
+```
+
+**Règles de ce flux :**
+
+1. **Un lot ne peut jamais être en double** dans aucun état : `lots_cuisine`, `stockage_frigo`, `corner_stock`. Si un lotCode existe déjà → erreur bloquante, jamais de doublon silencieux.
+2. **Un lot livré et accepté par le corner est archivé** (`lots_cuisine.archived=true, sent=false`). Il disparaît de la liste "Lots en cours" cuisine.
+3. **Un lot ajouté en vitrine depuis les lots cuisine** → archivage dans `lots_cuisine` + création dans `corner_stock`. Aucun lot déjà en vitrine n'est proposable à la sélection.
+4. **Un lot transféré du frigo vers la vitrine** → `deleteDoc` dans `stockage_frigo` automatiquement. Le frigo et la vitrine sont mutuellement exclusifs pour un même article.
+5. **Retour cuisine depuis Vitrine** → `corner_stock.active=false` + si `lotCode` présent → `lots_cuisine.sent=false` pour réapparition côté cuisine.
+
+---
+
+### Cuisine — Dashboard
+
+- **Bandeau rouge ruptures** : fenêtre dynamique — avant 10h : affiche depuis hier 13h ; après 10h : affiche depuis minuit. Filtre `ruptures_actives where viewed==false`.
+- **Deux envois ruptures/jour** (matin + soir) → s'additionnent, pas de doublon. La déduplification se fait par nom produit avec `Set`.
+- **Encart commandes semaine + mois** : calculé sur `commandes_externes` en temps réel.
+- **Bandeau météo** : Open-Meteo, 7 jours, toujours présent.
+- **Liste d'actions** : températures matin + soir (liens directs), hygiène du jour.
+
+---
+
+### Cuisine — Réception
+
+- Sélection produits depuis catalogue (`produits where inReception==true && active==true`).
+- **Champ N° lot** : saisie manuelle ou scan code-barres (html5-qrcode, lazy).
+- **Onglet Historique** : toutes réceptions avec photo miniature, badge HACCP, température, N° lot.
+- La réception crée un document dans `receptions` — utilisé pour la traçabilité Fabrication.
+
+---
+
+### Cuisine — Fabrication
+
+- **Aucun lot en double** : vérifier `lotCode` inexistant avant `setDoc`. Bloquer si doublon.
+- **Lots modifiables** tant que non livrés (`sent != true`).
+- **Mode "📦 Réception"** : pré-remplit `productName` + `fournisseur` depuis la réception source, stocke `receptionId` pour traçabilité 100%.
+- **DLC auto** : J+3 depuis date fabrication (configurable par produit via `dlcDays` du catalogue).
+- Les lots livrés et acceptés corner sont archivés et non modifiables.
+
+---
+
+### Cuisine — Livraison (départ)
+
+- L'employé sélectionne parmi les lots non livrés (`lots_cuisine where sent!=true`).
+- **Température obligatoire** pour les lots soumis à la GEP (2 minimums pour l'ensemble de la livraison).
+- Lots sans température → s'ajoutent à la livraison sans saisie de temp, case à cocher à l'arrivée côté corner.
+- Les lots sélectionnés passent à `sent=true` dans `lots_cuisine`.
+- Items manuels s'ajoutent à la livraison aux côtés des lots.
+
+---
+
+### Corner — Dashboard
+
+- **Bandeau météo** lundi→dimanche, toujours présent.
+- **Actions requises** avec notifications push sonores :
+  - Hygiène quotidienne (cases à cocher, lien direct)
+  - Températures matin + soir (lien direct)
+  - DLC : alerte si un item de `corner_stock` a DLC ≤ 3 jours
+  - Cartons chambre froide
+  - Plats du jour
+- **Bandeau livraison** : livraisons en cours depuis `deliveries`.
+- **Bandeau commandes** : si commande à réaliser cette semaine.
+- **PAS de bandeau TooGoodToGo** (supprimé définitivement).
+
+---
+
+### Corner — Livraison (arrivée)
+
+**Ordre d'affichage impératif** : lots AVEC `departTempC` en premier, lots SANS `departTempC` ensuite.
+
+- Lots avec `departTempC` → champ température arrivée + photo optionnelle → résultat GEP (ACCEPTE / REFUSE / A_VERIFIER).
+- Lots sans `departTempC` → case à cocher "Livraison reçue ✓" → écrit `result: 'ACCEPTE'` sans température.
+- **Si température arrivée > seuil GEP** → email à patron (`a.cozzika@gmail.com`) ET push notification. CF `onLivraisonReception` gère ça.
+- **Bouton "↩ Retour cuisine"** : disponible tous rôles → `returned: true` sur le doc livraison.
+- **Bouton "🗑 Supprimer"** : visible uniquement patron/administrateur/manager.
+- `pending` filter : `receptionTempC == null && !receptionAt && !returned`.
+- `done` filter : `(receptionTempC != null || receptionAt != null) && !returned`.
+
+**Sous-onglets obligatoires** :
+- Aujourd'hui : lots envoyés depuis cuisine (le jour J)
+- Historique : filtrable par date de réception, nom produit, date de retrait
+- Galerie photo : produits relevés en température
+- Coursier : tracking livraison Twilio (`deliveries` collection)
+
+---
+
+### Corner — Vitrine
+
+**Trois modes d'ajout** (formulaire) :
+1. **✏️ Manuel** : saisie nom + date fab + DLC auto (fab+3j). Produits depuis catalogue (`produits where inVitrine==true`). Multi-sélection possible.
+2. **📦 Lot cuisine** : lots reçus depuis cuisine (`lots_cuisine where sent==true`). Aucun doublon (lotCode ou productName+fabDay déjà actif en vitrine). Sélection → `addDoc corner_stock` + archive `lots_cuisine`.
+3. **🧊 Frigo** : articles depuis `stockage_frigo`. Sélection → `addDoc corner_stock` + **`deleteDoc stockage_frigo`** automatique.
+
+**Onglets obligatoires** :
+- Stock : items actifs en vitrine (`active==true`)
+- Lots : lots reçus cuisine non encore mis en vitrine
+- Historique : tous les items triés/filtrés (nom, date fab, date entrée, date sortie)
+
+---
+
+### Corner — Frigo (Stockage Frigo)
+
+- Articles stockés entre réception cuisine et mise en vitrine.
+- **Dépendance directe avec Vitrine** : si un article frigo est sélectionné pour la vitrine → `deleteDoc stockage_frigo` automatique. Invariant : un article ne peut pas être à la fois dans le frigo ET en vitrine.
+- Permet transfert entre frigos (updateDoc).
+
+---
+
+### Corner — Ruptures
+
+- **Section "Disponibilité plats"** : catalogue complet `produits` (active==true), trié par `defaultCategory` puis `name`, affiché en **grille 2 colonnes**.
+- **3 états par clic** : null → 🔴 urgent → 🟠 moins urgent → null. Déselection directe via ✕.
+- **Produit sélectionné disparaît de la grille** et apparaît dans le panel "Sélection" en tête.
+- Les produits sensibles/best-sellers configurables dans `settings/ruptures` → apparaissent en priorité.
+- `ruptures_actives` : écrit les ruptures urgentes + presques-ruptures, lu par Dashboard cuisine.
+- **Fenêtre lecture Dashboard cuisine** : avant 10h → depuis hier 13h ; après 10h → depuis minuit du jour J.
+- Deux envois possibles par jour s'additionnent (déduplification par `Set` de noms).
+
+---
+
+### Corner — Hygiène
+
+- **Quotidien** : 13 items, case à cocher par jour.
+- **Hebdomadaire** : 5 items, valider 1×/semaine. Notification push jeudi si non fait.
+- **Mensuel** : 1 item, valider 1×/mois. Notification le 20 du mois si non fait.
+- **Historique** : visuel semaine par semaine ✅/🟡/❌ pour chaque période.
+- Doc IDs : `{date}_quotidien` / `{YYYY-WXX}_hebdo` / `{YYYY-MM}_mensuel`.
+
+---
+
+### Corner — Pertes
+
+- Produit sélectionné depuis catalogue avec son prix unitaire.
+- **Rapport** : affiche par jour/semaine/mois, KPI total combiné (prix exact + estimé). Ne jamais crasher sur champs manquants — guards null impératifs.
+
+---
+
+### Règles GEP — températures réception (inviolables)
+
+| Catégorie | Max standard | Max tolérance |
+|-----------|-------------|---------------|
+| Viande hachée | 2°C | 3°C |
+| Viande | 3°C | 5°C |
+| Poisson | 2°C | 3°C |
+| Lait | 4°C | 6°C |
+| Plat cuisiné frais | 3°C | 5°C |
+| Pâtisserie fraîche | 3°C | 5°C |
+| Légumes | 8°C | 10°C |
+
+Tout dépassement de `maxTol` → `result: 'REFUSE'` → email patron + push FCM.
+
+---
+
 ## ✅ Suivi livraison Twilio — IMPLÉMENTÉ (session 2026-04-13)
 
 ### Objectif
