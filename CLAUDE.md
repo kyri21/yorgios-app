@@ -554,6 +554,27 @@ Branche `fix/audit-corrections` mergée dans `main` — deployed https://cuisine
 ### CF déployées
 - `onLivraisonReception` — email à `a.cozzika@gmail.com` si résultat REFUSE
 
+### Comportements clés à connaître (session 2026-04-14)
+
+**Corner Livraison (`corner/Livraison.tsx`)**
+- `LivrDoc` a un champ `returned?: boolean` — les livraisons retournées sont filtrées du pending/done
+- Items sans `departTempC` → checkbox (écrit `receptionTempC: null, result: 'ACCEPTE'`)
+- `pending` filter : `receptionTempC == null && !receptionAt && !returned` (les deux conditions pour exclure les checkbox-validés)
+- `done` filter : `(receptionTempC != null || receptionAt != null) && !returned`
+- Bouton "Supprimer" visible uniquement pour patron/administrateur/manager
+
+**Corner Ruptures (`corner/Ruptures.tsx`)**
+- `stockChecks: Record<string, 'urgent' | 'moins-urgent' | null>` — plus de boolean
+- Catalogue chargé depuis collection `produits` (active==true), trié `defaultCategory` puis `name`
+- `toggleStockCheck(name)` cycle : null → 'urgent' → 'moins-urgent' → null
+- ✕ dans le panel Sélection = `setStockChecks(prev => ({ ...prev, [name]: null }))` (déselection directe, pas cycle)
+- `ruptures_actives` : fusionne sélections catalogue + saisies manuelles CmdRow[]
+
+**Corner Vitrine (`corner/Vitrine.tsx`)**
+- `formMode: 'manuel' | 'lot' | 'frigo'` — 3 modes
+- Mode 'frigo' : charge `stockage_frigo` (limit 100), sélection multiple → `addDoc` corner_stock + `deleteDoc` stockage_frigo
+- Champ `sourceFromFrigo: true` + `frigoId` dans les docs corner_stock créés depuis le frigo
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
