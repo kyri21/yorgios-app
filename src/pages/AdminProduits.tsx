@@ -5,13 +5,14 @@ import { db } from '../firebase/config'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type GepCategory = 'VIANDE' | 'VIANDE_HACHEE' | 'POISSON' | 'LAITIER' | 'PLAT_CUISINE' | 'LEGUMES' | 'AUTRE'
+type DisplayCategory = 'Mezze' | 'Plats' | 'Bowl' | 'Tiropitas' | 'Salades' | 'Desserts' | 'Boissons' | 'Autre'
 
 type Produit = {
   id: string
   name: string
   abrv: string
-  defaultCategory: string   // catégorie d'affichage libre (ex: "Plats chauds", "Sauces", …)
-  gepCategory: GepCategory  // catégorie HACCP pour seuils température livraison
+  defaultCategory: DisplayCategory  // catégorie d'affichage — utilisée pour grouper dans Ruptures & Commandes
+  gepCategory: GepCategory          // catégorie HACCP pour seuils température livraison
   dlcDays: number
   active: boolean
   inReception: boolean      // affiché dans Réception cuisine (reçu d'un fournisseur)
@@ -19,6 +20,10 @@ type Produit = {
   inVitrine: boolean        // affiché dans Vitrine corner
   allergenes: string[]
 }
+
+const DISPLAY_CATEGORIES: DisplayCategory[] = [
+  'Mezze', 'Plats', 'Bowl', 'Tiropitas', 'Salades', 'Desserts', 'Boissons', 'Autre',
+]
 
 const GEP_CATEGORIES: { value: GepCategory; label: string; maxC: number; color: string }[] = [
   { value: 'PLAT_CUISINE',  label: 'Plat cuisiné',   maxC: 4,  color: 'var(--primary)'       },
@@ -38,7 +43,7 @@ const ALLERGENES_LIST = [
 
 const EMPTY_FORM = {
   name: '', abrv: '',
-  defaultCategory: '',
+  defaultCategory: 'Plats' as DisplayCategory,
   gepCategory: 'PLAT_CUISINE' as GepCategory,
   dlcDays: 3,
   allergenes: [] as string[],
@@ -437,18 +442,15 @@ function ProductForm({
       {/* Catégorie affichage */}
       <div>
         <label className="section-label" style={{ display: 'block', marginBottom: 4 }}>
-          Catégorie affichage * <span style={{ fontWeight: 400, color: 'var(--on-surface-3)' }}>(libre — groupe les produits dans Ruptures)</span>
+          Catégorie * <span style={{ fontWeight: 400, color: 'var(--on-surface-3)' }}>(groupe les produits dans Ruptures & Commandes)</span>
         </label>
-        <input
+        <select
           className="input-filled"
-          list={`cats-${uid}`}
-          placeholder="ex : Plats chauds, Salades, Sauces…"
           value={form.defaultCategory}
-          onChange={e => setForm(f => ({ ...f, defaultCategory: e.target.value }))}
-        />
-        <datalist id={`cats-${uid}`}>
-          {displayCategories.map(c => <option key={c} value={c} />)}
-        </datalist>
+          onChange={e => setForm(f => ({ ...f, defaultCategory: e.target.value as DisplayCategory }))}
+        >
+          {DISPLAY_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
       </div>
 
       {/* Catégorie GEP + DLC */}
