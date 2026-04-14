@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import ModuleGridPanel from './ModuleGridPanel'
 import { signOut } from 'firebase/auth'
@@ -12,6 +12,22 @@ import DailyPointageGate, { shouldShowGate, dismissGate } from './DailyPointageG
 import { useToastState } from '../hooks/useToast'
 import Toast from './Toast'
 import { usePointageSortie } from '../hooks/usePointageSortie'
+import { registerFCMToken, onForegroundMessage } from '../firebase/messaging'
+
+function playNotifSound() {
+  try {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.connect(gain); gain.connect(ctx.destination)
+    osc.type = 'sine'
+    osc.frequency.setValueAtTime(1046, ctx.currentTime)
+    osc.frequency.exponentialRampToValueAtTime(784, ctx.currentTime + 0.12)
+    gain.gain.setValueAtTime(0.35, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.45)
+    osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.45)
+  } catch {}
+}
 
 interface NavItem { label: string; path: string; icon: (badge?: number) => React.ReactNode; roles: Role[] }
 
@@ -143,6 +159,8 @@ function sidebarItemStyle(isActive: boolean): React.CSSProperties {
   }
 }
 
+type NotifBanner = { title: string; body: string; from?: string }
+
 export default function Layout({ children }: { children: React.ReactNode }) {
   const { user } = useAuth()
   const navigate = useNavigate()
@@ -155,6 +173,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const { toast, setToast } = useToastState()
   const { canPointer, status: sortieStatus, errorMsg: sortieError, doPointageSortie, setStatus: setSortieStatus } = usePointageSortie()
   const [showSortieModal, setShowSortieModal] = useState(false)
+  const [notifBanner, setNotifBanner] = useState<NotifBanner | null>(null)
+  const bannerTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const mountedAt = useRef(Date.now())
 
   useEffect(() => {
     const on = () => setIsOnline(true)
@@ -183,17 +204,53 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       }
       const q = query(collection(db, 'messages'), orderBy('createdAt', 'desc'))
       const unsub = onSnapshot(q, snap => {
-        const count = snap.docs.filter(d => {
+        const uid = user.uid
+        let newCount = 0
+        snap.docChanges().forEach(change => {
+          if (change.type !== 'added') return
+          const data = change.doc.data() as any
+          if (data.senderId === uid) return
+          const msgAt = data.createdAt?.toMillis?.() ?? 0
+          // Nouveau message arrivé après le montage du composant
+          if (msgAt > mountedAt.current && !location.pathname.startsWith('/messages')) {
+            const from = data.senderName || data.senderRole || 'Message'
+            const body = data.text ? data.text.slice(0, 80) : (data.photoUrl ? '📷 Photo' : '')
+            showBanner({ title: '💬 Nouveau message', body, from })
+          }
+        })
+        newCount = snap.docs.filter(d => {
           const data = d.data() as any
-          return data.senderId !== user.uid
+          return data.senderId !== uid
             && data.createdAt?.toMillis
             && data.createdAt.toMillis() > lastRead.toMillis()
         }).length
-        setUnread(count)
+        setUnread(newCount)
       })
       return unsub
     })
   }, [user?.uid])
+
+  // ── Enregistrement FCM global (dès le login, pas seulement sur /messages) ──
+  useEffect(() => {
+    if (user?.uid) registerFCMToken(user.uid)
+  }, [user?.uid])
+
+  // ── Notifications push foreground (FCM) ──
+  useEffect(() => {
+    const unsub = onForegroundMessage((payload: any) => {
+      const title = payload?.notification?.title || 'Matias'
+      const body  = payload?.notification?.body  || ''
+      showBanner({ title, body })
+    })
+    return unsub
+  }, [])
+
+  function showBanner(n: NotifBanner) {
+    if (bannerTimer.current) clearTimeout(bannerTimer.current)
+    setNotifBanner(n)
+    playNotifSound()
+    bannerTimer.current = setTimeout(() => setNotifBanner(null), 5000)
+  }
 
   const visibleItems = NAV_ITEMS.filter(item => user && item.roles.includes(user.role))
 
@@ -212,6 +269,45 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <>
       {showGate && <DailyPointageGate onDismiss={() => setShowGate(false)} />}
+
+      {/* ── Bandeau notification ── */}
+      {notifBanner && (
+        <div
+          onClick={() => { setNotifBanner(null); navigate('/messages') }}
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, zIndex: 500,
+            background: 'var(--surface)',
+            borderBottom: '2px solid var(--primary)',
+            boxShadow: '0 4px 20px rgba(28,28,24,0.14)',
+            padding: '12px 16px',
+            display: 'flex', alignItems: 'center', gap: 12,
+            cursor: 'pointer',
+            animation: 'slideDown 0.25s ease',
+          }}
+        >
+          <div style={{
+            width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+            background: 'rgba(0,66,117,0.1)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 18,
+          }}>🔔</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--primary)', fontFamily: 'Epilogue, sans-serif' }}>
+              {notifBanner.title}
+              {notifBanner.from && <span style={{ fontWeight: 400, color: 'var(--on-surface-2)', marginLeft: 6 }}>— {notifBanner.from}</span>}
+            </div>
+            {notifBanner.body && (
+              <div style={{ fontSize: 12, color: 'var(--on-surface-2)', fontFamily: 'Manrope, sans-serif', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {notifBanner.body}
+              </div>
+            )}
+          </div>
+          <button
+            onClick={e => { e.stopPropagation(); setNotifBanner(null) }}
+            style={{ background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: 'var(--on-surface-3)', padding: 4, flexShrink: 0 }}
+          >✕</button>
+        </div>
+      )}
 
       {/* ── Bandeau hors-ligne ── */}
       {!isOnline && (

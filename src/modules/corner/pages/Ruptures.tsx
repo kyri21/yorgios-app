@@ -1,33 +1,33 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Timestamp, addDoc, collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore'
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { db, auth, storage } from '../../../firebase/config'
 import { useAuth } from '../../../auth/useAuth'
 
 // ─── Types ────────────────────────────────────────────────────────
-type StockRow = { id: number; produit: string; contenant: string; niveau: string }
-type CmdRow   = { id: number; produit: string; quantite: string }
-type PhotoSlot = { label: string; required: boolean; file: File | null; preview: string | null; url?: string }
-type StockCheckState = 'urgent' | 'moins-urgent' | null
-type CatalogueProduit = { id: string; name: string; defaultCategory: string; active: boolean }
+type StockRow    = { id: number; produit: string; contenant: string; niveau: string }
+type PhotoSlot   = { label: string; required: boolean; file: File | null; preview: string | null; url?: string }
+type CatalogueProduit = { id: string; name: string; defaultCategory: string }
 
 const CONTENANTS = ['Sceau', 'Plaque inox', 'Plat inox', 'Plat en fer blanc et bleu', 'Grand sceau', 'Bac gastro', 'Bac blanc']
 const NIVEAUX    = ['Plein', 'Trois-quarts', 'Moitié', 'Un quart']
 
-const DEFAULT_STOCK_PRODUITS = [
-  'Briam', 'Moussaka', 'Brochette poulet', 'Kefta',
+// Best-sellers — tableau 1 (toujours visible en haut)
+const BESTSELLERS = [
+  'Briam', 'Moussaka', 'Brochette de poulet', 'Kefta',
   'Riz épinard', 'Orzo nature', 'Tzatziki', 'Houmous',
-  'Tiropita épinard', 'Tiropita menthe',
+  'Tiropita épinard', 'Tiropita feta menthe',
 ]
+const BESTSELLERS_LOWER = new Set(BESTSELLERS.map(b => b.toLowerCase()))
 
 const PHOTO_SLOTS_INIT: PhotoSlot[] = [
-  { label: 'Vitrine gauche',  required: false, file: null, preview: null },
-  { label: 'Vitrine centre',  required: false, file: null, preview: null },
-  { label: 'Vitrine droite',  required: false, file: null, preview: null },
-  { label: 'Frigo corner',    required: false, file: null, preview: null },
+  { label: 'Vitrine gauche', required: false, file: null, preview: null },
+  { label: 'Vitrine centre', required: false, file: null, preview: null },
+  { label: 'Vitrine droite', required: false, file: null, preview: null },
+  { label: 'Frigo corner',   required: false, file: null, preview: null },
 ]
 
-const CHANNEL = 'corner-cuisine'
+const CHANNEL      = 'corner-cuisine'
 const RETENTION_MS = 7 * 86400_000
 
 function nowISO() {
@@ -41,9 +41,7 @@ function nowISO() {
 
 let _nextId = 1
 const nextId = () => _nextId++
-
 function emptyStock(): StockRow { return { id: nextId(), produit: '', contenant: CONTENANTS[0], niveau: NIVEAUX[0] } }
-function emptyCmd(): CmdRow     { return { id: nextId(), produit: '', quantite: '' } }
 
 // ─── SectionTitle ────────────────────────────────────────────────
 function SectionTitle({ num, label }: { num: string; label: string }) {
@@ -61,191 +59,138 @@ export default function Ruptures() {
   const { user } = useAuth()
   const uid = auth.currentUser?.uid || ''
 
-  const [produits, setProduits]   = useState<string[]>(DEFAULT_STOCK_PRODUITS)
   const [catalogueProduits, setCatalogueProduits] = useState<CatalogueProduit[]>([])
-  const [personne, setPersonne]   = useState(user?.displayName || user?.email?.split('@')[0] || '')
-  const [stockChecks, setStockChecks] = useState<Record<string, StockCheckState>>({})
-  const [stock, setStock]         = useState<StockRow[]>([emptyStock()])
-  const [ruptures, setRuptures]   = useState<CmdRow[]>([emptyCmd()])
-  const [presqueRuptures, setPresqueRuptures] = useState<CmdRow[]>([emptyCmd()])
-  const [photos, setPhotos]       = useState<PhotoSlot[]>(PHOTO_SLOTS_INIT)
-  const [commentaire, setCommentaire] = useState('')
-  const [sending, setSending]     = useState(false)
-  const [sendingWa, setSendingWa] = useState(false)
-  const [sent, setSent]           = useState(false)
-  const [error, setError]         = useState<string | null>(null)
-  const photoRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)]
+  const [stockProduits, setStockProduits]         = useState<string[]>(BESTSELLERS)
+  const [personne, setPersonne]                   = useState(user?.displayName || user?.email?.split('@')[0] || '')
+  // null = j'ai du stock  |  'urgent' = rupture signalée
+  const [stockChecks, setStockChecks]             = useState<Record<string, 'urgent' | null>>({})
+  const [catalogueSearch, setCatalogueSearch]     = useState('')
+  const [stock, setStock]                         = useState<StockRow[]>([emptyStock()])
+  const [photos, setPhotos]                       = useState<PhotoSlot[]>(PHOTO_SLOTS_INIT)
+  const [commentaire, setCommentaire]             = useState('')
+  const [sending, setSending]                     = useState(false)
+  const [sent, setSent]                           = useState(false)
+  const [error, setError]                         = useState<string | null>(null)
+  const photoRefs = [
+    useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null),
+    useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null),
+  ]
 
   useEffect(() => {
-    // Load hand-picked list from settings (used for text building)
+    // Datalist stock frigo depuis settings
     getDoc(doc(db, 'settings', 'ruptures'))
       .then(snap => {
         if (snap.exists()) {
           const list = (snap.data() as any).produits as string[]
-          if (Array.isArray(list) && list.length > 0) {
-            setProduits(list)
-          }
+          if (Array.isArray(list) && list.length > 0) setStockProduits(list)
         }
       })
       .catch(() => {})
 
-    // Load full catalogue from produits collection for the grid
+    // Catalogue complet
     getDocs(query(collection(db, 'produits'), where('active', '==', true)))
       .then(snap => {
-        const items: CatalogueProduit[] = snap.docs.map(d => ({
-          id: d.id,
-          name: (d.data() as any).name as string,
-          defaultCategory: (d.data() as any).defaultCategory as string || 'Autre',
-          active: true,
-        })).filter(p => p.name)
+        const items: CatalogueProduit[] = snap.docs
+          .map(d => ({
+            id: d.id,
+            name: (d.data() as any).name as string,
+            defaultCategory: ((d.data() as any).defaultCategory as string) || 'Autre',
+          }))
+          .filter(p => p.name)
         items.sort((a, b) => {
-          const catCmp = a.defaultCategory.localeCompare(b.defaultCategory, 'fr')
-          if (catCmp !== 0) return catCmp
-          return a.name.localeCompare(b.name, 'fr')
+          const c = a.defaultCategory.localeCompare(b.defaultCategory, 'fr')
+          return c !== 0 ? c : a.name.localeCompare(b.name, 'fr')
         })
         setCatalogueProduits(items)
       })
       .catch(() => {})
   }, [])
 
-  function buildText(senderName: string, photoUrls: string[] = []): string {
+  // ── Helpers ──────────────────────────────────────────────────────
+  function toggleCheck(name: string) {
+    setStockChecks(prev => ({ ...prev, [name]: prev[name] === 'urgent' ? null : 'urgent' }))
+  }
+
+  function updateStock(id: number, field: keyof StockRow, val: string) {
+    setStock(rows => rows.map(r => r.id === id ? { ...r, [field]: val } : r))
+  }
+  function addStockRow()          { setStock(rows => [...rows, emptyStock()]) }
+  function removeStockRow(id: number) { setStock(rows => rows.filter(r => r.id !== id)) }
+
+  function handlePhoto(index: number, file: File | null) {
+    setPhotos(slots => slots.map((s, i) => {
+      if (i !== index) return s
+      if (!file) return { ...s, file: null, preview: null, url: undefined }
+      return { ...s, file, preview: URL.createObjectURL(file), url: undefined }
+    }))
+  }
+
+  function buildText(senderName: string): string {
     const { date, time } = nowISO()
 
-    // Catalogue selections
-    const catUrgent = catalogueProduits.filter(p => stockChecks[p.name] === 'urgent').map(p => p.name)
-    const catMoins = catalogueProduits.filter(p => stockChecks[p.name] === 'moins-urgent').map(p => p.name)
-
-    const checkLines = [
-      ...catUrgent.map(p => `  ❌ ${p}`),
-      ...catMoins.map(p => `  🟠 ${p}`),
-      // Also include settings-list produits if they are not in catalogue
-      ...produits
-        .filter(p => stockChecks[p] != null && !catalogueProduits.some(c => c.name === p))
-        .map(p => `  ${stockChecks[p] === 'urgent' ? '❌' : '🟠'} ${p}`),
-    ].join('\n') || '  Non renseigné'
+    const urgentItems = Object.entries(stockChecks)
+      .filter(([, v]) => v === 'urgent')
+      .map(([name]) => `  🔴 ${name}`)
+      .join('\n') || '  Aucune rupture signalée'
 
     const stockLines = stock
       .filter(r => r.produit.trim())
       .map(r => `  ${r.produit} → ${r.contenant} — ${r.niveau}`)
       .join('\n') || '  Aucun article renseigné'
-    const rupLines = ruptures.filter(r => r.produit).map(r => `  🔴 ${r.produit}${r.quantite ? ' → ' + r.quantite : ''}`).join('\n')
-    const presqueLines = presqueRuptures.filter(r => r.produit).map(r => `  🟠 ${r.produit}${r.quantite ? ' → ' + r.quantite : ''}`).join('\n')
-    const cmdSection = [rupLines, presqueLines].filter(Boolean).join('\n') || '  Aucune commande urgente'
 
     const parts: (string | null)[] = [
       '━━━━━━━━━━━━━━━━━━',
       'DEMANDE CORNER → CUISINE',
       `Date : ${date}  Heure : ${time}  Personne : ${senderName}`,
       '━━━━━━━━━━━━━━━━━━',
-      '0️⃣ DISPONIBILITÉ PLATS',
-      checkLines,
+      '0️⃣ RUPTURES / MANQUES',
+      urgentItems,
       '━━━━━━━━━━━━━━━━━━',
       '1️⃣ STOCK FRIGO ACTUEL',
       stockLines,
       '━━━━━━━━━━━━━━━━━━',
-      '2️⃣ COMMANDES URGENTES',
-      cmdSection,
-      '━━━━━━━━━━━━━━━━━━',
-      commentaire.trim() ? `4️⃣ COMMENTAIRE\n  ${commentaire.trim()}` : null,
+      commentaire.trim() ? `2️⃣ COMMENTAIRE\n  ${commentaire.trim()}` : null,
       commentaire.trim() ? '━━━━━━━━━━━━━━━━━━' : null,
     ]
-
-    if (photoUrls.length > 0) {
-      parts.push('📷 PHOTOS VITRINE')
-      photoUrls.forEach((url, i) => {
-        const slot = photos.filter(p => p.file)[i]
-        parts.push(`  ${slot?.label ?? `Photo ${i + 1}`} : ${url}`)
-      })
-      parts.push('━━━━━━━━━━━━━━━━━━')
-    }
-
     return parts.filter(Boolean).join('\n')
-  }
-
-  function toggleStockCheck(name: string) {
-    setStockChecks(prev => {
-      const current = prev[name] ?? null
-      const next: StockCheckState = current === null ? 'urgent' : current === 'urgent' ? 'moins-urgent' : null
-      return { ...prev, [name]: next }
-    })
-  }
-
-  function updateStock(id: number, field: keyof StockRow, val: string) {
-    setStock(rows => rows.map(r => r.id === id ? { ...r, [field]: val } : r))
-  }
-  function addStockRow() { setStock(rows => [...rows, emptyStock()]) }
-  function removeStockRow(id: number) { setStock(rows => rows.filter(r => r.id !== id)) }
-
-  function updateCmd(setter: typeof setRuptures, id: number, field: keyof CmdRow, val: string) {
-    setter(rows => rows.map(r => r.id === id ? { ...r, [field]: val } : r))
-  }
-  function addCmd(setter: typeof setRuptures, rows: CmdRow[]) {
-    if (rows.length >= 5) return
-    setter(r => [...r, emptyCmd()])
-  }
-  function removeCmd(setter: typeof setRuptures, id: number) {
-    setter(rows => rows.filter(r => r.id !== id))
-  }
-
-  function handlePhoto(index: number, file: File | null) {
-    setPhotos(slots => slots.map((s, i) => {
-      if (i !== index) return s
-      if (!file) return { ...s, file: null, preview: null, url: undefined }
-      const preview = URL.createObjectURL(file)
-      return { ...s, file, preview, url: undefined }
-    }))
-  }
-
-  async function uploadPhotos(): Promise<string[]> {
-    const now = Date.now()
-    const photosToSend = photos.filter(p => p.file)
-    const urls = await Promise.all(photosToSend.map(async (slot, i) => {
-      const path = `messages/${uid}_${now}_${i}_${slot.file!.name}`
-      const storageRef = ref(storage, path)
-      await uploadBytes(storageRef, slot.file!)
-      return getDownloadURL(storageRef)
-    }))
-    return urls
   }
 
   async function handleSend() {
     setError(null)
     setSending(true)
     try {
-      const now = Timestamp.now()
-      const expiresAt = Timestamp.fromMillis(now.toMillis() + RETENTION_MS)
+      const now        = Timestamp.now()
+      const expiresAt  = Timestamp.fromMillis(now.toMillis() + RETENTION_MS)
       const senderName = personne || user?.email || 'Corner'
       const senderRole = user?.role || 'corner'
-      const text = buildText(senderName)
+      const text       = buildText(senderName)
 
       await addDoc(collection(db, 'messages'), {
         channelId: CHANNEL, senderId: uid, senderName, senderRole,
         text, createdAt: now, expiresAt,
       })
 
-      // Write structured rupture data for cuisine dashboard
-      const ruptureManual = ruptures.filter(r => r.produit.trim()).map(r => r.produit.trim())
-      const presqueManual = presqueRuptures.filter(r => r.produit.trim()).map(r => r.produit.trim())
-      const ruptureCat = catalogueProduits.filter(p => stockChecks[p.name] === 'urgent').map(p => p.name)
-      const presqueCat = catalogueProduits.filter(p => stockChecks[p.name] === 'moins-urgent').map(p => p.name)
-      const ruptureItems = [...new Set([...ruptureCat, ...ruptureManual])]
-      const presqueItems = [...new Set([...presqueCat, ...presqueManual])]
-      if (ruptureItems.length > 0 || presqueItems.length > 0) {
+      // ruptures_actives pour Dashboard cuisine
+      const urgentItems = Object.entries(stockChecks)
+        .filter(([, v]) => v === 'urgent')
+        .map(([name]) => name)
+      if (urgentItems.length > 0) {
         await addDoc(collection(db, 'ruptures_actives'), {
-          ruptures: ruptureItems,
-          presqueRuptures: presqueItems,
+          ruptures: urgentItems,
+          presqueRuptures: [],
           personne: senderName,
           createdAt: now,
           viewed: false,
         })
       }
 
+      // Photos → messages séparés
       const photosToSend = photos.filter(p => p.file)
       await Promise.all(photosToSend.map(async (slot, i) => {
-        const path = `messages/${uid}_${now.toMillis()}_${i}_${slot.file!.name}`
+        const path       = `messages/${uid}_${now.toMillis()}_${i}_${slot.file!.name}`
         const storageRef = ref(storage, path)
         await uploadBytes(storageRef, slot.file!)
-        const photoUrl = await getDownloadURL(storageRef)
+        const photoUrl   = await getDownloadURL(storageRef)
         await addDoc(collection(db, 'messages'), {
           channelId: CHANNEL, senderId: uid, senderName, senderRole,
           text: `📷 ${slot.label}`, photoUrl,
@@ -255,8 +200,6 @@ export default function Ruptures() {
 
       setStockChecks({})
       setStock([emptyStock()])
-      setRuptures([emptyCmd()])
-      setPresqueRuptures([emptyCmd()])
       setPhotos(PHOTO_SLOTS_INIT)
       setCommentaire('')
       setSent(true)
@@ -268,37 +211,44 @@ export default function Ruptures() {
     }
   }
 
-  async function handleWhatsApp() {
-    setError(null)
-    setSendingWa(true)
-    try {
-      const senderName = personne || user?.email || 'Corner'
-      let photoUrls: string[] = []
-      const hasPhotos = photos.some(p => p.file)
-      if (hasPhotos) { photoUrls = await uploadPhotos() }
-      const text = buildText(senderName, photoUrls)
-      const waUrl = `https://wa.me/?text=${encodeURIComponent(text)}`
-      window.open(waUrl, '_blank', 'noopener,noreferrer')
-    } catch (e: any) {
-      setError('Erreur upload photos WhatsApp : ' + (e?.message || 'inconnue'))
-    } finally {
-      setSendingWa(false)
+  // ── Dérivations pour l'affichage ─────────────────────────────────
+
+  // Tous les articles signalés en rupture (des deux tableaux)
+  const selectedNames = Object.entries(stockChecks)
+    .filter(([, v]) => v === 'urgent')
+    .map(([name]) => name)
+
+  // Tableau 2 : catalogue hors best-sellers, hors déjà sélectionnés
+  const catalogueAutres = catalogueProduits.filter(p =>
+    !BESTSELLERS_LOWER.has(p.name.toLowerCase()) && stockChecks[p.name] !== 'urgent'
+  )
+  const catalogueFiltered = catalogueSearch.trim()
+    ? catalogueAutres.filter(p => p.name.toLowerCase().includes(catalogueSearch.toLowerCase()))
+    : catalogueAutres
+
+  // Grouper par catégorie (seulement si pas de recherche, sinon liste plate)
+  const searchActive = catalogueSearch.trim().length > 0
+  const catalogueByCategory: Record<string, CatalogueProduit[]> = {}
+  if (!searchActive) {
+    for (const p of catalogueFiltered) {
+      if (!catalogueByCategory[p.defaultCategory]) catalogueByCategory[p.defaultCategory] = []
+      catalogueByCategory[p.defaultCategory].push(p)
     }
   }
 
   const { date, time } = nowISO()
-  const senderName = personne || user?.email || 'Corner'
 
   return (
     <div className="page">
-      {/* Header */}
+
+      {/* ── Header ── */}
       <div>
         <p className="section-label" style={{ marginBottom: 2 }}>HACCP Editorial</p>
         <h1 style={{ fontFamily: 'Epilogue, sans-serif', fontSize: 24, fontWeight: 800, color: 'var(--on-surface)', letterSpacing: '-0.03em', margin: 0 }}>
           Ruptures &amp; Commandes
         </h1>
         <p style={{ fontSize: 13, color: 'var(--on-surface-3)', margin: '4px 0 0', fontFamily: 'Manrope, sans-serif' }}>
-          Complétez l'état des stocks et des besoins pour votre communication à la Cuisine.
+          Signalez les manques à la Cuisine.
         </p>
       </div>
 
@@ -311,7 +261,7 @@ export default function Ruptures() {
           }}>
             <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--primary)', fontFamily: 'Epilogue, sans-serif', lineHeight: 1 }}>{date.split('/')[0]}</div>
             <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--on-surface-3)', textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'Manrope, sans-serif', marginTop: 1 }}>
-              {['Jan','Fév','Mar','Apr','Mai','Juin','Juil','Aoû','Sep','Oct','Nov','Déc'][new Date().getMonth()]}
+              {['Jan','Fév','Mar','Avr','Mai','Juin','Juil','Aoû','Sep','Oct','Nov','Déc'][new Date().getMonth()]}
             </div>
           </div>
           <div style={{ flex: 1 }}>
@@ -325,102 +275,158 @@ export default function Ruptures() {
         </div>
       </div>
 
-      {/* ── 0. Disponibilité plats ── */}
+      {/* ── 0. EST-CE QUE J'AI DU STOCK ── */}
       <div className="card">
         <SectionTitle num="0" label="EST-CE QUE J'AI DU STOCK ?" />
 
-        {/* Sélection — produits sélectionnés (urgent ou moins-urgent) */}
-        {(() => {
-          const selected = catalogueProduits.filter(p => stockChecks[p.name] != null)
-          if (selected.length === 0) return null
-          return (
-            <div style={{ marginBottom: 12 }}>
-              <p className="section-label" style={{ margin: '0 0 6px' }}>SÉLECTION</p>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {selected.map(p => {
-                  const state = stockChecks[p.name]!
-                  const isUrgent = state === 'urgent'
-                  return (
-                    <div key={p.id} style={{
-                      display: 'flex', alignItems: 'center', gap: 8,
-                      background: isUrgent ? 'rgba(192,57,43,0.08)' : 'rgba(180,83,9,0.08)',
-                      borderRadius: 10, padding: '9px 12px',
-                    }}>
-                      <span style={{ fontSize: 15 }}>{isUrgent ? '🔴' : '🟠'}</span>
-                      <span style={{
-                        flex: 1, fontSize: 13, fontWeight: 600,
-                        color: isUrgent ? 'var(--danger)' : 'var(--warning)',
-                        fontFamily: 'Manrope, sans-serif',
-                      }}>{p.name}</span>
-                      <button
-                        onClick={() => setStockChecks(prev => ({ ...prev, [p.name]: null }))}
-                        style={{
-                          width: 32, height: 32, borderRadius: 8, border: 'none',
-                          background: 'rgba(28,28,24,0.06)', color: 'var(--on-surface-2)',
-                          fontSize: 14, cursor: 'pointer', flexShrink: 0,
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        }}
-                        aria-label="Désélectionner"
-                      >✕</button>
-                    </div>
-                  )
-                })}
-              </div>
-              <div className="divider" style={{ margin: '12px 0 8px' }} />
+        {/* Panel ruptures signalées */}
+        {selectedNames.length > 0 && (
+          <div style={{ marginBottom: 14 }}>
+            <p className="section-label" style={{ margin: '0 0 8px', color: 'var(--danger)' }}>RUPTURES SIGNALÉES</p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {selectedNames.map(name => (
+                <div key={name} style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  background: 'rgba(192,57,43,0.08)', borderRadius: 10, padding: '9px 12px',
+                  border: '1px solid rgba(192,57,43,0.18)',
+                }}>
+                  <span style={{ fontSize: 15 }}>🔴</span>
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: 'var(--danger)', fontFamily: 'Manrope, sans-serif' }}>{name}</span>
+                  <button
+                    onClick={() => setStockChecks(prev => ({ ...prev, [name]: null }))}
+                    style={{
+                      width: 32, height: 32, borderRadius: 8, border: 'none',
+                      background: 'rgba(28,28,24,0.06)', color: 'var(--on-surface-2)',
+                      fontSize: 14, cursor: 'pointer', flexShrink: 0,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}
+                    aria-label="Retirer"
+                  >✕</button>
+                </div>
+              ))}
             </div>
-          )
-        })()}
+            <div className="divider" style={{ margin: '12px 0 16px' }} />
+          </div>
+        )}
 
-        {/* Grille catalogue par catégorie */}
-        {(() => {
-          if (catalogueProduits.length === 0) return (
-            <p style={{ fontSize: 13, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', textAlign: 'center', padding: '8px 0' }}>
-              Chargement du catalogue…
+        {/* Tableau 1 — Best-sellers */}
+        <p className="section-label" style={{ margin: '0 0 8px' }}>PLATS PRINCIPAUX</p>
+        <p style={{ fontSize: 11, color: 'var(--on-surface-3)', margin: '0 0 10px', fontFamily: 'Manrope, sans-serif' }}>
+          Appuyez si vous n'avez plus de stock → signalement rupture urgente
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 18 }}>
+          {BESTSELLERS.map(name => {
+            const isSelected = stockChecks[name] === 'urgent'
+            if (isSelected) return null // affiché dans le panel ci-dessus
+            return (
+              <button
+                key={name}
+                onClick={() => toggleCheck(name)}
+                style={{
+                  background: 'var(--surface-low)',
+                  borderRadius: 10, padding: '11px 10px',
+                  border: '1.5px solid var(--border-soft)',
+                  cursor: 'pointer', textAlign: 'left', minHeight: 44,
+                  display: 'flex', alignItems: 'center',
+                  transition: 'background 0.12s, border-color 0.12s',
+                }}
+              >
+                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--on-surface)', fontFamily: 'Manrope, sans-serif', lineHeight: 1.3 }}>
+                  {name}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+
+        {/* Tableau 2 — Autres articles du catalogue */}
+        <div className="divider" style={{ margin: '0 0 14px' }} />
+        <p className="section-label" style={{ margin: '0 0 8px' }}>AUTRES ARTICLES</p>
+
+        {/* Recherche */}
+        <div style={{ position: 'relative', marginBottom: 12 }}>
+          <input
+            className="input-filled"
+            placeholder="Rechercher un produit…"
+            value={catalogueSearch}
+            onChange={e => setCatalogueSearch(e.target.value)}
+            style={{ paddingLeft: 36 }}
+          />
+          <span style={{
+            position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)',
+            fontSize: 14, color: 'var(--on-surface-3)', pointerEvents: 'none',
+          }}>🔍</span>
+          {catalogueSearch && (
+            <button
+              onClick={() => setCatalogueSearch('')}
+              style={{
+                position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+                background: 'none', border: 'none', cursor: 'pointer',
+                color: 'var(--on-surface-3)', fontSize: 16, padding: 4,
+              }}
+            >✕</button>
+          )}
+        </div>
+
+        {catalogueProduits.length === 0 ? (
+          <p style={{ fontSize: 13, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', textAlign: 'center', padding: '12px 0' }}>
+            Chargement du catalogue…
+          </p>
+        ) : searchActive ? (
+          /* Liste plate quand recherche active */
+          catalogueFiltered.length === 0 ? (
+            <p style={{ fontSize: 13, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', textAlign: 'center', padding: '12px 0' }}>
+              Aucun résultat pour « {catalogueSearch} »
             </p>
-          )
-          // Group by category, exclude already selected
-          const unselected = catalogueProduits.filter(p => stockChecks[p.name] == null)
-          const categories = [...new Set(unselected.map(p => p.defaultCategory))]
-          return (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {categories.map(cat => {
-                const items = unselected.filter(p => p.defaultCategory === cat)
-                return (
-                  <div key={cat}>
-                    <p className="section-label" style={{ margin: '0 0 6px' }}>{cat.toUpperCase()}</p>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                      {items.map(p => (
-                        <button
-                          key={p.id}
-                          onClick={() => toggleStockCheck(p.name)}
-                          style={{
-                            background: 'var(--surface-low)',
-                            borderRadius: 10, padding: '11px 10px',
-                            border: '1.5px solid var(--border-soft)',
-                            cursor: 'pointer', textAlign: 'left',
-                            minHeight: 44,
-                            display: 'flex', alignItems: 'center',
-                          }}
-                        >
-                          <span style={{
-                            fontSize: 13, fontWeight: 600,
-                            color: 'var(--on-surface)',
-                            fontFamily: 'Manrope, sans-serif',
-                            lineHeight: 1.3,
-                          }}>{p.name}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )
-              })}
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              {catalogueFiltered.map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => { toggleCheck(p.name); setCatalogueSearch('') }}
+                  style={{
+                    background: 'var(--surface-low)', borderRadius: 10, padding: '11px 10px',
+                    border: '1.5px solid var(--border-soft)', cursor: 'pointer',
+                    textAlign: 'left', minHeight: 44, display: 'flex', alignItems: 'center',
+                  }}
+                >
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--on-surface)', fontFamily: 'Manrope, sans-serif', lineHeight: 1.3 }}>
+                    {highlightMatch(p.name, catalogueSearch)}
+                  </span>
+                </button>
+              ))}
             </div>
           )
-        })()}
-
-        {Object.values(stockChecks).some(v => v !== null) && (
-          <div style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 600, textAlign: 'center', padding: '10px 0 0', fontFamily: 'Manrope, sans-serif' }}>
-            Appuyez une fois → 🔴 Rupture · Deux fois → 🟠 Presque · Trois fois → annuler
+        ) : (
+          /* Groupé par catégorie quand pas de recherche */
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {Object.entries(catalogueByCategory).map(([cat, items]) => (
+              <div key={cat}>
+                <p className="section-label" style={{ margin: '0 0 6px' }}>{cat.toUpperCase()}</p>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  {items.map(p => (
+                    <button
+                      key={p.id}
+                      onClick={() => toggleCheck(p.name)}
+                      style={{
+                        background: 'var(--surface-low)', borderRadius: 10, padding: '11px 10px',
+                        border: '1.5px solid var(--border-soft)', cursor: 'pointer',
+                        textAlign: 'left', minHeight: 44, display: 'flex', alignItems: 'center',
+                      }}
+                    >
+                      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--on-surface)', fontFamily: 'Manrope, sans-serif', lineHeight: 1.3 }}>
+                        {p.name}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+            {Object.keys(catalogueByCategory).length === 0 && (
+              <p style={{ fontSize: 13, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', textAlign: 'center', padding: '8px 0' }}>
+                Tous les articles sont déjà signalés ✓
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -441,7 +447,7 @@ export default function Ruptures() {
                   placeholder="Produit…"
                 />
                 <datalist id={`produits-stock-${row.id}`}>
-                  {produits.map(p => <option key={p} value={p} />)}
+                  {stockProduits.map(p => <option key={p} value={p} />)}
                 </datalist>
               </div>
               <button onClick={() => removeStockRow(row.id)} style={{
@@ -471,54 +477,9 @@ export default function Ruptures() {
         </button>
       </div>
 
-      {/* ── 2. Commandes urgentes ── */}
+      {/* ── 2. Photos vitrine ── */}
       <div className="card">
-        <SectionTitle num="2" label="COMMANDES URGENTES" />
-
-        {/* Ruptures */}
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-            <div style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--danger)', flexShrink: 0 }} />
-            <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--danger)', fontFamily: 'Manrope, sans-serif', textTransform: 'uppercase', letterSpacing: '0.06em' }}>RUPTURE</span>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {ruptures.map(row => (
-              <CmdLine key={row.id} row={row} produits={produits}
-                onChange={(field, val) => updateCmd(setRuptures, row.id, field, val)}
-                onRemove={() => removeCmd(setRuptures, row.id)}
-                accent="rgba(136,0,20,0.06)" accentBorder="rgba(136,0,20,0.15)" />
-            ))}
-          </div>
-          {ruptures.length < 5 && (
-            <AddCmdButton onClick={() => addCmd(setRuptures, ruptures)} color="var(--danger)" bg="rgba(136,0,20,0.06)" border="rgba(136,0,20,0.2)" />
-          )}
-        </div>
-
-        <div className="divider" />
-
-        {/* Presque ruptures */}
-        <div style={{ marginTop: 14 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-            <div style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--warning)', flexShrink: 0 }} />
-            <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--warning)', fontFamily: 'Manrope, sans-serif', textTransform: 'uppercase', letterSpacing: '0.06em' }}>PRESQUE RUPTURE</span>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {presqueRuptures.map(row => (
-              <CmdLine key={row.id} row={row} produits={produits}
-                onChange={(field, val) => updateCmd(setPresqueRuptures, row.id, field, val)}
-                onRemove={() => removeCmd(setPresqueRuptures, row.id)}
-                accent="rgba(180,83,9,0.06)" accentBorder="rgba(180,83,9,0.15)" />
-            ))}
-          </div>
-          {presqueRuptures.length < 5 && (
-            <AddCmdButton onClick={() => addCmd(setPresqueRuptures, presqueRuptures)} color="var(--warning)" bg="rgba(180,83,9,0.06)" border="rgba(180,83,9,0.2)" />
-          )}
-        </div>
-      </div>
-
-      {/* ── 3. Photos vitrine ── */}
-      <div className="card">
-        <SectionTitle num="3" label="QUALITÉ &amp; FRAICHEUR (optionnel)" />
+        <SectionTitle num="2" label="QUALITÉ &amp; FRAICHEUR (optionnel)" />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           {photos.map((slot, i) => (
             <div key={i}>
@@ -561,9 +522,9 @@ export default function Ruptures() {
         </div>
       </div>
 
-      {/* ── 4. Commentaire ── */}
+      {/* ── 3. Commentaire ── */}
       <div className="card">
-        <SectionTitle num="4" label="COMMENTAIRE (optionnel)" />
+        <SectionTitle num="3" label="COMMENTAIRE (optionnel)" />
         <textarea
           className="input"
           rows={3}
@@ -576,56 +537,33 @@ export default function Ruptures() {
 
       {/* ── Erreur ── */}
       {error && (
-        <div style={{ background: 'rgba(136,0,20,0.08)', borderRadius: 12, padding: '12px 16px', fontSize: 13, color: 'var(--danger)', fontWeight: 500, fontFamily: 'Manrope, sans-serif' }}>
+        <div style={{
+          background: 'rgba(136,0,20,0.08)', borderRadius: 12, padding: '12px 16px',
+          fontSize: 13, color: 'var(--danger)', fontWeight: 500, fontFamily: 'Manrope, sans-serif',
+        }}>
           {error}
         </div>
       )}
 
       {/* ── Confirmation ── */}
       {sent && (
-        <div style={{ background: 'rgba(84,101,30,0.08)', borderRadius: 12, padding: '12px 16px', fontSize: 14, color: 'var(--secondary)', fontWeight: 700, textAlign: 'center', fontFamily: 'Manrope, sans-serif' }}
-          className="animate-slide-up">
-          Demande envoyée à la cuisine !
+        <div style={{
+          background: 'rgba(45,122,79,0.08)', borderRadius: 12, padding: '12px 16px',
+          fontSize: 14, color: 'var(--success)', fontWeight: 700, textAlign: 'center',
+          fontFamily: 'Manrope, sans-serif',
+        }}>
+          Demande envoyée à la cuisine ✓
         </div>
       )}
 
-      {/* ── Partage externe ── */}
-      <div style={{ display: 'flex', gap: 10 }}>
-        <a
-          href={`sms:?body=${encodeURIComponent(buildText(senderName))}`}
-          style={{
-            flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-            padding: '12px', borderRadius: 12, fontSize: 13, fontWeight: 700,
-            background: 'var(--surface-low)', color: 'var(--on-surface)',
-            textDecoration: 'none', fontFamily: 'Manrope, sans-serif',
-          }}
-        >
-          💬 SMS
-        </a>
-        <button
-          onClick={handleWhatsApp}
-          disabled={sendingWa}
-          style={{
-            flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-            padding: '12px', borderRadius: 12, fontSize: 13, fontWeight: 700,
-            background: 'var(--surface-low)',
-            color: sendingWa ? 'rgba(37,211,102,0.5)' : '#25D366',
-            border: 'none', cursor: sendingWa ? 'not-allowed' : 'pointer',
-            fontFamily: 'Manrope, sans-serif',
-          }}
-        >
-          {sendingWa ? <>Chargement…</> : 'WhatsApp'}
-        </button>
-      </div>
-
-      {/* ── Bouton envoi messagerie ── */}
+      {/* ── Bouton envoi messagerie interne ── */}
       <button onClick={handleSend} disabled={sending} className="btn-primary">
         {sending
           ? <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
               <div className="spinner" style={{ borderTopColor: '#fff', borderColor: 'rgba(255,255,255,0.3)' }} />
               Envoi en cours…
             </span>
-          : 'Valider & Envoyer'}
+          : '📨 Envoyer à la cuisine'}
       </button>
 
       <div style={{ height: 8 }} />
@@ -633,140 +571,15 @@ export default function Ruptures() {
   )
 }
 
-// ─── AutocompleteInput ────────────────────────────────────────────
-function AutocompleteInput({ value, produits, onChange, placeholder }: {
-  value: string
-  produits: string[]
-  onChange: (val: string) => void
-  placeholder?: string
-}) {
-  const [open, setOpen] = useState(false)
-  const [query, setQuery] = useState(value)
-  const containerRef = useRef<HTMLDivElement>(null)
-
-  const suggestions = query.trim().length === 0
-    ? []
-    : produits.filter(p => p.toLowerCase().includes(query.toLowerCase())).slice(0, 6)
-
-  useEffect(() => { setQuery(value) }, [value])
-
-  const handleSelect = useCallback((p: string) => {
-    setQuery(p)
-    onChange(p)
-    setOpen(false)
-  }, [onChange])
-
-  useEffect(() => {
-    function onClickOutside(e: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', onClickOutside)
-    return () => document.removeEventListener('mousedown', onClickOutside)
-  }, [])
-
-  return (
-    <div ref={containerRef} style={{ position: 'relative', width: '100%' }}>
-      <input
-        className="input"
-        style={{ fontSize: 13, width: '100%' }}
-        value={query}
-        placeholder={placeholder ?? 'Produit…'}
-        autoComplete="off"
-        onChange={e => {
-          setQuery(e.target.value)
-          onChange(e.target.value)
-          setOpen(true)
-        }}
-        onFocus={() => { if (query.trim()) setOpen(true) }}
-      />
-      {open && suggestions.length > 0 && (
-        <div style={{
-          position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 100,
-          background: 'var(--surface)', borderRadius: 10, marginTop: 4, overflow: 'hidden',
-          boxShadow: '0 8px 24px rgba(28,28,24,0.12)',
-        }}>
-          {suggestions.map(p => (
-            <button
-              key={p}
-              type="button"
-              onMouseDown={e => { e.preventDefault(); handleSelect(p) }}
-              onTouchEnd={e => { e.preventDefault(); handleSelect(p) }}
-              style={{
-                display: 'block', width: '100%', textAlign: 'left',
-                padding: '11px 14px', fontSize: 13, color: 'var(--on-surface)',
-                background: 'none', border: 'none', cursor: 'pointer',
-                borderBottom: '1px solid var(--border-soft)',
-                fontFamily: 'Manrope, sans-serif',
-              }}
-              onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-low)')}
-              onMouseLeave={e => (e.currentTarget.style.background = 'none')}
-            >
-              {highlightMatch(p, query)}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
+// ─── Highlight match dans résultats recherche ─────────────────────
 function highlightMatch(text: string, query: string) {
   const idx = text.toLowerCase().indexOf(query.toLowerCase())
   if (idx === -1 || !query) return <>{text}</>
   return (
     <>
       {text.slice(0, idx)}
-      <span style={{ color: 'var(--primary)', fontWeight: 700 }}>{text.slice(idx, idx + query.length)}</span>
+      <span style={{ color: 'var(--primary)', fontWeight: 800 }}>{text.slice(idx, idx + query.length)}</span>
       {text.slice(idx + query.length)}
     </>
-  )
-}
-
-// ─── CmdLine ──────────────────────────────────────────────────────
-function CmdLine({ row, produits, onChange, onRemove, accent, accentBorder }: {
-  row: CmdRow; produits: string[]
-  onChange: (field: keyof CmdRow, val: string) => void
-  onRemove: () => void
-  accent: string; accentBorder: string
-}) {
-  return (
-    <div style={{ background: accent, borderRadius: 10, padding: '10px 12px' }}>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-        <AutocompleteInput
-          value={row.produit}
-          produits={produits}
-          onChange={val => onChange('produit', val)}
-          placeholder="Produit…"
-        />
-        <button onClick={onRemove} style={{
-          width: 40, height: 40, borderRadius: 8,
-          border: 'none', background: 'var(--surface-low)',
-          color: 'var(--on-surface-3)', fontSize: 15, cursor: 'pointer', flexShrink: 0,
-        }}>✕</button>
-      </div>
-      <input
-        className="input"
-        style={{ fontSize: 13, width: '100%' }}
-        placeholder="Quantité (ex : 2 kg, 1 bac…)"
-        value={row.quantite}
-        onChange={e => onChange('quantite', e.target.value)}
-      />
-    </div>
-  )
-}
-
-// ─── AddCmdButton ─────────────────────────────────────────────────
-function AddCmdButton({ onClick, color, bg, border }: { onClick: () => void; color: string; bg: string; border: string }) {
-  return (
-    <button onClick={onClick} style={{
-      display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700,
-      color, background: bg, border: `1.5px dashed ${border}`,
-      borderRadius: 10, padding: '8px 14px', cursor: 'pointer', marginTop: 8,
-      width: '100%', justifyContent: 'center', fontFamily: 'Manrope, sans-serif',
-    }}>
-      + Ajouter
-    </button>
   )
 }
