@@ -175,7 +175,7 @@ export default function Vitrine() {
     setProduitsLoading(true)
     try {
       const snap = await getDocs(query(
-        collection(db, 'produits'),
+        collection(db, 'catalogue'),
         where('inVitrine', '==', true),
         where('active', '==', true),
       ))
