@@ -198,7 +198,9 @@ export default function Vitrine() {
           where('sent', '==', true),
           limit(100),
         )),
-        getDocs(query(collection(db, 'corner_stock'), limit(300))),
+        // getDocsFromServer : toujours données fraîches — évite les faux positifs
+        // quand un lot vient d'être ajouté en vitrine via un autre chemin (frigo, manuel)
+        getDocsFromServer(query(collection(db, 'corner_stock'), limit(300))),
       ])
 
       const allRaw = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as (LotCuisine & { archived?: boolean; sentToCornerAt?: any })[]
@@ -219,10 +221,16 @@ export default function Vitrine() {
       // avoir été faite numériquement même si le produit est physiquement arrivé au corner.
 
       const vitrineData = vitrineSnap.docs.map(d => (d.data() as any))
-      // LotCodes dans TOUS les docs corner_stock (actifs ou non) — si le lotCode a déjà été traité, ne pas re-proposer
+      // LotCodes dans TOUS les docs corner_stock (actifs ou non)
       const allVitrineLosCodes = new Set(vitrineSnap.docs.map(d => (d.data() as any).lotCode).filter(Boolean))
-      // ProductNames ACTIFS en vitrine — permet de re-stocker un produit déjà vendu
+      // ProductNames ACTIFS en vitrine (lowercase)
       const vitrineNamesLower = new Set(vitrineData.filter(d => d.active !== false).map(d => (d.productName as string)?.toLowerCase()?.trim()).filter(Boolean))
+      // Clés productName+dateFab pour les items ACTIFS en vitrine — détecte les doublons sans lotCode
+      const vitrineNameDateKeys = new Set(
+        vitrineData
+          .filter(d => d.active !== false && d.fabricationAt?.toDate)
+          .map(d => `${(d.productName as string)?.toLowerCase()?.trim()}|${localISO(d.fabricationAt.toDate())}`)
+      )
 
       // Auto-réparer les lots bloqués avec sent:true alors qu'ils sont déjà dans corner_stock
       const lotsOrphelins = all.filter(l => l.lotCode && allVitrineLosCodes.has(l.lotCode))
@@ -232,8 +240,18 @@ export default function Vitrine() {
         )).catch(() => {})
       }
 
-      // Exclure : lotCode déjà dans corner_stock (tout statut) OU productName actif en vitrine
-      setLots(all.filter(l => !allVitrineLosCodes.has(l.lotCode) && !vitrineNamesLower.has(l.productName?.toLowerCase()?.trim())))
+      // Exclure si :
+      // 1. lotCode déjà dans corner_stock (tout statut)
+      // 2. productName actif en vitrine
+      // 3. productName + date fab déjà actif en vitrine (cas sans lotCode)
+      setLots(all.filter(l => {
+        if (l.lotCode && allVitrineLosCodes.has(l.lotCode)) return false
+        const nameLower = l.productName?.toLowerCase()?.trim()
+        if (nameLower && vitrineNamesLower.has(nameLower)) return false
+        const fabDay = l.producedAt?.toDate ? localISO(l.producedAt.toDate()) : null
+        if (nameLower && fabDay && vitrineNameDateKeys.has(`${nameLower}|${fabDay}`)) return false
+        return true
+      }))
     } catch (e: any) { setError(e?.message) }
     finally { setLotsLoading(false) }
   }
