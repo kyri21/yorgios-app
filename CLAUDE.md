@@ -743,6 +743,30 @@ Branche `fix/audit-corrections` mergée dans `main` — deployed https://cuisine
 - Mode 'frigo' : charge `stockage_frigo` (limit 100), sélection multiple → `addDoc` corner_stock + `deleteDoc` stockage_frigo
 - Champ `sourceFromFrigo: true` + `frigoId` dans les docs corner_stock créés depuis le frigo
 
+## ✅ CATALOGUE & FIXES — Session 2026-04-14 (suite, déployé)
+
+| # | Fix | Fichier |
+|---|-----|---------|
+| C1 | **AdminProduits → Catalogue** — gère collection `catalogue`, `defaultCategory` select fixe (Mezze/Plats/Bowl/Tiropitas/Salades/Desserts/Boissons/Autre), `gepCategory` HACCP séparé, 3 flags toggleables (inFabrication/inReception/inVitrine), barre de recherche + filtre catégorie | `src/pages/AdminProduits.tsx` |
+| C2 | **Script bulk catalogue** — 104 produits catégorisés, 2 doublons supprimés (Pikles, SALADE RIZ NOIR PASTEQUE FETA), 4 non-alimentaires désactivés, noms normalisés | `scripts/categorize-catalogue.cjs` |
+| C3 | **Règle Firestore `catalogue`** — lecture isAnyRole(), écriture isPatronOrManager() | `firestore.rules` |
+| C4 | **Vitrine loadLots anti-doublon** — `getDocsFromServer` (cache éliminé) + triple filtre : lotCode / productName actif / productName+dateFab actif | `corner/Vitrine.tsx` |
+| C5 | **Vitrine collection** — revenu sur `catalogue` (régressé par erreur en session précédente) | `corner/Vitrine.tsx` |
+| C6 | **Layout bannière messages** — slideDown in-app quand nouveau message reçu (son + 5s auto-dismiss + FCM global au login) | `src/components/Layout.tsx` |
+
+### Catalogue Firestore — structure actuelle
+- Collection `catalogue` (104 produits) — remplace `produits` pour Fabrication, Vitrine, Ruptures, Pertes, Commandes
+- Champs clés : `name`, `abrv`, `defaultCategory` (display), `gepCategory` (HACCP), `dlcDays`, `active`, `inReception`, `inFabrication`, `inVitrine`, `allergenes[]`
+- Catégories fixes : `Mezze` · `Plats` · `Bowl` · `Tiropitas` · `Salades` · `Desserts` · `Boissons` · `Autre`
+- `defaultCategory` = groupement dans Ruptures & Commandes (trié alphabétiquement par catégorie)
+- `gepCategory` = seuil température GEP réception livraison (VIANDE, POISSON, PLAT_CUISINE, etc.)
+- `inFabrication` : affiché dans Fabrication cuisine — **true par défaut si absent** (filtre `!== false`)
+- `inReception` : affiché dans Réception cuisine (fournisseur)
+- `inVitrine` : affiché dans formulaire Vitrine corner (saisie manuelle)
+
+### Comportement clé — inFabrication
+- Jus de Citron = `inFabrication: true` UNIQUEMENT (pas inReception, pas inVitrine) : cuisine le fabrique et l'envoie au corner pour assaisonnement, non vendu
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
