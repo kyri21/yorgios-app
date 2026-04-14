@@ -534,10 +534,30 @@ Branche mergée : `feature/planning-primes-refonte`
 - `devices/{uid}` : `{ type: 'ipad_corner'|'mobile', fcmToken, label, updatedAt }` — règle Firestore déployée
 - `lots_cuisine` : nouveaux champs optionnels `receptionId`, `fournisseur` pour traçabilité
 
+## ✅ AUDIT & CORRECTIONS — Session 2026-04-14 (COMPLET — mergé + déployé)
+
+Branche `fix/audit-corrections` mergée dans `main` — deployed https://cuisine-yorgios.web.app
+
+### Corrections appliquées (T1→T8)
+
+| # | Fix | Fichier |
+|---|-----|---------|
+| T1 | **Corner Dashboard** — TooGoodToGo supprimé | `corner/Dashboard.tsx` |
+| T2 | **Cuisine Dashboard** — fenêtre ruptures 13h/10h + commandes du mois | `cuisine/Dashboard.tsx` |
+| T3 | **Fabrication** — anti-doublon lotCode | `cuisine/Fabrication.tsx` |
+| T4 | **Pertes rapport** — label + KPI total combiné | `corner/Pertes.tsx` |
+| T5 | **Vitrine** — doublons bloqués (hard error) | `corner/Vitrine.tsx` |
+| T6 | **Corner Livraison** — tri avec-temp en premier · checkbox sans departTempC · boutons "↩ Retour cuisine" (tous) + "🗑 Supprimer" (patron/admin/manager) · email patron si REFUSE via CF `onLivraisonReception` | `corner/Livraison.tsx`, `functions/src/index.ts` |
+| T7 | **Corner Ruptures** — grille 2 colonnes par catégorie · 3 états null→🔴→🟠 · panel "Sélection" en tête · produit sélectionné disparaît de la liste | `corner/Ruptures.tsx` |
+| T8 | **Frigo ↔ Vitrine** — onglet "🧊 Frigo" dans formulaire vitrine · sélection d'articles `stockage_frigo` → `addDoc` corner_stock + `deleteDoc` stockage_frigo automatique | `corner/Vitrine.tsx` |
+
+### CF déployées
+- `onLivraisonReception` — email à `a.cozzika@gmail.com` si résultat REFUSE
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **yorgios-app** (1346 symbols, 3065 relationships, 110 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **yorgios-app** (1374 symbols, 3095 relationships, 112 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
