@@ -73,6 +73,7 @@ export default function AdminProduits() {
 
   const [showInactive, setShowInactive] = useState(false)
   const [filterCat, setFilterCat]       = useState<string>('all')
+  const [search, setSearch]             = useState('')
 
   // Catégories d'affichage existantes (pour datalist)
   const displayCategories = [...new Set(
@@ -193,6 +194,7 @@ export default function AdminProduits() {
   const filtered = produits
     .filter(p => showInactive ? p.active === false : p.active !== false)
     .filter(p => filterCat === 'all' || p.defaultCategory === filterCat)
+    .filter(p => !search.trim() || p.name.toLowerCase().includes(search.toLowerCase()))
 
   return (
     <div className="page">
@@ -253,6 +255,18 @@ export default function AdminProduits() {
           </button>
         </div>
       )}
+
+      {/* Barre de recherche */}
+      <div style={{ position: 'relative' }}>
+        <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', fontSize: 15, color: 'var(--on-surface-3)', pointerEvents: 'none' }}>🔍</span>
+        <input
+          className="input-filled"
+          placeholder="Rechercher un produit…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          style={{ paddingLeft: 36 }}
+        />
+      </div>
 
       {/* Filtres */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
