@@ -192,7 +192,7 @@ export default function Vitrine() {
     setLotsLoading(true)
     try {
       // getDocs (pas getDocsFromServer) pour compatibilité iPad WiFi + lots sans sentToCornerAt
-      const [snap, vitrineSnap] = await Promise.all([
+      const [snap, vitrineSnap, catalogueSnap] = await Promise.all([
         getDocs(query(
           collection(db, 'lots_cuisine'),
           where('sent', '==', true),
@@ -201,7 +201,17 @@ export default function Vitrine() {
         // getDocsFromServer : toujours données fraîches — évite les faux positifs
         // quand un lot vient d'être ajouté en vitrine via un autre chemin (frigo, manuel)
         getDocsFromServer(query(collection(db, 'corner_stock'), limit(300))),
+        // Catalogue actif pour filtrer les produits non vendables en vitrine
+        getDocs(query(collection(db, 'catalogue'), where('active', '==', true))),
       ])
+
+      // Noms de produits catalogue avec inVitrine explicitement false → exclus du mode lot
+      const catalogueBlocked = new Set(
+        catalogueSnap.docs
+          .filter(d => d.data().inVitrine === false)
+          .map(d => (d.data().name as string)?.toLowerCase()?.trim())
+          .filter(Boolean)
+      )
 
       const allRaw = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as (LotCuisine & { archived?: boolean; sentToCornerAt?: any })[]
       // Tri JS par sentToCornerAt desc (remplace l'orderBy Firestore supprimé)
@@ -247,6 +257,8 @@ export default function Vitrine() {
       setLots(all.filter(l => {
         if (l.lotCode && allVitrineLosCodes.has(l.lotCode)) return false
         const nameLower = l.productName?.toLowerCase()?.trim()
+        // Exclure si le produit est explicitement marqué inVitrine: false dans le catalogue
+        if (nameLower && catalogueBlocked.has(nameLower)) return false
         if (nameLower && vitrineNamesLower.has(nameLower)) return false
         const fabDay = l.producedAt?.toDate ? localISO(l.producedAt.toDate()) : null
         if (nameLower && fabDay && vitrineNameDateKeys.has(`${nameLower}|${fabDay}`)) return false

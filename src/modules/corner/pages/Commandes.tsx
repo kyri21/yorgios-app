@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Timestamp, addDoc, collection, getDocs, orderBy, query, doc, updateDoc,
 } from 'firebase/firestore'
@@ -22,7 +23,7 @@ type Commande = {
 type CatalogueProduit = { id: string; name: string; prix?: number }
 
 // ─── Constantes ───────────────────────────────────────────────────
-const STATUTS    = ['En attente', 'Acceptée', 'En production', 'Livrée', 'Refusée']
+const STATUTS    = ['En cours', 'Devis envoyé', 'Accepté', 'Refusé', 'Annulé']
 const CRENEAUX   = ['Matin 8h-12h', 'Midi 12h-14h', 'Après-midi 14h-18h', 'Soir 18h-20h', 'À préciser']
 const UNITES     = ['kg', 'pièces', 'portions', 'litres']
 const MODES      = ['Livraison', 'Retrait sur place']
@@ -30,11 +31,11 @@ const TYPES_EVENEMENT = ['Anniversaire', 'Mariage', 'Repas d\'entreprise', 'Cock
 
 // Couleurs statuts — palette Aegean light
 const STATUT_STYLE: Record<string, { bg: string; color: string; border: string }> = {
-  'En attente':    { bg: 'rgba(180,83,9,0.10)',  color: 'var(--warning)',  border: 'rgba(180,83,9,0.25)' },
-  'Acceptée':      { bg: 'rgba(84,101,30,0.10)',   color: 'var(--secondary)',  border: 'rgba(84,101,30,0.25)' },
-  'En production': { bg: 'rgba(0,66,117,0.10)',  color: 'var(--primary)',  border: 'rgba(0,66,117,0.25)' },
-  'Livrée':        { bg: 'rgba(28,28,24,0.05)', color: 'var(--on-surface-3)', border: 'rgba(28,28,24,0.12)' },
-  'Refusée':       { bg: 'rgba(136,0,20,0.10)',   color: 'var(--danger)',  border: 'rgba(136,0,20,0.25)' },
+  'En cours':      { bg: 'rgba(180,83,9,0.10)',   color: 'var(--warning)',       border: 'rgba(180,83,9,0.25)' },
+  'Devis envoyé':  { bg: 'rgba(0,66,117,0.10)',   color: 'var(--primary)',       border: 'rgba(0,66,117,0.25)' },
+  'Accepté':       { bg: 'rgba(45,122,79,0.10)',  color: 'var(--success)',       border: 'rgba(45,122,79,0.25)' },
+  'Refusé':        { bg: 'rgba(136,0,20,0.10)',   color: 'var(--danger)',        border: 'rgba(136,0,20,0.25)' },
+  'Annulé':        { bg: 'rgba(28,28,24,0.05)',   color: 'var(--on-surface-3)', border: 'rgba(28,28,24,0.12)' },
 }
 
 let _id = 1
@@ -134,6 +135,7 @@ function NouvelleCommande({ user }: { user: any }) {
   const [errors, setErrors]   = useState<Record<string, string>>({})
   const [saving, setSaving]   = useState(false)
   const [success, setSuccess] = useState<string | null>(null)
+  const [confirmCmdId, setConfirmCmdId] = useState<string | null>(null)
 
   // Code promo fidélité
   const [promoCode, setPromoCode]       = useState('')
@@ -194,7 +196,7 @@ function NouvelleCommande({ user }: { user: any }) {
 
       await addDoc(collection(db, 'commandes_externes'), {
         id: cmdId, dateSaisie: now, saisiPar: form.saisiPar,
-        statut: 'En attente',
+        statut: 'En cours',
         nom: form.nom.trim(), prenom: form.prenom.trim(),
         telephone: form.telephone.trim(), email: form.email.trim(),
         entreprise: form.entreprise.trim(),
@@ -219,14 +221,8 @@ function NouvelleCommande({ user }: { user: any }) {
         } : {}),
       })
 
+      setConfirmCmdId(cmdId)
       setSuccess(cmdId)
-      setForm({ ...INIT_FORM, saisiPar: user?.displayName || user?.email?.split('@')[0] || '' })
-      setProduits([emptyProduit()])
-      setErrors({})
-      setPromoCode('')
-      setPromoDiscount(0)
-      setPromoChecked(false)
-      setPromoError('')
     } catch (e: any) {
       setErrors({ _global: e?.message || 'Erreur lors de la sauvegarde' })
     } finally {
@@ -234,10 +230,63 @@ function NouvelleCommande({ user }: { user: any }) {
     }
   }
 
+  function handleDismissModal() {
+    setConfirmCmdId(null)
+    setForm({ ...INIT_FORM, saisiPar: user?.displayName || user?.email?.split('@')[0] || '' })
+    setProduits([emptyProduit()])
+    setErrors({})
+    setPromoCode('')
+    setPromoDiscount(0)
+    setPromoChecked(false)
+    setPromoError('')
+  }
+
   const publicUrl = `${window.location.origin}/commande`
 
   return (
     <>
+      {/* Modal confirmation post-enregistrement */}
+      {confirmCmdId && createPortal(
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 9999,
+          background: 'rgba(28,28,24,0.45)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: 20,
+        }}>
+          <div style={{
+            background: 'var(--surface)', borderRadius: 20, padding: '28px 24px',
+            maxWidth: 360, width: '100%',
+            boxShadow: '0 12px 48px rgba(28,28,24,0.22)',
+            textAlign: 'center',
+          }}>
+            <div style={{ fontSize: 40, marginBottom: 14 }}>📋</div>
+            <h2 style={{
+              fontFamily: 'Epilogue, sans-serif', fontSize: 18, fontWeight: 800,
+              color: 'var(--on-surface)', marginBottom: 16, lineHeight: 1.3,
+            }}>
+              Commande enregistrée
+            </h2>
+            <div style={{
+              background: 'var(--surface-low)', border: '1px solid var(--border)',
+              borderRadius: 14, padding: '14px 16px', marginBottom: 16,
+              fontSize: 14, color: 'var(--on-surface)', fontFamily: 'Manrope, sans-serif',
+              lineHeight: 1.65, textAlign: 'left',
+            }}>
+              Ceci n'est pas une commande validée, un manager prendra contact avec le client au plus vite.
+              <br /><br />
+              <strong style={{ color: 'var(--primary)' }}>Merci Malaka</strong>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginBottom: 20, fontFamily: 'Manrope, sans-serif' }}>
+              Référence : <strong style={{ color: 'var(--on-surface-2)' }}>{confirmCmdId}</strong>
+            </div>
+            <button onClick={handleDismissModal} className="btn-primary" style={{ width: '100%', fontSize: 15 }}>
+              ✅ Lu et approuvé
+            </button>
+          </div>
+        </div>,
+        document.body
+      )}
+
       {/* Lien public */}
       <div style={{ background: 'rgba(0,66,117,0.07)', border: '1px solid rgba(0,66,117,0.18)', borderRadius: 14, padding: '12px 16px' }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--primary)', marginBottom: 8 }}>🔗 Lien formulaire client (partageable)</div>
@@ -247,13 +296,6 @@ function NouvelleCommande({ user }: { user: any }) {
         </div>
       </div>
 
-      {success && (
-        <div style={{ background: 'rgba(84,101,30,0.12)', border: '1px solid rgba(84,101,30,0.3)', borderRadius: 14, padding: '14px 16px', textAlign: 'center' }} className="animate-slide-up">
-          <div style={{ fontSize: 18, marginBottom: 6 }}>✅</div>
-          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--success)' }}>Commande enregistrée</div>
-          <div style={{ fontSize: 12, color: 'rgba(84,101,30,0.7)', marginTop: 4 }}>Référence : <strong>{success}</strong></div>
-        </div>
-      )}
 
       <CommandeFormBody
         form={form} set={set} produits={produits}
@@ -340,9 +382,9 @@ function GestionCommandes({ user }: { user: any }) {
 
   const kpi = {
     total:     commandes.length,
-    attente:   commandes.filter(c => c.statut === 'En attente').length,
+    encours:   commandes.filter(c => c.statut === 'En cours').length,
     semaine:   commandes.filter(c => { const d = new Date(c.dateLivraison); return d >= mon && d <= sun }).length,
-    acceptees: commandes.filter(c => c.statut === 'Acceptée').length,
+    acceptees: commandes.filter(c => c.statut === 'Accepté').length,
   }
 
   return (
@@ -351,7 +393,7 @@ function GestionCommandes({ user }: { user: any }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
         {([
           ['Total', kpi.total, 'var(--primary)', 'rgba(0,66,117,0.07)'],
-          ['En attente', kpi.attente, 'var(--warning)', 'rgba(180,83,9,0.07)'],
+          ['En cours', kpi.encours, 'var(--warning)', 'rgba(180,83,9,0.07)'],
           ['Cette semaine', kpi.semaine, 'var(--primary)', 'rgba(0,66,117,0.07)'],
           ['Acceptées', kpi.acceptees, 'var(--success)', 'rgba(45,122,79,0.07)'],
         ] as const).map(([label, val, color, bg]) => (
@@ -473,7 +515,7 @@ function CommandeCard({ commande: c, expanded, onToggle, onUpdated, isPatron }: 
     setEditProduits(p => p.map(r => r.id === id ? { ...r, [field]: val } : r))
   }
 
-  const st = STATUT_STYLE[statut] || STATUT_STYLE['En attente']
+  const st = STATUT_STYLE[statut] || STATUT_STYLE['En cours']
 
   async function handleCommandePrete() {
     setCommandePreteSending(true)
@@ -889,13 +931,13 @@ function CommandeCard({ commande: c, expanded, onToggle, onUpdated, isPatron }: 
                     <button onClick={handleUpdate} disabled={saving} className="btn-primary" style={{ fontSize: 14 }}>
                       {saved ? '✅ Sauvegardé !' : saving ? 'Sauvegarde…' : 'Enregistrer'}
                     </button>
-                    {!saved && !saving && (
-                      <button onClick={() => { setStatut('En attente'); handleUpdate() }} style={{
+                    {!saved && !saving && statut !== 'En cours' && (
+                      <button onClick={() => { setStatut('En cours'); handleUpdate() }} style={{
                         background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)',
                         padding: '12px', fontSize: 13, fontWeight: 600, color: 'var(--on-surface-2)',
                         cursor: 'pointer', fontFamily: 'Manrope, sans-serif',
                       }}>
-                        Mettre en attente
+                        Remettre En cours
                       </button>
                     )}
                   </div>

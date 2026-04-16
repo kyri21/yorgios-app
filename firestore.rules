@@ -45,7 +45,10 @@ service cloud.firestore {
       allow read, write: if isCuisine();
     }
     match /lots_cuisine/{doc} {
-      allow read, write: if isCuisine();
+      allow read:   if isAnyRole();     // corner lit les lots pour la Vitrine
+      allow create: if isCuisine();     // seule la cuisine crée des lots
+      allow update: if isAnyRole();     // corner archive/renvoie ; cuisine marque sent
+      allow delete: if isCorner();      // corner peut supprimer (Vitrine — gestionnaire lots)
     }
     match /lot_counters/{doc} {
       allow read, write: if isCuisine();

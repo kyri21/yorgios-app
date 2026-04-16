@@ -129,6 +129,14 @@ const IconPhoto = () => (
     <polyline points="21 15 16 10 5 21"/>
   </svg>
 )
+const IconPertes = () => (
+  <svg width="22" height="22" fill="none" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+    <polyline points="3 6 5 6 21 6"/>
+    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+    <path d="M10 11v6M14 11v6"/>
+    <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+  </svg>
+)
 
 // ── Configs grilles ────────────────────────────────────────────────────────────
 const CORNER_ITEMS: GridItem[] = [
@@ -141,6 +149,7 @@ const CORNER_ITEMS: GridItem[] = [
   { path: '/corner/ruptures',     label: 'Ruptures',    color: '#FF9500', icon: <IconAlert /> },
   { path: '/corner/commandes',    label: 'Commandes clients', color: '#FF2D55', icon: <IconClipboard /> },
   { path: '/corner/controle',     label: 'Contrôle',    color: '#30B0C7', icon: <IconShield /> },
+  { path: '/corner/pertes',       label: 'Pertes',      color: '#FF6B35', icon: <IconPertes /> },
   { path: '/livraisons',          label: 'Coursier',    color: '#FF9500', icon: <IconTruck /> },
   { path: '/corner/ca',           label: 'CA',          color: '#30D158', icon: <IconChart />, roles: ['patron', 'administrateur', 'manager'] },
   { path: '/corner/planning',     label: 'Planning',    color: '#5E5CE6', icon: <IconCalendar /> },

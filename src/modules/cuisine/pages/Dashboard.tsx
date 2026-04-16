@@ -177,7 +177,10 @@ export default function CuisineDashboard() {
             orderBy('dateLivraison', 'asc'),
           )),
         ])
-        const allCmds: CommandeClient[] = cmdSnap.docs.map(d => ({ id: d.id, ...(d.data() as any) }))
+        const STATUTS_ACTIFS = ['en cours', 'devis envoyé', 'accepté']
+        const allCmds: CommandeClient[] = cmdSnap.docs
+          .map(d => ({ id: d.id, ...(d.data() as any) }))
+          .filter(c => STATUTS_ACTIFS.includes((c.statut ?? '').toLowerCase()))
         setCommandesToday(allCmds.filter(c => c.dateLivraison === today))
         setCommandesWeek(allCmds.filter(c => c.dateLivraison > today))
         setCommandesMois(moisSnap.docs.map(d => ({ id: d.id, ...(d.data() as any) })))
@@ -191,17 +194,12 @@ export default function CuisineDashboard() {
   }, [])
 
   // Ruptures actives corner — temps réel
+  // Fenêtre fixe : depuis hier 13h — les ruptures non-traitées restent visibles
+  // jusqu'à ce que la cuisine clique "✓ On s'en occupe" (viewed=true)
   useEffect(() => {
-    const now = new Date()
     const cutoffStart = new Date()
-    if (now.getHours() < 10) {
-      // Before 10h: show from yesterday 13h
-      cutoffStart.setDate(cutoffStart.getDate() - 1)
-      cutoffStart.setHours(13, 0, 0, 0)
-    } else {
-      // After 10h: only show from today midnight
-      cutoffStart.setHours(0, 0, 0, 0)
-    }
+    cutoffStart.setDate(cutoffStart.getDate() - 1)
+    cutoffStart.setHours(13, 0, 0, 0)
     const q = query(
       collection(db, 'ruptures_actives'),
       where('viewed', '==', false),
@@ -479,69 +477,6 @@ export default function CuisineDashboard() {
               )}
             </div>
           ))}
-        </div>
-      </div>
-
-      {/* ── Températures frigos ─────────────────────────────────────── */}
-      <div className="card" style={{ cursor: 'pointer' }} onClick={() => navigate('temperatures')}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-          <div>
-            <p className="section-label" style={{ marginBottom: 2 }}>Frigos</p>
-            <h2 style={{
-              fontFamily: 'Epilogue, sans-serif',
-              fontSize: 15, fontWeight: 700,
-              color: 'var(--on-surface)', margin: 0, letterSpacing: '-0.02em',
-            }}>
-              Températures
-            </h2>
-          </div>
-          {!matinSaisis
-            ? <span className="chip-warn">Non saisis</span>
-            : tempAlerts > 0
-              ? <span className="chip-danger">{tempAlerts} alerte{tempAlerts > 1 ? 's' : ''}</span>
-              : <span className="chip-ok">Conforme</span>
-          }
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 6 }}>
-          {temps.map(t => {
-            const isAlert = t.status === 'ALERTE'
-            const isOk    = t.status === 'OK'
-            return (
-              <div key={t.id} style={{
-                borderRadius: 10,
-                padding: '8px 4px',
-                textAlign: 'center',
-                background: isAlert
-                  ? 'rgba(136,0,20,0.08)'
-                  : isOk
-                    ? 'rgba(84,101,30,0.08)'
-                    : 'var(--surface-mid)',
-              }}>
-                <div style={{
-                  fontSize: 9, fontWeight: 700, color: 'var(--on-surface-3)',
-                  marginBottom: 3, lineHeight: 1.2,
-                  textTransform: 'uppercase', letterSpacing: '0.04em',
-                }}>
-                  {t.name}
-                </div>
-                <div style={{
-                  fontSize: 16, fontWeight: 800, fontFamily: 'Epilogue, sans-serif',
-                  color: isAlert ? 'var(--danger)' : isOk ? 'var(--success)' : 'var(--on-surface-2)',
-                }}>
-                  {t.tempC !== null ? `${t.tempC}°` : '—'}
-                </div>
-                {t.status && (
-                  <div style={{
-                    fontSize: 8, fontWeight: 700, marginTop: 2,
-                    color: isAlert ? 'var(--danger)' : 'var(--success)',
-                    textTransform: 'uppercase',
-                  }}>
-                    {t.status}
-                  </div>
-                )}
-              </div>
-            )
-          })}
         </div>
       </div>
 

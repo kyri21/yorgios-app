@@ -411,9 +411,10 @@ Fabrication (cuisine)
   - DLC : alerte si un item de `corner_stock` a DLC ≤ 3 jours
   - Cartons chambre froide
   - Plats du jour
-- **Bandeau livraison** : livraisons en cours depuis `deliveries`.
-- **Bandeau commandes** : si commande à réaliser cette semaine.
+- **Bandeau livraison** : livraisons en cours depuis `livraisons`. Filter pending : `receptionTempC == null && !receptionAt && !returned && departAt >= todayStart`. Doit correspondre exactement au filter de `corner/Livraison.tsx`.
+- **Bandeau commandes** : si commande à réaliser cette semaine. Filtre `STATUTS_ACTIFS` (voir ci-dessous).
 - **PAS de bandeau TooGoodToGo** (supprimé définitivement).
+- **PAS de card températures frigos** dans le dashboard cuisine (supprimée — inutile).
 
 ---
 
@@ -467,7 +468,8 @@ Fabrication (cuisine)
 - Les produits sensibles/best-sellers configurables dans `settings/ruptures` → apparaissent en priorité.
 - `ruptures_actives` : écrit les ruptures urgentes + presques-ruptures, lu par Dashboard cuisine.
 - **Fenêtre lecture Dashboard cuisine** : avant 10h → depuis hier 13h ; après 10h → depuis minuit du jour J.
-- Deux envois possibles par jour s'additionnent (déduplification par `Set` de noms).
+- Deux envois possibles par jour **s'additionnent** — chaque envoi = nouveau doc, jamais d'archivage des précédents.
+- Déduplification par `Set` de noms produits côté affichage.
 
 ---
 
@@ -868,3 +870,90 @@ To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+## ✅ CORRECTIONS & AMÉLIORATIONS — Session 2026-04-15 (déployé)
+
+| # | Fix | Fichier |
+|---|-----|---------|
+| S1 | **Vitrine loadLots** — exclut les lots dont le produit a `inVitrine: false` dans le catalogue (légumes rôtis, pastèque/riz noir/feta, etc.) | `corner/Vitrine.tsx` |
+| S2 | **Corner Livraison** — produits sans temp groupés en une seule carte avec checkboxes individuelles + bouton "Valider réception (X/N)" global. Retour cuisine + Supprimer conservés par ligne | `corner/Livraison.tsx` |
+| S3 | **Corner Ruptures** — refonte complète : best-sellers (configurables dans settings) en haut 2 col · panel "À COMMANDER" entre best-sellers et catalogue · catalogue complet depuis `catalogue` (pas `produits`) trié Mezze→Salades→Tiropitas→Plats→Bowl→Desserts→Autre→Boissons · produit cliqué disparaît de la grille → panel · clic dans panel = 🔴↔🟠 · ✕ = retire | `corner/Ruptures.tsx` |
+| S4 | **PWA mise à jour automatique** — `skipWaiting: true` + `clientsClaim: true` dans workbox · `no-cache` sur `index.html`, `sw.js`, `workbox-*.js` dans firebase.json · bannière bleue "Nouvelle version disponible 🆕 Actualiser ↺" via `onNeedRefresh` dans main.tsx | `vite.config.ts`, `firebase.json`, `src/main.tsx` |
+| S5 | **Pertes rapport** — requête Firestore avait double `orderBy(date)+orderBy(addedAt)` → index composite absent → crash silencieux. Fix : orderBy retirés de la query, tri côté client. Catalogue chargé depuis `catalogue` (pas `produits`) | `corner/Pertes.tsx` |
+| S6 | **Dashboard corner commandes semaine** — bannière toujours visible (plus de condition `else if`) · style orange ⚠️ proéminent · liste les prochaines commandes avec date + nom client | `corner/Dashboard.tsx` |
+
+### Comportements clés Corner Ruptures (session 2026-04-15)
+
+- **Best-sellers** : liste depuis `settings/ruptures.produits[]` (configurable dans `/admin/settings`). Clic = null↔urgent. Disparaît de la grille quand sélectionné.
+- **Catalogue** : collection `catalogue`, trié par `defaultCategory` avec ordre fixe `CAT_ORDER`. Clic = urgent direct (disparaît de la grille). Les produits réapparaissent dans la grille si retirés du panel.
+- **Panel "À COMMANDER"** : s'affiche entre best-sellers et catalogue. Clic sur item = 🔴↔🟠. ✕ = null (réapparaît dans sa grille source).
+- `ruptures_actives` : `ruptures[]` = urgent, `presqueRuptures[]` = moins-urgent.
+
+### Comportements clés Corner Livraison (session 2026-04-15)
+
+- **Produits avec temp** : cartes individuelles inchangées (saisie temp + photo + "Valider réception").
+- **Produits sans temp** : regroupés dans une carte unique. En-tête avec "Tout cocher". Bouton global "Valider réception (X/N produits)" — `submitAllNoTemp()` batch updateDoc. Retour cuisine + Supprimer par ligne conservés.
+
+### PWA update flow (session 2026-04-15)
+1. Deploy → nouveau `sw.js` détecté par le navigateur à la prochaine navigation
+2. Nouveau SW s'installe → `skipWaiting` active immédiatement → `clientsClaim` prend contrôle
+3. `onNeedRefresh` → bannière bleue en haut de l'écran → bouton "Actualiser ↺" → `window.location.reload()`
+4. Plus besoin de vider le cache ou de navigation privée
+
+## ✅ CORRECTIONS & AMÉLIORATIONS — Session 2026-04-15 (suite, déployé)
+
+| # | Fix | Fichier |
+|---|-----|---------|
+| S7 | **Emails rappels commandes** — `notifCommandesJ7` (CF schedulée 8h) : email HTML à `a.cozzika@gmail.com` avec toutes les commandes des 7 prochains jours groupées par date. Pas d'envoi si aucune commande. | `functions/src/index.ts` |
+| S8 | **Email rappel J-2** — `notifCommandesJ2` enrichie : envoie en plus un email HTML récap des commandes du surlendemain (en plus des FCM existants). Pas d'envoi si aucune commande. | `functions/src/index.ts` |
+| S9 | **Index Firestore ruptures_actives** — index composite `viewed ASC + createdAt DESC` ajouté → bandeau rouge cuisine fonctionnel (query rejetée silencieusement sans cet index) | `firestore.indexes.json` |
+| S10 | ~~**Ruptures archivage avant envoi**~~ — **ANNULÉ en session 2026-04-16** : ce comportement effaçait les signaux précédents au lieu de les cumuler. Voir session 2026-04-16. | `corner/Ruptures.tsx` |
+
+### Règles bandeau ruptures cuisine (définitives — mises à jour 2026-04-16)
+
+**Apparition** : dès qu'un doc `ruptures_actives` avec `viewed==false` existe dans la fenêtre :
+- Avant 10h → depuis hier 13h
+- Après 10h → depuis minuit du jour J
+
+**Accumulation** : chaque envoi corner crée un **nouveau doc** sans archiver les précédents. `flatMap` + `Set` sur tous les docs non vus → doublons dédupliqués par nom produit, listes fusionnées. Les deux envois jour (matin + soir) s'additionnent.
+
+**Disparition — 1 seul déclencheur** :
+1. Bouton **"✓ On s'en occupe"** (cuisine) → `batch.update viewed:true` sur tous les docs visibles
+
+> ⚠️ NE JAMAIS archiver les anciens docs `ruptures_actives` lors d'un nouvel envoi corner. C'est le bug original : la 2e commande effaçait la 1ère.
+
+### Emails commandes automatiques (définitifs)
+
+| Heure | Fonction | Contenu |
+|-------|----------|---------|
+| 8h00 | `notifCommandesJ7` | Email HTML — toutes commandes J+0 à J+7, groupées par date |
+| 14h00 | `notifCommandesJ2` | FCM patron/manager/cuisine + Email HTML — commandes dans exactement 2 jours |
+
+Les deux : pas d'envoi si aucune commande dans la fenêtre.
+
+---
+
+## ✅ CORRECTIONS — Session 2026-04-16
+
+| # | Fix | Fichier |
+|---|-----|---------|
+| A1 | **Ruptures — accumulation restaurée** — suppression du bloc qui archivait (`viewed:true`) les anciens docs avant d'en créer un nouveau. Chaque envoi corner crée désormais un doc indépendant. Les deux envois du jour (matin + soir) s'additionnent. | `corner/Ruptures.tsx` |
+| A2 | **Commande annulée visible cuisine** — ajout filtre `STATUTS_ACTIFS` (`['en cours', 'devis envoyé', 'accepté']`) sur les commandes du dashboard cuisine. Sans ce filtre, les commandes annulées s'affichaient. | `cuisine/Dashboard.tsx` |
+| A3 | **Livraisons en attente fantômes** — alignement du filtre dashboard corner avec celui de `Livraison.tsx` : ajout de `!l.receptionAt && !l.returned`. Une livraison marquée reçue (même sans temp) n'apparaît plus comme "en attente". | `corner/Dashboard.tsx` |
+| A4 | **Card températures frigos supprimée** — encart "Frigos / Températures" retiré du dashboard cuisine (inutile, données déjà accessibles via l'onglet Températures). | `cuisine/Dashboard.tsx` |
+| A5 | **UI températures mobile** — saisie frigos : padding réduit (`14px 16px` → `12px 10px`), gap grille réduit, `minWidth:0` sur flex/grid children, `fontSize` input réduit (`16px` → `14px`), bouton ± réduit (`32px` → `28px`), label session raccourci. Soir ne déborde plus sur iPhone SE (320px). | `corner/Temperatures.tsx` |
+
+### Règles filtres commandes — STATUTS_ACTIFS (identiques corner et cuisine)
+
+```ts
+const STATUTS_ACTIFS = ['en cours', 'devis envoyé', 'accepté']
+// .filter(c => STATUTS_ACTIFS.includes((c.statut ?? '').toLowerCase()))
+```
+Statuts exclus : `annulée`, `livrée`, `refusée`, et tout statut inconnu.
+
+### Règle filtre livraisons pending (identique dashboard et page Livraison)
+
+```ts
+l.receptionTempC == null && !l.receptionAt && !l.returned && l.departAt?.toDate && l.departAt.toDate().getTime() >= t0
+```
+> ⚠️ Ces deux filtres (dashboard + page) doivent TOUJOURS être synchronisés. Toute modification du filtre dans `Livraison.tsx` doit être reportée dans `corner/Dashboard.tsx` et vice versa.

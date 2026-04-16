@@ -306,10 +306,12 @@ export default function Temperatures() {
                           background: 'var(--surface)',
                           borderRadius: 12,
                           padding: '10px 12px',
+                          minWidth: 0,
                         }}>
                           <p style={{
                             fontSize: 10, fontWeight: 700, color: 'var(--on-surface-3)',
                             textTransform: 'uppercase', letterSpacing: '0.07em', margin: '0 0 6px',
+                            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                           }}>
                             {s === 'matin' ? '☀ Matin (08:00)' : '🌙 Soir (20:00)'}
                           </p>
@@ -330,7 +332,7 @@ export default function Temperatures() {
                             </div>
                           )}
 
-                          <div style={{ display: 'flex', gap: 4, alignItems: 'stretch' }}>
+                          <div style={{ display: 'flex', gap: 4, alignItems: 'stretch', minWidth: 0 }}>
                             <button
                               type="button"
                               onClick={() => {
@@ -357,7 +359,7 @@ export default function Temperatures() {
                               placeholder="°C"
                               inputMode="decimal"
                               style={{
-                                flex: 1, height: 40, textAlign: 'center',
+                                flex: 1, minWidth: 0, height: 40, textAlign: 'center',
                                 background: 'var(--surface-low)',
                                 border: 'none',
                                 borderBottom: `2px solid ${inputBorder}`,

@@ -78,11 +78,11 @@ export default function AppRouter() {
           }
         />
 
-        {/* CA — patron + admin + manager */}
+        {/* CA — tous les rôles (corner + cuisine = lecture seule) */}
         <Route
           path="/ca"
           element={
-            <AuthGuard allowedRoles={[...FULL_ACCESS]}>
+            <AuthGuard allowedRoles={['patron', 'administrateur', 'manager', 'corner', 'cuisine']}>
               <Layout><CA /></Layout>
             </AuthGuard>
           }
@@ -148,11 +148,11 @@ export default function AppRouter() {
           }
         />
 
-        {/* Fiche allergènes — patron + admin + manager */}
+        {/* Fiche allergènes — tous les rôles (info utile pour tous les employés) */}
         <Route
           path="/admin/allergenes"
           element={
-            <AuthGuard allowedRoles={['patron', 'administrateur', 'manager']}>
+            <AuthGuard allowedRoles={['patron', 'administrateur', 'manager', 'corner', 'cuisine']}>
               <Layout><AllergeneMenu /></Layout>
             </AuthGuard>
           }

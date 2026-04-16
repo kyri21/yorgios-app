@@ -138,7 +138,7 @@ export default function Pertes() {
 
   // ── Charger catalogue produits
   useEffect(() => {
-    getDocs(query(collection(db, 'produits'), where('active', '==', true), orderBy('name', 'asc')))
+    getDocs(query(collection(db, 'catalogue'), where('active', '==', true), orderBy('name', 'asc')))
       .then(snap => {
         const items = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as CatalogueItem[]
         setCatalogue(items)
@@ -172,9 +172,11 @@ export default function Pertes() {
         collection(db, 'pertes_corner'),
         where('date', '>=', toLocalISO(start)),
         where('date', '<=', toLocalISO(end)),
-        orderBy('date', 'asc'), orderBy('addedAt', 'asc')
       ))
-      setPertes(snap.docs.map(d => ({ id: d.id, ...d.data() } as Perte)))
+      const sorted = snap.docs
+        .map(d => ({ id: d.id, ...d.data() } as Perte))
+        .sort((a, b) => a.date.localeCompare(b.date) || a.addedAt.seconds - b.addedAt.seconds)
+      setPertes(sorted)
     } catch { show('Erreur chargement rapport', 'error') }
     finally { setLoadingRapport(false) }
   }

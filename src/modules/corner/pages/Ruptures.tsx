@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { Timestamp, addDoc, collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore'
+import React, { useEffect, useRef, useState } from 'react'
+import { Timestamp, addDoc, collection, doc, getDoc, getDocs, query, where, writeBatch } from 'firebase/firestore'
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { db, auth, storage } from '../../../firebase/config'
 import { useAuth } from '../../../auth/useAuth'
@@ -61,9 +61,9 @@ export default function Ruptures() {
 
   const [catalogueProduits, setCatalogueProduits] = useState<CatalogueProduit[]>([])
   const [stockProduits, setStockProduits]         = useState<string[]>(BESTSELLERS)
-  const [personne, setPersonne]                   = useState(user?.displayName || user?.email?.split('@')[0] || '')
-  // null = j'ai du stock  |  'urgent' = rupture signalée
-  const [stockChecks, setStockChecks]             = useState<Record<string, 'urgent' | null>>({})
+  const [personne, setPersonne]                   = useState('')
+  // null = j'ai du stock  |  'urgent' = 🔴 rupture  |  'moins-urgent' = 🟠 presque rupture
+  const [stockChecks, setStockChecks]             = useState<Record<string, 'urgent' | 'moins-urgent' | null>>({})
   const [catalogueSearch, setCatalogueSearch]     = useState('')
   const [stock, setStock]                         = useState<StockRow[]>([emptyStock()])
   const [photos, setPhotos]                       = useState<PhotoSlot[]>(PHOTO_SLOTS_INIT)
@@ -76,6 +76,11 @@ export default function Ruptures() {
     useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null),
   ]
 
+  // Pré-remplir le prénom dès que user est chargé (auth async)
+  useEffect(() => {
+    if (!personne && user?.displayName) setPersonne(user.displayName)
+  }, [user?.displayName])
+
   useEffect(() => {
     // Datalist stock frigo depuis settings
     getDoc(doc(db, 'settings', 'ruptures'))
@@ -87,8 +92,8 @@ export default function Ruptures() {
       })
       .catch(() => {})
 
-    // Catalogue complet
-    getDocs(query(collection(db, 'produits'), where('active', '==', true)))
+    // Catalogue complet — collection `catalogue` avec defaultCategory display (Mezze/Plats/Bowl...)
+    getDocs(query(collection(db, 'catalogue'), where('active', '==', true)))
       .then(snap => {
         const items: CatalogueProduit[] = snap.docs
           .map(d => ({
@@ -107,8 +112,25 @@ export default function Ruptures() {
   }, [])
 
   // ── Helpers ──────────────────────────────────────────────────────
-  function toggleCheck(name: string) {
-    setStockChecks(prev => ({ ...prev, [name]: prev[name] === 'urgent' ? null : 'urgent' }))
+  // Best-sellers grid : null ↔ urgent (simple toggle)
+  function toggleBestSeller(name: string) {
+    setStockChecks(prev => ({ ...prev, [name]: prev[name] ? null : 'urgent' }))
+  }
+  // Catalogue grid : null → urgent (item disparaît de la grille)
+  function addFromCatalogue(name: string) {
+    setStockChecks(prev => ({ ...prev, [name]: 'urgent' }))
+    setCatalogueSearch('')
+  }
+  // Panel "À commander" : clic → 🔴 ↔ 🟠
+  function toggleInPanel(name: string) {
+    setStockChecks(prev => ({
+      ...prev,
+      [name]: prev[name] === 'urgent' ? 'moins-urgent' : 'urgent',
+    }))
+  }
+  // ✕ dans le panel : retire
+  function removeFromPanel(name: string) {
+    setStockChecks(prev => ({ ...prev, [name]: null }))
   }
 
   function updateStock(id: number, field: keyof StockRow, val: string) {
@@ -128,10 +150,10 @@ export default function Ruptures() {
   function buildText(senderName: string): string {
     const { date, time } = nowISO()
 
-    const urgentItems = Object.entries(stockChecks)
-      .filter(([, v]) => v === 'urgent')
-      .map(([name]) => `  🔴 ${name}`)
-      .join('\n') || '  Aucune rupture signalée'
+    const urgentItems = [
+      ...Object.entries(stockChecks).filter(([, v]) => v === 'urgent').map(([name]) => `  🔴 ${name}`),
+      ...Object.entries(stockChecks).filter(([, v]) => v === 'moins-urgent').map(([name]) => `  🟠 ${name}`),
+    ].join('\n') || '  Aucune rupture signalée'
 
     const stockLines = stock
       .filter(r => r.produit.trim())
@@ -170,14 +192,14 @@ export default function Ruptures() {
         text, createdAt: now, expiresAt,
       })
 
-      // ruptures_actives pour Dashboard cuisine
-      const urgentItems = Object.entries(stockChecks)
-        .filter(([, v]) => v === 'urgent')
-        .map(([name]) => name)
-      if (urgentItems.length > 0) {
+      // ruptures_actives pour Dashboard cuisine — on accumule, on n'archive pas les signaux précédents
+      const urgentItems       = Object.entries(stockChecks).filter(([, v]) => v === 'urgent').map(([name]) => name)
+      const moinsUrgentItems  = Object.entries(stockChecks).filter(([, v]) => v === 'moins-urgent').map(([name]) => name)
+
+      if (urgentItems.length > 0 || moinsUrgentItems.length > 0) {
         await addDoc(collection(db, 'ruptures_actives'), {
           ruptures: urgentItems,
-          presqueRuptures: [],
+          presqueRuptures: moinsUrgentItems,
           personne: senderName,
           createdAt: now,
           viewed: false,
@@ -213,28 +235,35 @@ export default function Ruptures() {
 
   // ── Dérivations pour l'affichage ─────────────────────────────────
 
-  // Tous les articles signalés en rupture (des deux tableaux)
-  const selectedNames = Object.entries(stockChecks)
-    .filter(([, v]) => v === 'urgent')
-    .map(([name]) => name)
-
-  // Tableau 2 : catalogue hors best-sellers, hors déjà sélectionnés
-  const catalogueAutres = catalogueProduits.filter(p =>
-    !BESTSELLERS_LOWER.has(p.name.toLowerCase()) && stockChecks[p.name] !== 'urgent'
-  )
-  const catalogueFiltered = catalogueSearch.trim()
-    ? catalogueAutres.filter(p => p.name.toLowerCase().includes(catalogueSearch.toLowerCase()))
-    : catalogueAutres
-
-  // Grouper par catégorie (seulement si pas de recherche, sinon liste plate)
-  const searchActive = catalogueSearch.trim().length > 0
-  const catalogueByCategory: Record<string, CatalogueProduit[]> = {}
-  if (!searchActive) {
-    for (const p of catalogueFiltered) {
-      if (!catalogueByCategory[p.defaultCategory]) catalogueByCategory[p.defaultCategory] = []
-      catalogueByCategory[p.defaultCategory].push(p)
-    }
+  // Ordre d'affichage des catégories
+  const CAT_ORDER: Record<string, number> = {
+    'Mezze': 1, 'Salades': 2, 'Tiropitas': 3, 'Plats': 4,
+    'Bowl': 5, 'Desserts': 6, 'Autre': 7, 'Boissons': 8,
   }
+
+  // Articles sélectionnés (urgent ou moins-urgent) — panel entre best-sellers et catalogue
+  const selectedEntries = Object.entries(stockChecks).filter(([, v]) => v === 'urgent' || v === 'moins-urgent')
+
+  // Best-sellers visibles dans la grille (non sélectionnés)
+  const bestsellersVisible = stockProduits.filter(name => !stockChecks[name])
+
+  // Catalogue : exclut les sélectionnés (ils disparaissent de la grille) + filtre recherche
+  const selectedSet = new Set(selectedEntries.map(([name]) => name))
+  const catalogueFiltered = catalogueProduits
+    .filter(p => !selectedSet.has(p.name))
+    .filter(p => !catalogueSearch.trim() || p.name.toLowerCase().includes(catalogueSearch.toLowerCase()))
+
+  const searchActive = catalogueSearch.trim().length > 0
+
+  // Groupé par defaultCategory, trié selon CAT_ORDER
+  const catalogueByCategory: Record<string, CatalogueProduit[]> = {}
+  for (const p of catalogueFiltered) {
+    if (!catalogueByCategory[p.defaultCategory]) catalogueByCategory[p.defaultCategory] = []
+    catalogueByCategory[p.defaultCategory].push(p)
+  }
+  const sortedCategories = Object.keys(catalogueByCategory).sort(
+    (a, b) => (CAT_ORDER[a] ?? 99) - (CAT_ORDER[b] ?? 99)
+  )
 
   const { date, time } = nowISO()
 
@@ -279,156 +308,176 @@ export default function Ruptures() {
       <div className="card">
         <SectionTitle num="0" label="EST-CE QUE J'AI DU STOCK ?" />
 
-        {/* Panel ruptures signalées */}
-        {selectedNames.length > 0 && (
-          <div style={{ marginBottom: 14 }}>
-            <p className="section-label" style={{ margin: '0 0 8px', color: 'var(--danger)' }}>RUPTURES SIGNALÉES</p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {selectedNames.map(name => (
-                <div key={name} style={{
-                  display: 'flex', alignItems: 'center', gap: 8,
-                  background: 'rgba(192,57,43,0.08)', borderRadius: 10, padding: '9px 12px',
-                  border: '1px solid rgba(192,57,43,0.18)',
-                }}>
-                  <span style={{ fontSize: 15 }}>🔴</span>
-                  <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: 'var(--danger)', fontFamily: 'Manrope, sans-serif' }}>{name}</span>
-                  <button
-                    onClick={() => setStockChecks(prev => ({ ...prev, [name]: null }))}
-                    style={{
-                      width: 32, height: 32, borderRadius: 8, border: 'none',
-                      background: 'rgba(28,28,24,0.06)', color: 'var(--on-surface-2)',
-                      fontSize: 14, cursor: 'pointer', flexShrink: 0,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    }}
-                    aria-label="Retirer"
-                  >✕</button>
-                </div>
-              ))}
-            </div>
-            <div className="divider" style={{ margin: '12px 0 16px' }} />
-          </div>
-        )}
-
-        {/* Tableau 1 — Best-sellers */}
-        <p className="section-label" style={{ margin: '0 0 8px' }}>PLATS PRINCIPAUX</p>
+        {/* ── Best-sellers ── */}
+        <p className="section-label" style={{ margin: '0 0 6px' }}>PRODUITS PHARES</p>
         <p style={{ fontSize: 11, color: 'var(--on-surface-3)', margin: '0 0 10px', fontFamily: 'Manrope, sans-serif' }}>
-          Appuyez si vous n'avez plus de stock → signalement rupture urgente
+          Appuyez si rupture → apparaît dans la liste ci-dessous
         </p>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 18 }}>
-          {BESTSELLERS.map(name => {
-            const isSelected = stockChecks[name] === 'urgent'
-            if (isSelected) return null // affiché dans le panel ci-dessus
-            return (
+        {bestsellersVisible.length > 0 ? (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 4 }}>
+            {bestsellersVisible.map(name => (
               <button
                 key={name}
-                onClick={() => toggleCheck(name)}
+                onClick={() => toggleBestSeller(name)}
                 style={{
-                  background: 'var(--surface-low)',
-                  borderRadius: 10, padding: '11px 10px',
-                  border: '1.5px solid var(--border-soft)',
-                  cursor: 'pointer', textAlign: 'left', minHeight: 44,
-                  display: 'flex', alignItems: 'center',
-                  transition: 'background 0.12s, border-color 0.12s',
+                  background: 'var(--surface-low)', borderRadius: 10, padding: '11px 10px',
+                  border: '1.5px solid var(--border-soft)', cursor: 'pointer',
+                  textAlign: 'left', minHeight: 44, display: 'flex', alignItems: 'center',
+                  transition: 'background 0.12s',
                 }}
               >
                 <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--on-surface)', fontFamily: 'Manrope, sans-serif', lineHeight: 1.3 }}>
                   {name}
                 </span>
               </button>
-            )
-          })}
-        </div>
+            ))}
+          </div>
+        ) : (
+          <p style={{ fontSize: 12, color: 'var(--success)', fontFamily: 'Manrope, sans-serif', margin: '0 0 4px', fontWeight: 600 }}>
+            Tous les produits phares sont signalés ✓
+          </p>
+        )}
 
-        {/* Tableau 2 — Autres articles du catalogue */}
-        <div className="divider" style={{ margin: '0 0 14px' }} />
-        <p className="section-label" style={{ margin: '0 0 8px' }}>AUTRES ARTICLES</p>
+        {/* ── Panel "À commander" — entre best-sellers et catalogue ── */}
+        {selectedEntries.length > 0 && (
+          <div style={{ margin: '14px 0' }}>
+            <div className="divider" style={{ margin: '0 0 12px' }} />
+            <p className="section-label" style={{ margin: '0 0 8px', color: 'var(--danger)' }}>
+              À COMMANDER ({selectedEntries.length})
+            </p>
+            <p style={{ fontSize: 11, color: 'var(--on-surface-3)', margin: '0 0 8px', fontFamily: 'Manrope, sans-serif' }}>
+              Appuyez sur un produit pour passer en 🟠 moins urgent · ✕ pour retirer
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {selectedEntries.map(([name, state]) => {
+                const isUrgent = state === 'urgent'
+                return (
+                  <div key={name} style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    background: isUrgent ? 'rgba(192,57,43,0.07)' : 'rgba(180,83,9,0.07)',
+                    borderRadius: 10,
+                    border: `1px solid ${isUrgent ? 'rgba(192,57,43,0.18)' : 'rgba(180,83,9,0.18)'}`,
+                    overflow: 'hidden',
+                  }}>
+                    <button
+                      onClick={() => toggleInPanel(name)}
+                      style={{
+                        flex: 1, display: 'flex', alignItems: 'center', gap: 8,
+                        padding: '9px 12px', background: 'none', border: 'none', cursor: 'pointer',
+                        textAlign: 'left',
+                      }}
+                    >
+                      <span style={{ fontSize: 15, flexShrink: 0 }}>{isUrgent ? '🔴' : '🟠'}</span>
+                      <span style={{
+                        fontSize: 13, fontWeight: 600, fontFamily: 'Manrope, sans-serif',
+                        color: isUrgent ? 'var(--danger)' : 'var(--warning)',
+                      }}>{name}</span>
+                    </button>
+                    <button
+                      onClick={() => removeFromPanel(name)}
+                      style={{
+                        width: 36, height: '100%', minHeight: 38, border: 'none',
+                        background: 'rgba(28,28,24,0.06)', color: 'var(--on-surface-2)',
+                        fontSize: 14, cursor: 'pointer', flexShrink: 0,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      }}
+                      aria-label="Retirer"
+                    >✕</button>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="divider" style={{ margin: '12px 0 0' }} />
+          </div>
+        )}
 
-        {/* Recherche */}
-        <div style={{ position: 'relative', marginBottom: 12 }}>
-          <input
-            className="input-filled"
-            placeholder="Rechercher un produit…"
-            value={catalogueSearch}
-            onChange={e => setCatalogueSearch(e.target.value)}
-            style={{ paddingLeft: 36 }}
-          />
-          <span style={{
-            position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)',
-            fontSize: 14, color: 'var(--on-surface-3)', pointerEvents: 'none',
-          }}>🔍</span>
-          {catalogueSearch && (
-            <button
-              onClick={() => setCatalogueSearch('')}
-              style={{
+        {/* ── Catalogue complet par catégorie ── */}
+        <div style={{ marginTop: selectedEntries.length > 0 ? 14 : 16 }}>
+          <p className="section-label" style={{ margin: '0 0 8px' }}>CATALOGUE</p>
+
+          {/* Barre de recherche */}
+          <div style={{ position: 'relative', marginBottom: 12 }}>
+            <input
+              className="input-filled"
+              placeholder="Rechercher un produit…"
+              value={catalogueSearch}
+              onChange={e => setCatalogueSearch(e.target.value)}
+              style={{ paddingLeft: 36 }}
+            />
+            <span style={{
+              position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)',
+              fontSize: 14, color: 'var(--on-surface-3)', pointerEvents: 'none',
+            }}>🔍</span>
+            {catalogueSearch && (
+              <button onClick={() => setCatalogueSearch('')} style={{
                 position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
                 background: 'none', border: 'none', cursor: 'pointer',
                 color: 'var(--on-surface-3)', fontSize: 16, padding: 4,
-              }}
-            >✕</button>
-          )}
-        </div>
-
-        {catalogueProduits.length === 0 ? (
-          <p style={{ fontSize: 13, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', textAlign: 'center', padding: '12px 0' }}>
-            Chargement du catalogue…
-          </p>
-        ) : searchActive ? (
-          /* Liste plate quand recherche active */
-          catalogueFiltered.length === 0 ? (
-            <p style={{ fontSize: 13, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', textAlign: 'center', padding: '12px 0' }}>
-              Aucun résultat pour « {catalogueSearch} »
-            </p>
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              {catalogueFiltered.map(p => (
-                <button
-                  key={p.id}
-                  onClick={() => { toggleCheck(p.name); setCatalogueSearch('') }}
-                  style={{
-                    background: 'var(--surface-low)', borderRadius: 10, padding: '11px 10px',
-                    border: '1.5px solid var(--border-soft)', cursor: 'pointer',
-                    textAlign: 'left', minHeight: 44, display: 'flex', alignItems: 'center',
-                  }}
-                >
-                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--on-surface)', fontFamily: 'Manrope, sans-serif', lineHeight: 1.3 }}>
-                    {highlightMatch(p.name, catalogueSearch)}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )
-        ) : (
-          /* Groupé par catégorie quand pas de recherche */
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {Object.entries(catalogueByCategory).map(([cat, items]) => (
-              <div key={cat}>
-                <p className="section-label" style={{ margin: '0 0 6px' }}>{cat.toUpperCase()}</p>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                  {items.map(p => (
-                    <button
-                      key={p.id}
-                      onClick={() => toggleCheck(p.name)}
-                      style={{
-                        background: 'var(--surface-low)', borderRadius: 10, padding: '11px 10px',
-                        border: '1.5px solid var(--border-soft)', cursor: 'pointer',
-                        textAlign: 'left', minHeight: 44, display: 'flex', alignItems: 'center',
-                      }}
-                    >
-                      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--on-surface)', fontFamily: 'Manrope, sans-serif', lineHeight: 1.3 }}>
-                        {p.name}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))}
-            {Object.keys(catalogueByCategory).length === 0 && (
-              <p style={{ fontSize: 13, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', textAlign: 'center', padding: '8px 0' }}>
-                Tous les articles sont déjà signalés ✓
-              </p>
+              }}>✕</button>
             )}
           </div>
-        )}
+
+          {catalogueProduits.length === 0 ? (
+            <p style={{ fontSize: 13, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', textAlign: 'center', padding: '12px 0' }}>
+              Chargement du catalogue…
+            </p>
+          ) : searchActive ? (
+            catalogueFiltered.length === 0 ? (
+              <p style={{ fontSize: 13, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', textAlign: 'center', padding: '12px 0' }}>
+                Aucun résultat pour « {catalogueSearch} »
+              </p>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                {catalogueFiltered.map(p => (
+                  <button
+                    key={p.id}
+                    onClick={() => addFromCatalogue(p.name)}
+                    style={{
+                      background: 'var(--surface-low)', borderRadius: 10, padding: '11px 10px',
+                      border: '1.5px solid var(--border-soft)', cursor: 'pointer',
+                      textAlign: 'left', minHeight: 44, display: 'flex', alignItems: 'center',
+                    }}
+                  >
+                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--on-surface)', fontFamily: 'Manrope, sans-serif', lineHeight: 1.3 }}>
+                      {highlightMatch(p.name, catalogueSearch)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {sortedCategories.map(cat => (
+                <div key={cat}>
+                  <p className="section-label" style={{ margin: '0 0 7px' }}>{cat.toUpperCase()}</p>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                    {catalogueByCategory[cat].map(p => (
+                      <button
+                        key={p.id}
+                        onClick={() => addFromCatalogue(p.name)}
+                        style={{
+                          background: 'var(--surface-low)', borderRadius: 10, padding: '11px 10px',
+                          border: '1.5px solid var(--border-soft)', cursor: 'pointer',
+                          textAlign: 'left', minHeight: 44, display: 'flex', alignItems: 'center',
+                          transition: 'background 0.12s',
+                        }}
+                      >
+                        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--on-surface)', fontFamily: 'Manrope, sans-serif', lineHeight: 1.3 }}>
+                          {p.name}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {sortedCategories.length === 0 && (
+                <p style={{ fontSize: 13, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', textAlign: 'center', padding: '8px 0' }}>
+                  Tous les articles du catalogue sont déjà signalés ✓
+                </p>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ── 1. Stock frigo ── */}
@@ -568,6 +617,37 @@ export default function Ruptures() {
 
       <div style={{ height: 8 }} />
     </div>
+  )
+}
+
+// ─── Bouton catalogue avec état visuel ───────────────────────────
+function CatalogueButton({ name, state, onClick, label }: {
+  name: string
+  state: 'urgent' | 'moins-urgent' | null
+  onClick: () => void
+  label: React.ReactNode
+}) {
+  const isUrgent    = state === 'urgent'
+  const isMoins     = state === 'moins-urgent'
+  const bg          = isUrgent ? 'rgba(192,57,43,0.10)' : isMoins ? 'rgba(180,83,9,0.09)' : 'var(--surface-low)'
+  const border      = isUrgent ? '1.5px solid rgba(192,57,43,0.30)' : isMoins ? '1.5px solid rgba(180,83,9,0.28)' : '1.5px solid var(--border-soft)'
+  const color       = isUrgent ? 'var(--danger)' : isMoins ? 'var(--warning)' : 'var(--on-surface)'
+  const badge       = isUrgent ? '🔴' : isMoins ? '🟠' : null
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        background: bg, borderRadius: 10, padding: '11px 10px',
+        border, cursor: 'pointer', textAlign: 'left', minHeight: 44,
+        display: 'flex', alignItems: 'center', gap: 6,
+        transition: 'background 0.12s, border-color 0.12s',
+      }}
+    >
+      {badge && <span style={{ fontSize: 14, flexShrink: 0 }}>{badge}</span>}
+      <span style={{ fontSize: 13, fontWeight: 600, color, fontFamily: 'Manrope, sans-serif', lineHeight: 1.3 }}>
+        {label}
+      </span>
+    </button>
   )
 }
 

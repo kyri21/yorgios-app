@@ -17,6 +17,14 @@
       ]
     },
     {
+      "collectionGroup": "ruptures_actives",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "viewed",    "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "deliveries",
       "queryScope": "COLLECTION",
       "fields": [

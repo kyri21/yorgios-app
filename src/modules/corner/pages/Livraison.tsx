@@ -69,6 +69,7 @@ export default function Livraison() {
   const [ncModal, setNcModal] = useState<NcModalData | null>(null)
   const [ncLoading, setNcLoading] = useState(false)
   const [ncSuccess, setNcSuccess] = useState(false)
+  const [bulkLoading, setBulkLoading] = useState(false)
 
   // --- Historique ---
   const [histDate, setHistDate] = useState(toLocalDateValue(new Date()))
@@ -235,6 +236,30 @@ export default function Livraison() {
     finally { setLoading(false); setStatus('') }
   }
 
+  async function submitAllNoTemp(items: LivrDoc[]) {
+    const toValidate = items.filter(l => receptionChecked[l.id])
+    if (toValidate.length === 0) { setError('Cochez au moins un produit'); return }
+    setError(null)
+    setBulkLoading(true)
+    try {
+      setStatus('Enregistrement…')
+      const uid = auth.currentUser?.uid || ''
+      await Promise.all(toValidate.map(l =>
+        updateDoc(doc(db, 'livraisons', l.id), {
+          receptionTempC: null, receptionAt: Timestamp.now(), receptionBy: uid,
+          receptionPhotoUrl: null, result: 'ACCEPTE',
+        })
+      ))
+      setReceptionChecked(p => {
+        const n = { ...p }
+        toValidate.forEach(l => delete n[l.id])
+        return n
+      })
+      await load()
+    } catch (e: any) { setError(e?.message) }
+    finally { setBulkLoading(false); setStatus('') }
+  }
+
   async function retourCuisine(id: string) {
     try {
       await updateDoc(doc(db, 'livraisons', id), { returned: true, returnedAt: Timestamp.now() })
@@ -282,14 +307,20 @@ export default function Livraison() {
     finally { setNcLoading(false) }
   }
 
-  const pending = livraisons
-    .filter(l => l.receptionTempC == null && !l.receptionAt && !l.returned)
-    .sort((a, b) => {
-      const aHasTemp = a.departTempC != null ? 1 : 0
-      const bHasTemp = b.departTempC != null ? 1 : 0
-      return bHasTemp - aHasTemp
-    })
+  const pendingAll = livraisons.filter(l => l.receptionTempC == null && !l.receptionAt && !l.returned)
+  const pendingWithTemp = pendingAll.filter(l => l.departTempC != null)
+  const pendingNoTemp   = pendingAll.filter(l => l.departTempC == null)
+  const pending = [...pendingWithTemp, ...pendingNoTemp]
   const done = livraisons.filter(l => (l.receptionTempC != null || l.receptionAt != null) && !l.returned)
+
+  const allNoTempChecked = pendingNoTemp.length > 0 && pendingNoTemp.every(l => receptionChecked[l.id])
+  function toggleAllNoTemp(checked: boolean) {
+    setReceptionChecked(p => {
+      const n = { ...p }
+      pendingNoTemp.forEach(l => { n[l.id] = checked })
+      return n
+    })
+  }
 
   function resultChip(result: string) {
     if (result === 'ACCEPTE') return <span className="chip-ok">ACCEPTÉ</span>
@@ -352,7 +383,7 @@ export default function Livraison() {
             À compléter ({pending.length})
           </p>
 
-          {/* Empty state amélioré */}
+          {/* Empty state */}
           {pending.length === 0 && (
             <div className="card" style={{ textAlign: 'center', padding: '44px 24px' }}>
               <div style={{ fontSize: 44, marginBottom: 14, lineHeight: 1 }}>🚚</div>
@@ -368,137 +399,75 @@ export default function Livraison() {
             </div>
           )}
 
-          {/* Livraisons en attente */}
+          {/* ── Produits AVEC température (cartes individuelles) ── */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {pending.map(l => {
+            {pendingWithTemp.map(l => {
               const depAt = l.departAt?.toDate
                 ? l.departAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                 : ''
-              const hasTemp = l.departTempC != null
               return (
                 <div key={l.id} className="card" style={{ border: '1.5px solid rgba(0,66,117,0.15)' }}>
-                  {/* Titre produit */}
                   <div style={{ marginBottom: 4 }}>
-                    <span style={{
-                      fontFamily: 'Epilogue, sans-serif', fontWeight: 700, fontSize: 15,
-                      color: 'var(--on-surface)',
-                    }}>
+                    <span style={{ fontFamily: 'Epilogue, sans-serif', fontWeight: 700, fontSize: 15, color: 'var(--on-surface)' }}>
                       {l.productName}
                     </span>
                     {l.isManual && (
-                      <span style={{
-                        fontSize: 11, color: 'var(--on-surface-3)', fontWeight: 400, marginLeft: 6,
-                      }}>(manuel)</span>
+                      <span style={{ fontSize: 11, color: 'var(--on-surface-3)', fontWeight: 400, marginLeft: 6 }}>(manuel)</span>
                     )}
                   </div>
                   <p style={{ fontSize: 12, color: 'var(--on-surface-3)', marginBottom: 14, marginTop: 0 }}>
-                    {hasTemp
-                      ? `Lot ${l.lotCode} · Départ ${l.departTempC}°C à ${depAt} · Cat. ${l.category}`
-                      : `Lot ${l.lotCode} · Cat. ${l.category} · Départ à ${depAt}`
-                    }
+                    {`Lot ${l.lotCode} · Départ ${l.departTempC}°C à ${depAt} · Cat. ${l.category}`}
                   </p>
 
                   {l.departPhotoUrl && (
-                    <button
-                      onClick={() => setPhotoModal({ url: l.departPhotoUrl!, label: 'Photo départ' })}
-                      style={{
-                        fontSize: 12, color: 'var(--primary)', background: 'none', border: 'none',
-                        cursor: 'pointer', padding: 0, display: 'block', marginBottom: 12, fontWeight: 600,
-                        fontFamily: 'Manrope, sans-serif',
-                      }}
-                    >
+                    <button onClick={() => setPhotoModal({ url: l.departPhotoUrl!, label: 'Photo départ' })} style={{
+                      fontSize: 12, color: 'var(--primary)', background: 'none', border: 'none',
+                      cursor: 'pointer', padding: 0, display: 'block', marginBottom: 12, fontWeight: 600,
+                      fontFamily: 'Manrope, sans-serif',
+                    }}>
                       Voir photo départ →
                     </button>
                   )}
 
-                  {hasTemp ? (
-                    <>
-                      {/* Température réception */}
-                      <div style={{ marginBottom: 10 }}>
-                        <p className="section-label" style={{ marginBottom: 6 }}>Température réception (°C) *</p>
-                        <input
-                          className="input-filled"
-                          value={receptionTemps[l.id] || ''}
-                          onChange={e => setReceptionTemps(p => ({ ...p, [l.id]: e.target.value }))}
-                          placeholder="ex : 3,8"
-                          inputMode="decimal"
-                        />
-                      </div>
+                  <div style={{ marginBottom: 10 }}>
+                    <p className="section-label" style={{ marginBottom: 6 }}>Température réception (°C) *</p>
+                    <input
+                      className="input-filled"
+                      value={receptionTemps[l.id] || ''}
+                      onChange={e => setReceptionTemps(p => ({ ...p, [l.id]: e.target.value }))}
+                      placeholder="ex : 3,8"
+                      inputMode="decimal"
+                    />
+                  </div>
+                  <div style={{ marginBottom: 16 }}>
+                    <p className="section-label" style={{ marginBottom: 6 }}>Photo (optionnelle)</p>
+                    <input
+                      type="file" accept="image/*" className="input-filled"
+                      onChange={e => setReceptionPhotos(p => ({ ...p, [l.id]: e.target.files?.[0] || null }))}
+                    />
+                  </div>
+                  <button
+                    onClick={() => submitReception(l)}
+                    disabled={loading || !receptionTemps[l.id]}
+                    className="btn-primary"
+                  >
+                    {loading ? 'Enregistrement…' : 'Valider réception'}
+                  </button>
 
-                      {/* Photo optionnelle */}
-                      <div style={{ marginBottom: 16 }}>
-                        <p className="section-label" style={{ marginBottom: 6 }}>Photo (optionnelle)</p>
-                        <input
-                          type="file" accept="image/*" className="input-filled"
-                          onChange={e => setReceptionPhotos(p => ({ ...p, [l.id]: e.target.files?.[0] || null }))}
-                        />
-                      </div>
-
-                      <button
-                        onClick={() => submitReception(l)}
-                        disabled={loading || !receptionTemps[l.id]}
-                        className="btn-primary"
-                      >
-                        {loading ? 'Enregistrement…' : 'Valider réception'}
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      {/* Checkbox pour livraisons sans température */}
-                      <label style={{
-                        display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
-                        padding: '12px 14px', borderRadius: 10,
-                        background: receptionChecked[l.id] ? 'rgba(45,122,79,0.08)' : 'var(--surface-low)',
-                        border: `1.5px solid ${receptionChecked[l.id] ? 'rgba(45,122,79,0.25)' : 'var(--border)'}`,
-                        marginBottom: 12, transition: 'all 0.15s',
-                      }}>
-                        <input
-                          type="checkbox"
-                          checked={!!receptionChecked[l.id]}
-                          onChange={e => setReceptionChecked(p => ({ ...p, [l.id]: e.target.checked }))}
-                          style={{ width: 20, height: 20, accentColor: 'var(--success)', cursor: 'pointer' }}
-                        />
-                        <span style={{
-                          fontSize: 14, fontWeight: 600,
-                          color: receptionChecked[l.id] ? 'var(--success)' : 'var(--on-surface)',
-                          fontFamily: 'Manrope, sans-serif',
-                        }}>
-                          Livraison reçue ✓
-                        </span>
-                      </label>
-
-                      <button
-                        onClick={() => submitReception(l)}
-                        disabled={loading || !receptionChecked[l.id]}
-                        className="btn-primary"
-                        style={{ marginBottom: 0 }}
-                      >
-                        {loading ? 'Enregistrement…' : 'Valider réception'}
-                      </button>
-                    </>
-                  )}
-
-                  {/* Boutons actions secondaires */}
                   <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                    <button
-                      onClick={() => retourCuisine(l.id)}
-                      style={{
-                        fontSize: 12, padding: '6px 12px', borderRadius: 8, border: 'none', cursor: 'pointer',
-                        background: 'rgba(0,66,117,0.08)', color: 'var(--primary)', fontWeight: 600,
-                        fontFamily: 'Manrope, sans-serif',
-                      }}
-                    >
+                    <button onClick={() => retourCuisine(l.id)} style={{
+                      fontSize: 12, padding: '6px 12px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                      background: 'rgba(0,66,117,0.08)', color: 'var(--primary)', fontWeight: 600,
+                      fontFamily: 'Manrope, sans-serif',
+                    }}>
                       ↩ Retour cuisine
                     </button>
                     {['patron', 'administrateur', 'manager'].includes(user?.role ?? '') && (
-                      <button
-                        onClick={() => supprimerLivraison(l.id)}
-                        style={{
-                          fontSize: 12, padding: '6px 12px', borderRadius: 8, border: 'none', cursor: 'pointer',
-                          background: 'rgba(192,57,43,0.08)', color: 'var(--danger)', fontWeight: 600,
-                          fontFamily: 'Manrope, sans-serif',
-                        }}
-                      >
+                      <button onClick={() => supprimerLivraison(l.id)} style={{
+                        fontSize: 12, padding: '6px 12px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                        background: 'rgba(192,57,43,0.08)', color: 'var(--danger)', fontWeight: 600,
+                        fontFamily: 'Manrope, sans-serif',
+                      }}>
                         🗑 Supprimer
                       </button>
                     )}
@@ -507,6 +476,111 @@ export default function Livraison() {
               )
             })}
           </div>
+
+          {/* ── Produits SANS température (liste groupée + validation globale) ── */}
+          {pendingNoTemp.length > 0 && (
+            <div className="card" style={{ border: '1.5px solid rgba(0,66,117,0.15)', padding: 0, overflow: 'hidden' }}>
+              {/* En-tête groupe */}
+              <div style={{
+                padding: '12px 16px', background: 'var(--surface-low)',
+                borderBottom: '1px solid var(--border-soft)',
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              }}>
+                <span style={{ fontFamily: 'Epilogue, sans-serif', fontWeight: 700, fontSize: 14, color: 'var(--on-surface)' }}>
+                  Sans température ({pendingNoTemp.length})
+                </span>
+                {/* Tout cocher */}
+                <label style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={allNoTempChecked}
+                    onChange={e => toggleAllNoTemp(e.target.checked)}
+                    style={{ width: 18, height: 18, accentColor: 'var(--success)', cursor: 'pointer' }}
+                  />
+                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--on-surface-2)', fontFamily: 'Manrope, sans-serif' }}>
+                    Tout cocher
+                  </span>
+                </label>
+              </div>
+
+              {/* Lignes produits */}
+              {pendingNoTemp.map((l, idx) => {
+                const depAt = l.departAt?.toDate
+                  ? l.departAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                  : ''
+                const checked = !!receptionChecked[l.id]
+                return (
+                  <div key={l.id} style={{
+                    borderBottom: idx < pendingNoTemp.length - 1 ? '1px solid var(--border-soft)' : 'none',
+                    background: checked ? 'rgba(45,122,79,0.05)' : 'var(--surface)',
+                    transition: 'background 0.15s',
+                  }}>
+                    {/* Ligne principale */}
+                    <label style={{
+                      display: 'flex', alignItems: 'center', gap: 12,
+                      padding: '12px 16px', cursor: 'pointer',
+                    }}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={e => setReceptionChecked(p => ({ ...p, [l.id]: e.target.checked }))}
+                        style={{ width: 20, height: 20, accentColor: 'var(--success)', cursor: 'pointer', flexShrink: 0 }}
+                      />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{
+                          fontFamily: 'Manrope, sans-serif', fontWeight: 600, fontSize: 14,
+                          color: checked ? 'var(--success)' : 'var(--on-surface)',
+                          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                        }}>
+                          {l.productName}
+                          {l.isManual && <span style={{ fontSize: 11, color: 'var(--on-surface-3)', fontWeight: 400, marginLeft: 6 }}>(manuel)</span>}
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2 }}>
+                          Lot {l.lotCode} · Départ {depAt}
+                        </div>
+                      </div>
+                      {checked && <span style={{ fontSize: 18, flexShrink: 0 }}>✓</span>}
+                    </label>
+
+                    {/* Boutons retour/suppr */}
+                    <div style={{ display: 'flex', gap: 8, padding: '0 16px 10px', paddingTop: 0 }}>
+                      <button onClick={() => retourCuisine(l.id)} style={{
+                        fontSize: 11, padding: '5px 10px', borderRadius: 7, border: 'none', cursor: 'pointer',
+                        background: 'rgba(0,66,117,0.08)', color: 'var(--primary)', fontWeight: 600,
+                        fontFamily: 'Manrope, sans-serif',
+                      }}>
+                        ↩ Retour cuisine
+                      </button>
+                      {['patron', 'administrateur', 'manager'].includes(user?.role ?? '') && (
+                        <button onClick={() => supprimerLivraison(l.id)} style={{
+                          fontSize: 11, padding: '5px 10px', borderRadius: 7, border: 'none', cursor: 'pointer',
+                          background: 'rgba(192,57,43,0.08)', color: 'var(--danger)', fontWeight: 600,
+                          fontFamily: 'Manrope, sans-serif',
+                        }}>
+                          🗑 Supprimer
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+
+              {/* Bouton validation globale */}
+              <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border-soft)', background: 'var(--surface-low)' }}>
+                <button
+                  onClick={() => submitAllNoTemp(pendingNoTemp)}
+                  disabled={bulkLoading || pendingNoTemp.every(l => !receptionChecked[l.id])}
+                  className="btn-primary"
+                  style={{ width: '100%' }}
+                >
+                  {bulkLoading
+                    ? 'Enregistrement…'
+                    : `Valider réception (${pendingNoTemp.filter(l => receptionChecked[l.id]).length}/${pendingNoTemp.length} produits)`
+                  }
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Livraisons complétées */}
           {done.length > 0 && (

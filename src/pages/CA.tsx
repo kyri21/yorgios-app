@@ -22,7 +22,7 @@ function docId(year: number, month: number) {
 
 export default function CA() {
   const { user } = useAuth()
-  const readOnly = user?.role === 'corner'
+  const readOnly = ['corner', 'cuisine'].includes(user?.role ?? '')
   const year = new Date().getFullYear()
   const [data, setData] = useState<AllData>({})
   const [loading, setLoading] = useState(true)

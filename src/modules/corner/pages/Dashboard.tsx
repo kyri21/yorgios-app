@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { collection, getDocs, getDoc, doc, orderBy, query, where, limit } from 'firebase/firestore'
+import { collection, getDocFromServer, getDocsFromServer, doc, orderBy, query, where, limit } from 'firebase/firestore'
 import { db } from '../../../firebase/config'
 import { SkeletonList } from '../../../components/Skeleton'
 
@@ -147,6 +147,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [checks, setChecks] = useState<Record<TaskKey, boolean>>(loadChecks)
   const [weather, setWeather] = useState<WeatherDay[]>([])
+  const [refreshKey, setRefreshKey] = useState(0)
 
   function toggleCheck(key: TaskKey) {
     const next = { ...checks, [key]: !checks[key] }
@@ -160,31 +161,35 @@ export default function Dashboard() {
       const t0 = todayStart().getTime()
       const endWeek = endOfWeekISO()
 
-      const [tempsData, tempsMatinData, tempsSoirData, hygieneSnap, hygieneHebdoSnap, hygieneMensuelSnap, livrSnap, stockSnap, cmdSnap] = await Promise.all([
-        Promise.all(CORNER_FRIDGES.map(async id => {
-          const snap = await getDoc(doc(db, 'temperatures', `${today}_${id}_matin`))
-          if (!snap.exists()) return { fridgeId: id, name: FRIDGE_NAMES[id], tempC: null, status: null }
-          const data = snap.data() as any
-          return { fridgeId: id, name: FRIDGE_NAMES[id], tempC: data.tempC ?? null, status: data.status ?? null }
-        })),
-        Promise.all(CORNER_FRIDGES.map(async id => {
-          const snap = await getDoc(doc(db, 'temperatures', `${today}_${id}_matin`))
-          return snap.exists()
-        })),
-        Promise.all(CORNER_FRIDGES.map(async id => {
-          const snap = await getDoc(doc(db, 'temperatures', `${today}_${id}_soir`))
-          return snap.exists()
-        })),
-        getDoc(doc(db, 'hygiene_corner', `${today}_quotidien`)),
-        getDoc(doc(db, 'hygiene_corner', hygieneHebdoId())),
-        getDoc(doc(db, 'hygiene_corner', hygieneMensuelId())),
-        getDocs(query(collection(db, 'livraisons'), orderBy('departAt', 'desc'), limit(100))),
-        getDocs(query(collection(db, 'corner_stock'), where('active', '==', true), limit(200))),
-        getDocs(query(collection(db, 'commandes_externes'),
+      // Températures matin : une seule requête par frigo (réutilisée pour data + existence)
+      const matinSnaps = await Promise.all(CORNER_FRIDGES.map(id =>
+        getDocFromServer(doc(db, 'temperatures', `${today}_${id}_matin`))
+      ))
+      const soirSnaps = await Promise.all(CORNER_FRIDGES.map(id =>
+        getDocFromServer(doc(db, 'temperatures', `${today}_${id}_soir`))
+      ))
+
+      const [hygieneSnap, hygieneHebdoSnap, hygieneMensuelSnap, livrSnap, stockSnap, cmdSnap] = await Promise.all([
+        getDocFromServer(doc(db, 'hygiene_corner', `${today}_quotidien`)),
+        getDocFromServer(doc(db, 'hygiene_corner', hygieneHebdoId())),
+        getDocFromServer(doc(db, 'hygiene_corner', hygieneMensuelId())),
+        getDocsFromServer(query(collection(db, 'livraisons'), orderBy('departAt', 'desc'), limit(100))),
+        getDocsFromServer(query(collection(db, 'corner_stock'), where('active', '==', true), limit(200))),
+        // Pas de filtre 'statut' ici (évite l'index composite manquant) — filtrage côté client
+        getDocsFromServer(query(collection(db, 'commandes_externes'),
           where('dateLivraison', '>=', today),
           where('dateLivraison', '<=', endWeek),
           orderBy('dateLivraison', 'asc'))),
       ])
+
+      const tempsData = matinSnaps.map((snap, i) => {
+        const id = CORNER_FRIDGES[i]
+        if (!snap.exists()) return { fridgeId: id, name: FRIDGE_NAMES[id], tempC: null, status: null }
+        const data = snap.data() as any
+        return { fridgeId: id, name: FRIDGE_NAMES[id], tempC: data.tempC ?? null, status: data.status ?? null }
+      })
+      const tempsMatinData = matinSnaps.map(s => s.exists())
+      const tempsSoirData  = soirSnaps.map(s => s.exists())
 
       setTemps(tempsData)
       setMatinSaisis(tempsMatinData.some(Boolean))
@@ -195,7 +200,13 @@ export default function Dashboard() {
 
       const pending = livrSnap.docs
         .map(d => ({ id: d.id, ...(d.data() as any) }))
-        .filter((l: any) => l.receptionTempC == null && l.departAt?.toDate && l.departAt.toDate().getTime() >= t0)
+        .filter((l: any) =>
+          l.receptionTempC == null &&
+          !l.receptionAt &&
+          !l.returned &&
+          l.departAt?.toDate &&
+          l.departAt.toDate().getTime() >= t0
+        )
       setPendingLivraisons(pending)
 
       const items: DlcItem[] = stockSnap.docs
@@ -208,14 +219,17 @@ export default function Dashboard() {
         })
       setDlcItems(items)
 
-      const allCmds: CommandeClient[] = cmdSnap.docs.map(d => ({ id: d.id, ...(d.data() as any) }))
+      const STATUTS_ACTIFS = ['En cours', 'Devis envoyé', 'Accepté', 'accepté', 'en cours']
+      const allCmds: CommandeClient[] = cmdSnap.docs
+        .map(d => ({ id: d.id, ...(d.data() as any) }))
+        .filter(c => STATUTS_ACTIFS.some(s => s.toLowerCase() === (c.statut ?? '').toLowerCase()))
       setCommandesToday(allCmds.filter(c => c.dateLivraison === today))
       setCommandesWeek(allCmds.filter(c => c.dateLivraison > today))
 
       setLoading(false)
     }
     loadAll().catch(e => { console.error(e); setLoading(false) })
-  }, [])
+  }, [refreshKey])
 
   // Météo semaine — Open-Meteo (gratuit, sans clé API)
   useEffect(() => {
@@ -282,9 +296,22 @@ export default function Dashboard() {
             Tableau de bord
           </h1>
         </div>
-        <span style={{ fontSize: 12, color: 'var(--on-surface-3)', paddingBottom: 2, textAlign: 'right' }}>
-          {now.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}
-        </span>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+          <span style={{ fontSize: 12, color: 'var(--on-surface-3)', textAlign: 'right' }}>
+            {now.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}
+          </span>
+          <button
+            onClick={() => { setLoading(true); setRefreshKey(k => k + 1) }}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 5,
+              padding: '5px 10px', borderRadius: 8, border: '1px solid var(--border)',
+              background: 'var(--surface-low)', cursor: 'pointer',
+              fontSize: 12, fontWeight: 600, color: 'var(--primary)',
+            }}
+          >
+            ↺ Actualiser
+          </button>
+        </div>
       </div>
 
       {/* ── Météo de la semaine ─────────────────────────────────── */}
@@ -594,8 +621,8 @@ export default function Dashboard() {
                 <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--on-surface)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 8 }}>
                   {c.prenom ? `${c.prenom} ${c.nom ?? ''}`.trim() : c.nom ?? `Commande #${c.id.slice(-4)}`}
                 </span>
-                <span className={c.statut === 'livree' ? 'chip-ok' : c.statut === 'prete' ? 'chip-warn' : 'chip-warn'} style={{ fontSize: 10, padding: '2px 8px' }}>
-                  {c.statut === 'livree' ? 'Livrée' : c.statut === 'prete' ? 'Prête' : c.statut === 'acceptee' ? 'Acceptée' : 'En attente'}
+                <span className={c.statut === 'Accepté' ? 'chip-ok' : c.statut === 'Devis envoyé' ? 'chip-warn' : 'chip-warn'} style={{ fontSize: 10, padding: '2px 8px' }}>
+                  {c.statut || 'En cours'}
                 </span>
               </div>
             ))}
@@ -609,37 +636,48 @@ export default function Dashboard() {
         </div>
       )}
 
-      {commandesToday.length === 0 && commandesWeek.length > 0 && (
+      {commandesWeek.length > 0 && (
         <div
-          className="card"
+          onClick={() => navigate('commandes')}
           style={{
             cursor: 'pointer',
-            background: 'rgba(0,66,117,0.04)',
-            border: '1.5px solid rgba(0,66,117,0.20)',
-            borderLeft: '4px solid var(--primary)',
+            background: 'rgba(180,83,9,0.07)',
+            border: '2px solid rgba(180,83,9,0.35)',
+            borderLeft: '5px solid var(--warning)',
             borderRadius: 16,
             padding: '14px 16px',
           }}
-          onClick={() => navigate('commandes')}
         >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontSize: 20 }}>📬</span>
-              <div>
-                <p className="section-label" style={{ marginBottom: 1, color: 'var(--primary)' }}>Commandes clients</p>
-                <h2 style={{ fontSize: 15, fontWeight: 700, color: 'var(--on-surface)', margin: 0, fontFamily: 'Epilogue, sans-serif' }}>
-                  {commandesWeek.length} livraison{commandesWeek.length > 1 ? 's' : ''} cette semaine
-                </h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 26 }}>⚠️</span>
+            <div style={{ flex: 1 }}>
+              <p style={{ margin: 0, fontSize: 11, fontWeight: 800, color: 'var(--warning)', textTransform: 'uppercase', letterSpacing: '0.06em', fontFamily: 'Manrope, sans-serif' }}>
+                À PRÉPARER CETTE SEMAINE
+              </p>
+              <h2 style={{ fontSize: 17, fontWeight: 800, color: 'var(--on-surface)', margin: '2px 0 6px', fontFamily: 'Epilogue, sans-serif' }}>
+                {commandesWeek.length} commande{commandesWeek.length > 1 ? 's' : ''} client{commandesWeek.length > 1 ? 's' : ''}
+              </h2>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                {commandesWeek.slice(0, 3).map(c => (
+                  <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--warning)', background: 'rgba(180,83,9,0.10)', borderRadius: 6, padding: '1px 7px', fontFamily: 'Manrope, sans-serif' }}>
+                      {new Date(c.dateLivraison + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })}
+                    </span>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--on-surface)', fontFamily: 'Manrope, sans-serif' }}>
+                      {c.prenom ? `${c.prenom} ${c.nom ?? ''}`.trim() : c.nom ?? `#${c.id.slice(-4)}`}
+                    </span>
+                  </div>
+                ))}
+                {commandesWeek.length > 3 && (
+                  <span style={{ fontSize: 12, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif' }}>
+                    + {commandesWeek.length - 3} autre{commandesWeek.length - 3 > 1 ? 's' : ''}…
+                  </span>
+                )}
               </div>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary)', background: 'rgba(0,66,117,0.10)', borderRadius: 20, padding: '3px 10px' }}>
-                {commandesWeek.length}
-              </span>
-              <svg width="6" height="10" fill="none" viewBox="0 0 6 10">
-                <path d="M1 1l4 4-4 4" stroke="var(--primary)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </div>
+            <svg width="7" height="12" fill="none" viewBox="0 0 7 12">
+              <path d="M1 1l5 5-5 5" stroke="var(--warning)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
           </div>
         </div>
       )}
