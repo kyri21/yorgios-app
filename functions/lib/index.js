@@ -1230,7 +1230,7 @@ exports.sendGmaoEmail = (0, https_1.onCall)({ region: 'europe-west1' }, async (r
     var _a;
     if (!request.auth)
         throw new https_1.HttpsError('unauthenticated', 'Auth required');
-    const { demandeId, to } = request.data;
+    const { demandeId, to, customBody } = request.data;
     const demandeSnap = await db.collection('gmao_demandes').doc(demandeId).get();
     if (!demandeSnap.exists)
         throw new https_1.HttpsError('not-found', 'Demande introuvable');
@@ -1241,11 +1241,9 @@ exports.sendGmaoEmail = (0, https_1.onCall)({ region: 'europe-west1' }, async (r
         service: 'gmail',
         auth: { user: gmailUser, pass: gmailPass },
     });
-    await transporter.sendMail({
-        from: `"Matias App" <${gmailUser}>`,
-        to,
-        subject: `[GMAO] ${d.departement} — ${String((_a = d.motif) !== null && _a !== void 0 ? _a : '').substring(0, 60)}`,
-        html: `
+    const bodyHtml = customBody
+        ? `<pre style="font-family:Arial,sans-serif;font-size:14px;white-space:pre-wrap;line-height:1.6">${customBody}</pre>`
+        : `
       <h2>Demande GMAO</h2>
       <table style="border-collapse:collapse;width:100%">
         <tr><td style="padding:8px;font-weight:bold;background:#f5f5f5">Département</td><td style="padding:8px">${d.departement}</td></tr>
@@ -1255,7 +1253,12 @@ exports.sendGmaoEmail = (0, https_1.onCall)({ region: 'europe-west1' }, async (r
         <tr><td style="padding:8px;font-weight:bold;background:#f5f5f5">Statut</td><td style="padding:8px">${d.statut}</td></tr>
       </table>
       ${d.photoUrl ? `<br><a href="${d.photoUrl}">📎 Voir le document joint</a>` : ''}
-    `,
+    `;
+    await transporter.sendMail({
+        from: `"Matias App" <${gmailUser}>`,
+        to,
+        subject: `[GMAO] ${d.departement} — ${String((_a = d.motif) !== null && _a !== void 0 ? _a : '').substring(0, 60)}`,
+        html: bodyHtml,
     });
     return { success: true };
 });

@@ -65,6 +65,7 @@ export default function AdminDocuments() {
   const [savingGmao, setSavingGmao] = useState(false)
   const [sendingChristelle, setSendingChristelle] = useState<string | null>(null)
   const [previewDemande, setPreviewDemande] = useState<GmaoDemande | null>(null)
+  const [emailBody, setEmailBody] = useState('')
   const gmaoPhotoRef = useRef<HTMLInputElement>(null)
 
   // ── CRETA GEL state ──
@@ -135,12 +136,24 @@ export default function AdminDocuments() {
     show('Demande supprimée')
   }
 
+  function buildEmailTemplate(demande: GmaoDemande): string {
+    const dateStr = demande.date
+      ? new Date(demande.date + 'T12:00:00').toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' })
+      : demande.date
+    return `Bonjour Christelle,\n\nNotre demande GMAO : ${demande.motif}\nn'a pas évolué depuis le ${dateStr}.\nAs-tu des nouvelles ?\n\nMerci`
+  }
+
+  function openPreview(demande: GmaoDemande) {
+    setEmailBody(buildEmailTemplate(demande))
+    setPreviewDemande(demande)
+  }
+
   async function confirmSendToChristelle(demande: GmaoDemande) {
     setSendingChristelle(demande.id)
     setPreviewDemande(null)
     try {
       const fn = httpsCallable(functions, 'sendGmaoEmail')
-      await fn({ demandeId: demande.id, to: 'cvandaele@la-grande-epicerie.fr' })
+      await fn({ demandeId: demande.id, to: 'cvandaele@la-grande-epicerie.fr', customBody: emailBody })
       show('Email envoyé à Christelle ✓')
     } catch (e: any) { show(e?.message || 'Erreur envoi email', 'error') }
     finally { setSendingChristelle(null) }
@@ -348,7 +361,7 @@ export default function AdminDocuments() {
 
                     {d.statut !== 'terminé' && (
                       <button
-                        onClick={() => setPreviewDemande(d)}
+                        onClick={() => openPreview(d)}
                         disabled={sendingChristelle === d.id}
                         style={{
                           fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 8,
@@ -479,36 +492,22 @@ export default function AdminDocuments() {
             maxHeight: '80vh', overflowY: 'auto',
           }}>
             <p style={{ fontFamily: 'Epilogue, sans-serif', fontWeight: 800, fontSize: 16, color: 'var(--on-surface)', margin: '0 0 4px' }}>
-              Aperçu de l'email
+              Email à Christelle
             </p>
-            <p style={{ fontSize: 12, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', margin: '0 0 16px' }}>
-              Destinataire : <b>cvandaele@la-grande-epicerie.fr</b> (Christelle)
+            <p style={{ fontSize: 12, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', margin: '0 0 4px' }}>
+              À : <b>cvandaele@la-grande-epicerie.fr</b>
+            </p>
+            <p style={{ fontSize: 12, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', margin: '0 0 14px' }}>
+              Objet : <b>[GMAO] {previewDemande.departement}</b>
             </p>
 
-            <div style={{ background: 'var(--surface-low)', borderRadius: 12, padding: '14px 16px', marginBottom: 16, fontSize: 13, fontFamily: 'Manrope, sans-serif' }}>
-              <div style={{ fontWeight: 700, color: 'var(--on-surface)', marginBottom: 10, fontSize: 14 }}>
-                Objet : [GMAO] {previewDemande.departement} — {previewDemande.motif?.substring(0, 60)}
-              </div>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                {[
-                  ['Département', previewDemande.departement],
-                  ['Motif', previewDemande.motif],
-                  ['Date', previewDemande.date],
-                  ['N° intervention', previewDemande.numeroIntervention || '—'],
-                  ['Statut', previewDemande.statut],
-                ].map(([label, value]) => (
-                  <tr key={label}>
-                    <td style={{ padding: '6px 10px', fontWeight: 600, background: 'var(--surface-mid)', color: 'var(--on-surface-2)', whiteSpace: 'nowrap', borderRadius: 4 }}>{label}</td>
-                    <td style={{ padding: '6px 10px', color: 'var(--on-surface)' }}>{value}</td>
-                  </tr>
-                ))}
-              </table>
-              {previewDemande.photoUrl && (
-                <div style={{ marginTop: 10, fontSize: 12, color: 'var(--primary)' }}>
-                  📎 Document joint inclus
-                </div>
-              )}
-            </div>
+            <textarea
+              value={emailBody}
+              onChange={e => setEmailBody(e.target.value)}
+              rows={8}
+              className="input-filled"
+              style={{ resize: 'vertical', fontFamily: 'Manrope, sans-serif', fontSize: 13, lineHeight: 1.6, marginBottom: 16 }}
+            />
 
             <div style={{ display: 'flex', gap: 10 }}>
               <button

@@ -1470,7 +1470,7 @@ export const weeklyHygieneRecap = onSchedule(
 
 export const sendGmaoEmail = onCall({ region: 'europe-west1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Auth required')
-  const { demandeId, to } = request.data as { demandeId: string; to: string }
+  const { demandeId, to, customBody } = request.data as { demandeId: string; to: string; customBody?: string }
 
   const demandeSnap = await db.collection('gmao_demandes').doc(demandeId).get()
   if (!demandeSnap.exists) throw new HttpsError('not-found', 'Demande introuvable')
@@ -1483,11 +1483,9 @@ export const sendGmaoEmail = onCall({ region: 'europe-west1' }, async (request) 
     auth: { user: gmailUser, pass: gmailPass },
   })
 
-  await transporter.sendMail({
-    from: `"Matias App" <${gmailUser}>`,
-    to,
-    subject: `[GMAO] ${d.departement} — ${String(d.motif ?? '').substring(0, 60)}`,
-    html: `
+  const bodyHtml = customBody
+    ? `<pre style="font-family:Arial,sans-serif;font-size:14px;white-space:pre-wrap;line-height:1.6">${customBody}</pre>`
+    : `
       <h2>Demande GMAO</h2>
       <table style="border-collapse:collapse;width:100%">
         <tr><td style="padding:8px;font-weight:bold;background:#f5f5f5">Département</td><td style="padding:8px">${d.departement}</td></tr>
@@ -1497,7 +1495,13 @@ export const sendGmaoEmail = onCall({ region: 'europe-west1' }, async (request) 
         <tr><td style="padding:8px;font-weight:bold;background:#f5f5f5">Statut</td><td style="padding:8px">${d.statut}</td></tr>
       </table>
       ${d.photoUrl ? `<br><a href="${d.photoUrl}">📎 Voir le document joint</a>` : ''}
-    `,
+    `
+
+  await transporter.sendMail({
+    from: `"Matias App" <${gmailUser}>`,
+    to,
+    subject: `[GMAO] ${d.departement} — ${String(d.motif ?? '').substring(0, 60)}`,
+    html: bodyHtml,
   })
   return { success: true }
 })
