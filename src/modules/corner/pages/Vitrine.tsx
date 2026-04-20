@@ -919,7 +919,7 @@ export default function Vitrine() {
                         display: 'grid', gridTemplateColumns: '1fr 60px 60px 64px', gap: 4,
                         padding: '6px 12px', background: 'rgba(192,57,43,0.08)',
                       }}>
-                        {['Produit', 'Fabrication', 'DLC', ''].map(h => (
+                        {['Produit', 'FAB.', 'DLC', ''].map(h => (
                           <span key={h} style={{
                             fontSize: 10, fontWeight: 700, color: 'var(--danger)',
                             textTransform: 'uppercase', letterSpacing: '0.06em',
@@ -981,7 +981,7 @@ export default function Vitrine() {
                         display: 'grid', gridTemplateColumns: '1fr 60px 60px 64px', gap: 4,
                         padding: '6px 12px', background: 'rgba(180,83,9,0.06)',
                       }}>
-                        {['Produit', 'Fabrication', 'DLC', ''].map(h => (
+                        {['Produit', 'FAB.', 'DLC', ''].map(h => (
                           <span key={h} style={{
                             fontSize: 10, fontWeight: 700, color: 'var(--warning)',
                             textTransform: 'uppercase', letterSpacing: '0.06em',

@@ -508,7 +508,17 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   <span style={{ fontFamily: 'Manrope, sans-serif', fontSize: 12, fontWeight: 700, color: '#fff' }}>Sortie</span>
                 </button>
               )}
-              {/* Paramètres — admin uniquement, mobile */}
+              {/* Documents + Paramètres — admin uniquement, mobile */}
+              {isAdmin && (
+                <button onClick={() => navigate('/admin/documents')} style={{
+                  background: location.pathname === '/admin/documents' ? 'rgba(0,66,117,0.1)' : 'var(--surface-low)',
+                  border: 'none', borderRadius: 8, padding: '6px 8px', cursor: 'pointer',
+                  color: location.pathname === '/admin/documents' ? '#004275' : 'var(--on-surface-2)',
+                  display: 'flex', alignItems: 'center', fontSize: 18,
+                }}>
+                  📁
+                </button>
+              )}
               {isAdmin && (
                 <button onClick={() => navigate('/admin/settings')} style={{
                   background: location.pathname === '/admin/settings' ? 'rgba(0,66,117,0.1)' : 'var(--surface-low)',

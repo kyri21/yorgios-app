@@ -64,6 +64,7 @@ export default function AdminDocuments() {
   const [gmaoPhotoPreview, setGmaoPhotoPreview] = useState<string | null>(null)
   const [savingGmao, setSavingGmao] = useState(false)
   const [sendingChristelle, setSendingChristelle] = useState<string | null>(null)
+  const [previewDemande, setPreviewDemande] = useState<GmaoDemande | null>(null)
   const gmaoPhotoRef = useRef<HTMLInputElement>(null)
 
   // ── CRETA GEL state ──
@@ -134,8 +135,9 @@ export default function AdminDocuments() {
     show('Demande supprimée')
   }
 
-  async function sendToChristelle(demande: GmaoDemande) {
+  async function confirmSendToChristelle(demande: GmaoDemande) {
     setSendingChristelle(demande.id)
+    setPreviewDemande(null)
     try {
       const fn = httpsCallable(functions, 'sendGmaoEmail')
       await fn({ demandeId: demande.id, to: 'cvandaele@la-grande-epicerie.fr' })
@@ -346,7 +348,7 @@ export default function AdminDocuments() {
 
                     {d.statut !== 'terminé' && (
                       <button
-                        onClick={() => sendToChristelle(d)}
+                        onClick={() => setPreviewDemande(d)}
                         disabled={sendingChristelle === d.id}
                         style={{
                           fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 8,
@@ -460,6 +462,73 @@ export default function AdminDocuments() {
             </div>
           )}
         </div>
+      )}
+
+      {/* ── Modal preview email Christelle ── */}
+      {previewDemande && (
+        <>
+          <div
+            onClick={() => setPreviewDemande(null)}
+            style={{ position: 'fixed', inset: 0, background: 'rgba(28,28,24,0.5)', zIndex: 300, backdropFilter: 'blur(4px)' }}
+          />
+          <div style={{
+            position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 301,
+            background: '#fff', borderRadius: '20px 20px 0 0',
+            padding: '24px 20px 32px',
+            boxShadow: '0 -8px 32px rgba(28,28,24,0.15)',
+            maxHeight: '80vh', overflowY: 'auto',
+          }}>
+            <p style={{ fontFamily: 'Epilogue, sans-serif', fontWeight: 800, fontSize: 16, color: 'var(--on-surface)', margin: '0 0 4px' }}>
+              Aperçu de l'email
+            </p>
+            <p style={{ fontSize: 12, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', margin: '0 0 16px' }}>
+              Destinataire : <b>cvandaele@la-grande-epicerie.fr</b> (Christelle)
+            </p>
+
+            <div style={{ background: 'var(--surface-low)', borderRadius: 12, padding: '14px 16px', marginBottom: 16, fontSize: 13, fontFamily: 'Manrope, sans-serif' }}>
+              <div style={{ fontWeight: 700, color: 'var(--on-surface)', marginBottom: 10, fontSize: 14 }}>
+                Objet : [GMAO] {previewDemande.departement} — {previewDemande.motif?.substring(0, 60)}
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                {[
+                  ['Département', previewDemande.departement],
+                  ['Motif', previewDemande.motif],
+                  ['Date', previewDemande.date],
+                  ['N° intervention', previewDemande.numeroIntervention || '—'],
+                  ['Statut', previewDemande.statut],
+                ].map(([label, value]) => (
+                  <tr key={label}>
+                    <td style={{ padding: '6px 10px', fontWeight: 600, background: 'var(--surface-mid)', color: 'var(--on-surface-2)', whiteSpace: 'nowrap', borderRadius: 4 }}>{label}</td>
+                    <td style={{ padding: '6px 10px', color: 'var(--on-surface)' }}>{value}</td>
+                  </tr>
+                ))}
+              </table>
+              {previewDemande.photoUrl && (
+                <div style={{ marginTop: 10, fontSize: 12, color: 'var(--primary)' }}>
+                  📎 Document joint inclus
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button
+                onClick={() => setPreviewDemande(null)}
+                className="btn-secondary"
+                style={{ flex: 1 }}
+              >
+                Annuler
+              </button>
+              <button
+                onClick={() => confirmSendToChristelle(previewDemande)}
+                disabled={!!sendingChristelle}
+                className="btn-primary"
+                style={{ flex: 1 }}
+              >
+                {sendingChristelle ? '⏳ Envoi…' : '📧 Envoyer'}
+              </button>
+            </div>
+          </div>
+        </>
       )}
     </div>
   )

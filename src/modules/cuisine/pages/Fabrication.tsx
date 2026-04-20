@@ -537,13 +537,12 @@ export default function Fabrication() {
                       fourDaysAgo.setDate(fourDaysAgo.getDate() - 4)
                       const filtered = receptions.filter(r => {
                         const d = r.receivedAt?.toDate?.() ?? new Date()
-                        const isExpired = d < fourDaysAgo
-                        return showExpiredReceptions || !isExpired
+                        return d >= fourDaysAgo
                       })
                       if (filtered.length === 0) {
                         return (
                           <p style={{ fontSize: 13, color: 'var(--on-surface-3)', padding: '12px 14px', margin: 0 }}>
-                            Aucune réception viande récente.
+                            Aucune réception viande récente (moins de 4j).
                           </p>
                         )
                       }
@@ -551,7 +550,6 @@ export default function Fabrication() {
                         const _pad2 = (n: number) => String(n).padStart(2, '0')
                         const d = r.receivedAt?.toDate?.() ?? new Date()
                         const dateStr = `${_pad2(d.getDate())}/${_pad2(d.getMonth()+1)} ${_pad2(d.getHours())}:${_pad2(d.getMinutes())}`
-                        const isExpired = d < fourDaysAgo
                         const active = selectedReceptionId === r.id
                         return (
                           <div
@@ -562,20 +560,10 @@ export default function Fabrication() {
                               borderLeft: active ? '3px solid var(--primary)' : '3px solid transparent',
                               background: active ? 'rgba(0,66,117,0.07)' : 'transparent',
                               transition: 'background 0.12s',
-                              opacity: isExpired ? 0.7 : 1,
                             }}
                           >
-                            <div style={{ fontSize: 13, fontWeight: active ? 700 : 500, color: active ? 'var(--primary)' : 'var(--on-surface)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <div style={{ fontSize: 13, fontWeight: active ? 700 : 500, color: active ? 'var(--primary)' : 'var(--on-surface)' }}>
                               {r.productName}
-                              {isExpired && (
-                                <span style={{
-                                  fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 99,
-                                  background: 'rgba(192,57,43,0.12)', color: 'var(--danger)', marginLeft: 6,
-                                  whiteSpace: 'nowrap',
-                                }}>
-                                  ⚠️ +4j
-                                </span>
-                              )}
                             </div>
                             <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2 }}>
                               {r.fournisseur} · {dateStr}
@@ -586,22 +574,6 @@ export default function Fabrication() {
                       })
                     })()}
                   </div>
-                  {receptions.some(r => {
-                    const fourDaysAgo = new Date()
-                    fourDaysAgo.setDate(fourDaysAgo.getDate() - 4)
-                    const d = r.receivedAt?.toDate?.() ?? new Date()
-                    return d < fourDaysAgo
-                  }) && (
-                    <button
-                      onClick={() => setShowExpiredReceptions(v => !v)}
-                      style={{
-                        background: 'none', border: 'none', color: 'var(--on-surface-3)',
-                        fontSize: 12, cursor: 'pointer', padding: '4px 0', fontFamily: 'Manrope, sans-serif',
-                      }}
-                    >
-                      {showExpiredReceptions ? '▲ Masquer périmés' : '▼ Voir réceptions > 4j'}
-                    </button>
-                  )}
                 </>
               )}
               {selectedReceptionId && (() => {
