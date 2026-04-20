@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Timestamp, addDoc, collection, doc, getDoc, getDocs, query, where, writeBatch } from 'firebase/firestore'
+// stockage_frigo: { frigo, nom, quantite, dlc, createdAt }
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { db, auth, storage } from '../../../firebase/config'
 import { useAuth } from '../../../auth/useAuth'
@@ -12,13 +13,8 @@ type CatalogueProduit = { id: string; name: string; defaultCategory: string }
 const CONTENANTS = ['Sceau', 'Plaque inox', 'Plat inox', 'Plat en fer blanc et bleu', 'Grand sceau', 'Bac gastro', 'Bac blanc']
 const NIVEAUX    = ['Plein', 'Trois-quarts', 'Moitié', 'Un quart']
 
-// Best-sellers — tableau 1 (toujours visible en haut)
-const BESTSELLERS = [
-  'Briam', 'Moussaka', 'Brochette de poulet', 'Kefta',
-  'Riz épinard', 'Orzo nature', 'Tzatziki', 'Houmous',
-  'Tiropita épinard', 'Tiropita feta menthe',
-]
-const BESTSELLERS_LOWER = new Set(BESTSELLERS.map(b => b.toLowerCase()))
+// Best-sellers chargés depuis settings/ruptures.produits (liés au catalogue)
+const BESTSELLERS: string[] = []
 
 const PHOTO_SLOTS_INIT: PhotoSlot[] = [
   { label: 'Vitrine gauche', required: false, file: null, preview: null },
@@ -71,6 +67,8 @@ export default function Ruptures() {
   const [sending, setSending]                     = useState(false)
   const [sent, setSent]                           = useState(false)
   const [error, setError]                         = useState<string | null>(null)
+  const [loadingFrigo, setLoadingFrigo]           = useState(false)
+  const [waLink, setWaLink]                       = useState<string | null>(null)
   const photoRefs = [
     useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null),
     useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null),
@@ -139,6 +137,30 @@ export default function Ruptures() {
   function addStockRow()          { setStock(rows => [...rows, emptyStock()]) }
   function removeStockRow(id: number) { setStock(rows => rows.filter(r => r.id !== id)) }
 
+  async function loadFrigoStock() {
+    setLoadingFrigo(true)
+    try {
+      const snap = await getDocs(collection(db, 'stockage_frigo'))
+      if (snap.empty) { setError('Aucun article en frigo corner.'); return }
+      const rows: StockRow[] = snap.docs
+        .map(d => {
+          const data = d.data() as any
+          return {
+            id: nextId(),
+            produit: (data.nom as string) || '',
+            contenant: CONTENANTS[0],
+            niveau: NIVEAUX[0],
+          }
+        })
+        .filter(r => r.produit)
+      setStock(rows.length > 0 ? rows : [emptyStock()])
+    } catch (e: any) {
+      setError(e?.message || 'Erreur chargement frigos')
+    } finally {
+      setLoadingFrigo(false)
+    }
+  }
+
   function handlePhoto(index: number, file: File | null) {
     setPhotos(slots => slots.map((s, i) => {
       if (i !== index) return s
@@ -175,6 +197,20 @@ export default function Ruptures() {
       commentaire.trim() ? '━━━━━━━━━━━━━━━━━━' : null,
     ]
     return parts.filter(Boolean).join('\n')
+  }
+
+  function buildWhatsAppMessage(): string {
+    const { date, time } = nowISO()
+    const urgentItems  = Object.entries(stockChecks).filter(([, v]) => v === 'urgent').map(([name]) => `🔴 ${name}`)
+    const moinsUrgent  = Object.entries(stockChecks).filter(([, v]) => v === 'moins-urgent').map(([name]) => `🟠 ${name}`)
+    const lines = [
+      `RUPTURES CORNER — ${date} ${time}`,
+      '',
+      ...urgentItems,
+      ...moinsUrgent,
+      (urgentItems.length === 0 && moinsUrgent.length === 0) ? 'Aucune rupture' : '',
+    ].filter((l): l is string => l !== undefined && l !== '')
+    return lines.join('\n')
   }
 
   async function handleSend() {
@@ -219,6 +255,12 @@ export default function Ruptures() {
           createdAt: Timestamp.fromMillis(now.toMillis() + i + 1), expiresAt,
         })
       }))
+
+      // Générer lien WhatsApp si des ruptures ont été envoyées
+      if (urgentItems.length > 0 || moinsUrgentItems.length > 0) {
+        const waMsg = buildWhatsAppMessage()
+        setWaLink(`https://wa.me/33781468107?text=${encodeURIComponent(waMsg)}`)
+      }
 
       setStockChecks({})
       setStock([emptyStock()])
@@ -515,15 +557,26 @@ export default function Ruptures() {
             </div>
           </div>
         ))}
-        <button onClick={addStockRow} style={{
-          display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 700,
-          color: 'var(--primary)', background: 'rgba(0,66,117,0.06)',
-          border: '1.5px dashed rgba(0,66,117,0.25)',
-          borderRadius: 10, padding: '9px 14px', cursor: 'pointer', width: '100%', justifyContent: 'center',
-          fontFamily: 'Manrope, sans-serif',
-        }}>
-          + Ajouter un article
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={addStockRow} style={{
+            display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 700,
+            color: 'var(--primary)', background: 'rgba(0,66,117,0.06)',
+            border: '1.5px dashed rgba(0,66,117,0.25)',
+            borderRadius: 10, padding: '9px 14px', cursor: 'pointer', flex: 1, justifyContent: 'center',
+            fontFamily: 'Manrope, sans-serif',
+          }}>
+            + Ajouter un article
+          </button>
+          <button onClick={loadFrigoStock} disabled={loadingFrigo} style={{
+            display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 700,
+            color: '#0369a1', background: 'rgba(3,105,161,0.06)',
+            border: '1.5px solid rgba(3,105,161,0.25)',
+            borderRadius: 10, padding: '9px 12px', cursor: 'pointer', flexShrink: 0, justifyContent: 'center',
+            fontFamily: 'Manrope, sans-serif',
+          }} title="Charger tous les articles du stockage frigo corner">
+            {loadingFrigo ? '…' : '🧊 Frigos'}
+          </button>
+        </div>
       </div>
 
       {/* ── 2. Photos vitrine ── */}
@@ -603,6 +656,23 @@ export default function Ruptures() {
         }}>
           Demande envoyée à la cuisine ✓
         </div>
+      )}
+      {waLink && (
+        <a
+          href={waLink}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+            width: '100%', padding: '13px 16px', borderRadius: 12, textDecoration: 'none',
+            background: 'rgba(37,211,102,0.12)', border: '1.5px solid rgba(37,211,102,0.30)',
+            color: '#25d366', fontWeight: 700, fontSize: 14, fontFamily: 'Manrope, sans-serif',
+            marginTop: 8,
+          }}
+          onClick={() => setWaLink(null)}
+        >
+          📲 Envoyer sur WhatsApp à Timour
+        </a>
       )}
 
       {/* ── Bouton envoi messagerie interne ── */}
