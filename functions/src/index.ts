@@ -1500,7 +1500,7 @@ export const sendGmaoEmail = onCall({ region: 'europe-west1' }, async (request) 
   await transporter.sendMail({
     from: `"Matias App" <${gmailUser}>`,
     to,
-    subject: `[GMAO] ${d.departement} — ${String(d.motif ?? '').substring(0, 60)}`,
+    subject: `[GMAO] ${d.departement} — ${String(d.motif ?? '').substring(0, 60)} — YORGIOS`,
     html: bodyHtml,
   })
   return { success: true }

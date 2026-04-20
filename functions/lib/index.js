@@ -1257,7 +1257,7 @@ exports.sendGmaoEmail = (0, https_1.onCall)({ region: 'europe-west1' }, async (r
     await transporter.sendMail({
         from: `"Matias App" <${gmailUser}>`,
         to,
-        subject: `[GMAO] ${d.departement} — ${String((_a = d.motif) !== null && _a !== void 0 ? _a : '').substring(0, 60)}`,
+        subject: `[GMAO] ${d.departement} — ${String((_a = d.motif) !== null && _a !== void 0 ? _a : '').substring(0, 60)} — YORGIOS`,
         html: bodyHtml,
     });
     return { success: true };

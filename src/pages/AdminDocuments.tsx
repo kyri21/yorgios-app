@@ -498,7 +498,7 @@ export default function AdminDocuments() {
               À : <b>cvandaele@la-grande-epicerie.fr</b>
             </p>
             <p style={{ fontSize: 12, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', margin: '0 0 14px' }}>
-              Objet : <b>[GMAO] {previewDemande.departement}</b>
+              Objet : <b>[GMAO] {previewDemande.departement} — YORGIOS</b>
             </p>
 
             <textarea
