@@ -423,18 +423,27 @@ export default function Vitrine() {
       retireReason: 'returned_to_kitchen',
     })
     // Si l'item vient d'un lot cuisine, remettre sent à false pour qu'il réapparaisse côté cuisine
-    if (item.lotCode) {
-      try {
-        const snap = await getDocs(query(
+    try {
+      // Chercher par lotCode d'abord, sinon par productName (lots sans code)
+      let lotsSnap
+      if (item.lotCode) {
+        lotsSnap = await getDocs(query(
           collection(db, 'lots_cuisine'),
           where('lotCode', '==', item.lotCode),
           limit(1),
         ))
-        if (!snap.empty) {
-          await updateDoc(snap.docs[0].ref, { sent: false, sentToCornerAt: null })
-        }
-      } catch { /* silencieux */ }
-    }
+      } else {
+        lotsSnap = await getDocs(query(
+          collection(db, 'lots_cuisine'),
+          where('productName', '==', item.productName),
+          where('sent', '==', true),
+          limit(1),
+        ))
+      }
+      if (!lotsSnap.empty) {
+        await updateDoc(lotsSnap.docs[0].ref, { sent: false, sentToCornerAt: null })
+      }
+    } catch { /* silencieux */ }
     show(`"${item.productName}" renvoyé en cuisine`)
     await load()
   }
@@ -450,9 +459,21 @@ export default function Vitrine() {
   const filtered = produitsList.filter(p => p.toLowerCase().includes(search.toLowerCase()))
 
   function dlcChip(st: 'expire' | 'today' | 'tomorrow' | 'ok') {
-    if (st === 'expire') return <span className="chip-danger">Expiré</span>
-    if (st === 'today') return <span className="chip-warn">Auj.</span>
-    if (st === 'tomorrow') return <span className="chip-warn">Demain</span>
+    if (st === 'expire')   return <span className="chip-danger">Expiré</span>
+    if (st === 'today')    return (
+      <span style={{
+        fontSize: 10, fontWeight: 800, padding: '3px 8px', borderRadius: 99,
+        background: 'rgba(230,126,34,0.15)', color: '#e67500',
+        letterSpacing: '0.04em', whiteSpace: 'nowrap',
+      }}>AUJ.</span>
+    )
+    if (st === 'tomorrow') return (
+      <span style={{
+        fontSize: 10, fontWeight: 800, padding: '3px 8px', borderRadius: 99,
+        background: 'rgba(142,68,173,0.13)', color: '#8e44ad',
+        letterSpacing: '0.04em', whiteSpace: 'nowrap',
+      }}>DEMAIN</span>
+    )
     return <span className="chip-ok">OK</span>
   }
 
@@ -895,7 +916,7 @@ export default function Vitrine() {
                       border: '1px solid rgba(192,57,43,0.2)',
                     }}>
                       <div style={{
-                        display: 'grid', gridTemplateColumns: '1fr 52px 52px 44px', gap: 4,
+                        display: 'grid', gridTemplateColumns: '1fr 60px 60px 64px', gap: 4,
                         padding: '6px 12px', background: 'rgba(192,57,43,0.08)',
                       }}>
                         {['Produit', 'Fabrication', 'DLC', ''].map(h => (
@@ -916,7 +937,7 @@ export default function Vitrine() {
                           : '—'
                         return (
                           <div key={item.id} style={{
-                            display: 'grid', gridTemplateColumns: '1fr 52px 52px 44px',
+                            display: 'grid', gridTemplateColumns: '1fr 60px 60px 64px',
                             gap: 4, alignItems: 'center', padding: '8px 12px', fontSize: 12,
                             background: idx % 2 === 0 ? 'rgba(192,57,43,0.04)' : 'transparent',
                             borderTop: '1px solid rgba(192,57,43,0.08)',
@@ -957,7 +978,7 @@ export default function Vitrine() {
                       border: '1px solid rgba(180,83,9,0.2)',
                     }}>
                       <div style={{
-                        display: 'grid', gridTemplateColumns: '1fr 52px 52px 44px', gap: 4,
+                        display: 'grid', gridTemplateColumns: '1fr 60px 60px 64px', gap: 4,
                         padding: '6px 12px', background: 'rgba(180,83,9,0.06)',
                       }}>
                         {['Produit', 'Fabrication', 'DLC', ''].map(h => (
@@ -978,7 +999,7 @@ export default function Vitrine() {
                           : '—'
                         return (
                           <div key={item.id} style={{
-                            display: 'grid', gridTemplateColumns: '1fr 52px 52px 44px',
+                            display: 'grid', gridTemplateColumns: '1fr 60px 60px 64px',
                             gap: 4, alignItems: 'center', padding: '8px 12px', fontSize: 12,
                             background: idx % 2 === 0 ? 'rgba(180,83,9,0.03)' : 'transparent',
                             borderTop: '1px solid rgba(180,83,9,0.08)',
