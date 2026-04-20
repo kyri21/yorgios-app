@@ -21,6 +21,9 @@ service cloud.firestore {
     function isAnyRole() {
       return isAuth() && role() in ['patron', 'administrateur', 'manager', 'cuisine', 'corner'];
     }
+    function isPatron() {
+      return isAuth() && role() in ['patron', 'administrateur'];
+    }
 
     // ─── Users ──────────────────────────────────────────────────
     // Chaque user lit/modifie son propre profil ; patron/manager voient tout
@@ -76,12 +79,9 @@ service cloud.firestore {
     // Les deux sites utilisent la même collection ; lecture par tous,
     // écriture autorisée pour les deux sites (cuisine ET corner ont leurs propres frigos)
     match /temperatures/{doc} {
-      allow read:   if isAnyRole();
-      allow create: if isAnyRole();
-      // Seul le créateur du relevé ou patron/manager peut le modifier/supprimer
-      allow update, delete: if isAuth() && (
-        resource.data.createdBy == request.auth.uid || isPatronOrManager()
-      );
+      allow read:          if isAnyRole();
+      allow create, update: if isAnyRole();
+      allow delete:         if isPatronOrManager();
     }
 
     // ─── Livraisons (cuisine crée le départ, corner reçoit) ─────
@@ -194,6 +194,19 @@ service cloud.firestore {
     match /deliveries/{id} {
       allow read: if isAnyRole();
       allow write: if false;  // écriture uniquement via CF backend (Admin SDK)
+    }
+
+    // ─── GMAO Demandes ────────────────────────────────────────────
+    match /gmao_demandes/{id} {
+      allow read: if isAnyRole();
+      allow create, update: if isPatronOrManager();
+      allow delete: if isPatron();
+    }
+
+    // ─── Créta Gel Docs ───────────────────────────────────────────
+    match /creta_gel_docs/{id} {
+      allow read: if isAnyRole();
+      allow create, update, delete: if isPatronOrManager();
     }
   }
 }
