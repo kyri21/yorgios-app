@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.clearRupturesAt13h = exports.incomingSms = exports.createPointage = exports.validatePromoCodePublic = exports.validatePromoCode = exports.syncContactToBrevo = exports.weeklyHygieneRecap = exports.notifHygieneMensuel = exports.notifHygieneHebdo = exports.notifTemperaturesEvening = exports.notifUrgences = exports.onLivraisonReception = exports.onLivraisonTemperature = exports.onPointageLate = exports.notifPlatsJour = exports.notifCartonsChambrefroide = exports.notifTooGoodToGo = exports.notifTemperatures = exports.updateUserPassword = exports.deleteUser = exports.createUser = exports.sendPasswordReset = exports.purgeOldMessages = exports.onCommandePrete = exports.notifCommandesJJ = exports.notifCommandesJ2 = exports.onCommandeUpdated = exports.onNewCommande = exports.onNewMessage = void 0;
+exports.clearRupturesAt13h = exports.incomingSms = exports.createPointage = exports.validatePromoCodePublic = exports.validatePromoCode = exports.syncContactToBrevo = exports.gmaoWeeklyReminder = exports.sendGmaoEmail = exports.weeklyHygieneRecap = exports.notifHygieneMensuel = exports.notifHygieneHebdo = exports.notifTemperaturesEvening = exports.notifUrgences = exports.onLivraisonReception = exports.onLivraisonTemperature = exports.onPointageLate = exports.notifPlatsJour = exports.notifCartonsChambrefroide = exports.notifTooGoodToGo = exports.notifTemperatures = exports.updateUserPassword = exports.deleteUser = exports.createUser = exports.sendPasswordReset = exports.purgeOldMessages = exports.relanceCommandes = exports.updateCommandeStatus = exports.onCommandePrete = exports.notifCommandesJ7 = exports.notifCommandesJJ = exports.notifCommandesJ2 = exports.onCommandeUpdated = exports.onNewCommande = exports.onNewMessage = void 0;
 // Node.js 22
 const app_1 = require("firebase-admin/app");
 const firestore_1 = require("firebase-admin/firestore");
@@ -45,6 +45,7 @@ const https_1 = require("firebase-functions/v2/https");
 const googleapis_1 = require("googleapis");
 const nodemailer = __importStar(require("nodemailer"));
 const webhooks_1 = require("twilio/lib/webhooks/webhooks");
+const crypto = __importStar(require("crypto"));
 const app = (0, app_1.initializeApp)();
 // Firestore DB non-default : 'test'
 const db = (0, firestore_1.getFirestore)(app, 'test');
@@ -70,6 +71,22 @@ async function notifyRoles(title, body, link, roles = ['patron', 'manager', 'cui
             fcmOptions: { link },
         },
     });
+}
+// ─────────────────────────────────────────────────────────────────
+// UTILITAIRES — TOKEN ACTION EMAIL
+// ─────────────────────────────────────────────────────────────────
+/** Génère un token HMAC-SHA256 pour les boutons d'action dans les emails */
+function makeActionToken(cmdId, statut) {
+    const secret = process.env.YORGIOS_WP_SECRET || 'matias-fallback-secret';
+    return crypto.createHmac('sha256', secret).update(`${cmdId}:${statut}`).digest('hex').slice(0, 32);
+}
+function verifyActionToken(cmdId, statut, token) {
+    return makeActionToken(cmdId, statut) === token;
+}
+const CF_BASE = 'https://europe-west1-cuisine-yorgios.cloudfunctions.net';
+function actionLink(cmdId, statut) {
+    const token = makeActionToken(cmdId, statut);
+    return `${CF_BASE}/updateCommandeStatus?cmdId=${encodeURIComponent(cmdId)}&statut=${encodeURIComponent(statut)}&token=${token}`;
 }
 // ─────────────────────────────────────────────────────────────────
 // UTILITAIRES GOOGLE CALENDAR
@@ -303,7 +320,7 @@ exports.onCommandeUpdated = (0, firestore_2.onDocumentUpdated)({ document: 'comm
     if (before.statut === after.statut)
         return;
     const docRef = event.data.after.ref;
-    if (after.statut === 'Acceptée' && before.statut !== 'Acceptée') {
+    if (after.statut === 'Accepté' && before.statut !== 'Accepté') {
         // Créer l'événement Google Calendar
         const lienGcal = await createGCalEvent(after);
         if (lienGcal) {
@@ -312,24 +329,14 @@ exports.onCommandeUpdated = (0, firestore_2.onDocumentUpdated)({ document: 'comm
         // Notifier la cuisine
         await notifyRoles(`✅ Commande acceptée — ${after.id}`, `${after.prenom} ${after.nom} · ${after.dateLivraison} à ${after.heureLivraison}`, '/corner/commandes', ['cuisine', 'patron', 'manager']);
     }
-    if (after.statut === 'Refusée' && before.statut !== 'Refusée') {
-        await notifyRoles(`❌ Commande refusée — ${after.id}`, `${after.prenom} ${after.nom} a été refusé(e).`, '/corner/commandes', ['patron', 'manager']);
+    if (after.statut === 'Devis envoyé' && before.statut !== 'Devis envoyé') {
+        await notifyRoles(`📄 Devis envoyé — ${after.id}`, `${after.prenom} ${after.nom} · en attente de confirmation client`, '/corner/commandes', ['patron', 'manager']);
     }
-    if (after.statut === 'Livrée' && before.statut !== 'Livrée') {
-        await notifyRoles(`🚚 Commande livrée — ${after.id}`, `${after.prenom} ${after.nom} — livraison confirmée.`, '/corner/commandes', ['patron', 'manager']);
-        // CRM : sync commande Brevo + fidélité
-        if (after.telephone) {
-            try {
-                const { syncOrderToBrevoLogic, markPromoCodeUsed } = await Promise.resolve().then(() => __importStar(require('./crm')));
-                await syncOrderToBrevoLogic(event.params.cmdId, after);
-                if (after.promoCode && after.telephone) {
-                    await markPromoCodeUsed(after.telephone, after.promoCode);
-                }
-            }
-            catch (e) {
-                console.error('[CRM] Erreur sync commande Brevo:', e);
-            }
-        }
+    if (after.statut === 'Refusé' && before.statut !== 'Refusé') {
+        await notifyRoles(`❌ Commande refusée — ${after.id}`, `${after.prenom} ${after.nom} — refusée.`, '/corner/commandes', ['patron', 'manager']);
+    }
+    if (after.statut === 'Annulé' && before.statut !== 'Annulé') {
+        await notifyRoles(`🚫 Commande annulée — ${after.id}`, `${after.prenom} ${after.nom} — annulée.`, '/corner/commandes', ['patron', 'manager']);
     }
 });
 // ─────────────────────────────────────────────────────────────────
@@ -341,7 +348,7 @@ exports.notifCommandesJ2 = (0, scheduler_1.onSchedule)({ schedule: 'every day 14
     const dateStr = j2.toISOString().slice(0, 10);
     const snap = await db.collection('commandes_externes')
         .where('dateLivraison', '==', dateStr)
-        .where('statut', 'in', ['Acceptée', 'En production'])
+        .where('statut', 'in', ['Accepté'])
         .get();
     if (snap.empty)
         return;
@@ -349,6 +356,75 @@ exports.notifCommandesJ2 = (0, scheduler_1.onSchedule)({ schedule: 'every day 14
         const cmd = d.data();
         await notifyRoles(`⏰ Rappel J-2 — ${cmd.id}`, `Livraison dans 2 jours : ${cmd.prenom} ${cmd.nom} le ${cmd.dateLivraison} à ${cmd.heureLivraison}`, '/corner/commandes', ['patron', 'manager', 'cuisine']);
         await d.ref.update({ notifJ2Envoyee: firestore_1.Timestamp.now() });
+    }
+    // ── Email récap J-2 ──
+    try {
+        const gmailUser = process.env.GMAIL_USER;
+        const gmailPass = process.env.GMAIL_APP_PASSWORD;
+        if (gmailUser && gmailPass) {
+            const formatDate = (iso) => {
+                const [y, m, d] = iso.split('-');
+                const days = ['Dimanche', 'Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi'];
+                const months = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+                const dt = new Date(iso);
+                return `${days[dt.getDay()]} ${parseInt(d)} ${months[parseInt(m) - 1]} ${y}`;
+            };
+            let htmlBody = `
+          <div style="font-family: sans-serif; max-width: 640px; margin: 0 auto; color: #1c1c18;">
+            <h2 style="color: #004275; border-bottom: 2px solid #004275; padding-bottom: 8px;">
+              ⏰ Rappel J-2 — Commandes du ${formatDate(dateStr)}
+            </h2>
+            <p style="color: #5a5a55; font-size: 14px;">
+              ${snap.size} commande(s) à livrer dans <strong>2 jours</strong>.
+            </p>
+        `;
+            for (const d of snap.docs) {
+                const cmd = d.data();
+                const produitsList = Array.isArray(cmd.produits) && cmd.produits.length
+                    ? cmd.produits.map((p) => `${p.produit}${p.quantite ? ' × ' + p.quantite : ''}${p.unite ? ' ' + p.unite : ''}`).join(', ')
+                    : '—';
+                const statut = cmd.statut || '?';
+                const couleurStatut = statut === 'Accepté' ? '#2d7a4f' : '#004275';
+                htmlBody += `
+            <div style="background: #f6f3ed; border-left: 4px solid ${couleurStatut}; padding: 12px 16px; margin-bottom: 10px; border-radius: 4px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <strong style="font-size: 15px;">${cmd.prenom || ''} ${cmd.nom || ''}</strong>
+                <span style="background: ${couleurStatut}; color: #fff; padding: 2px 8px; border-radius: 12px; font-size: 12px;">${statut}</span>
+              </div>
+              <div style="font-size: 13px; color: #5a5a55; margin-bottom: 4px;">
+                🕐 ${cmd.heureLivraison || '?'} — ${cmd.mode || 'Livraison'}
+                ${cmd.creneauHoraire ? ` — ${cmd.creneauHoraire}` : ''}
+              </div>
+              ${cmd.telephone ? `<div style="font-size: 13px; color: #5a5a55;">📞 ${cmd.telephone}</div>` : ''}
+              ${cmd.adresseLivraison ? `<div style="font-size: 13px; color: #5a5a55;">📍 ${cmd.adresseLivraison}</div>` : ''}
+              <div style="font-size: 13px; color: #1c1c18; margin-top: 6px;">🛒 ${produitsList}</div>
+              ${cmd.prixEstime ? `<div style="font-size: 13px; color: #004275; margin-top: 4px; font-weight: 600;">💶 ${cmd.prixEstime} €</div>` : ''}
+              ${cmd.instructionsSpeciales ? `<div style="font-size: 12px; color: #b45309; margin-top: 4px; font-style: italic;">⚠️ ${cmd.instructionsSpeciales}</div>` : ''}
+            </div>
+          `;
+            }
+            htmlBody += `
+            <p style="font-size: 12px; color: #9a9a94; margin-top: 32px; border-top: 1px solid #ede9e1; padding-top: 12px;">
+              Matias — rappel automatique J-2 envoyé à 14h.<br>
+              Consulter toutes les commandes : <a href="https://cuisine-yorgios.web.app/corner/commandes" style="color: #004275;">App Matias</a>
+            </p>
+          </div>
+        `;
+            const transporter = nodemailer.createTransport({
+                service: 'gmail',
+                auth: { user: gmailUser, pass: gmailPass },
+            });
+            await transporter.sendMail({
+                from: `"Matias" <${gmailUser}>`,
+                to: 'a.cozzika@gmail.com',
+                subject: `⏰ Rappel J-2 — ${snap.size} commande(s) le ${formatDate(dateStr)}`,
+                html: htmlBody,
+            });
+            console.log(`[J-2] Email envoyé pour ${dateStr}`);
+        }
+    }
+    catch (e) {
+        console.error('[J-2] Erreur envoi email:', e);
     }
     console.log(`[J-2] ${snap.size} rappel(s) envoyé(s) pour ${dateStr}`);
 });
@@ -369,6 +445,109 @@ exports.notifCommandesJJ = (0, scheduler_1.onSchedule)({ schedule: 'every day 09
         await d.ref.update({ notifJJEnvoyee: firestore_1.Timestamp.now() });
     }
     console.log(`[J-J] ${snap.size} rappel(s) envoyé(s) pour ${today}`);
+});
+// ─────────────────────────────────────────────────────────────────
+// COMMANDES — Récap email J+7 (chaque matin à 8h Europe/Paris)
+// ─────────────────────────────────────────────────────────────────
+exports.notifCommandesJ7 = (0, scheduler_1.onSchedule)({ schedule: 'every day 08:00', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
+    const gmailUser = process.env.GMAIL_USER;
+    const gmailPass = process.env.GMAIL_APP_PASSWORD;
+    if (!gmailUser || !gmailPass) {
+        console.error('[J7] GMAIL_USER / GMAIL_APP_PASSWORD manquants dans functions/.env');
+        return;
+    }
+    // Fenêtre : aujourd'hui → aujourd'hui + 7 jours
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const limit7 = new Date(today);
+    limit7.setDate(limit7.getDate() + 7);
+    const dateFrom = today.toISOString().slice(0, 10);
+    const dateTo = limit7.toISOString().slice(0, 10);
+    const snap = await db.collection('commandes_externes')
+        .where('dateLivraison', '>=', dateFrom)
+        .where('dateLivraison', '<=', dateTo)
+        .where('statut', 'in', ['En cours', 'Devis envoyé', 'Accepté'])
+        .orderBy('dateLivraison', 'asc')
+        .get();
+    if (snap.empty) {
+        console.log('[J7] Aucune commande dans les 7 prochains jours — email non envoyé');
+        return;
+    }
+    // Grouper par date de livraison
+    const byDate = {};
+    for (const d of snap.docs) {
+        const cmd = { ...d.data(), _id: d.id };
+        const dl = cmd.dateLivraison;
+        if (!byDate[dl])
+            byDate[dl] = [];
+        byDate[dl].push(cmd);
+    }
+    // Construire le corps HTML
+    const formatDate = (iso) => {
+        const [y, m, d] = iso.split('-');
+        const days = ['Dimanche', 'Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi'];
+        const months = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+        const dt = new Date(iso);
+        return `${days[dt.getDay()]} ${parseInt(d)} ${months[parseInt(m) - 1]} ${y}`;
+    };
+    let htmlBody = `
+      <div style="font-family: sans-serif; max-width: 640px; margin: 0 auto; color: #1c1c18;">
+        <h2 style="color: #004275; border-bottom: 2px solid #004275; padding-bottom: 8px;">
+          📋 Commandes — 7 prochains jours
+        </h2>
+        <p style="color: #5a5a55; font-size: 14px;">
+          ${snap.size} commande(s) entre le <strong>${formatDate(dateFrom)}</strong> et le <strong>${formatDate(dateTo)}</strong>.
+        </p>
+    `;
+    for (const [date, cmds] of Object.entries(byDate)) {
+        htmlBody += `
+        <h3 style="color: #004275; margin-top: 24px; margin-bottom: 8px;">
+          📅 ${formatDate(date)} — ${cmds.length} commande(s)
+        </h3>
+      `;
+        for (const cmd of cmds) {
+            const statut = cmd.statut || '?';
+            const couleurStatut = statut === 'Accepté' ? '#2d7a4f' : statut === 'Devis envoyé' ? '#004275' : '#b45309';
+            const produitsList = Array.isArray(cmd.produits) && cmd.produits.length
+                ? cmd.produits.map((p) => `${p.produit}${p.quantite ? ' × ' + p.quantite : ''}${p.unite ? ' ' + p.unite : ''}`).join(', ')
+                : '—';
+            htmlBody += `
+          <div style="background: #f6f3ed; border-left: 4px solid ${couleurStatut}; padding: 12px 16px; margin-bottom: 10px; border-radius: 4px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <strong style="font-size: 15px;">${cmd.prenom || ''} ${cmd.nom || ''}</strong>
+              <span style="background: ${couleurStatut}; color: #fff; padding: 2px 8px; border-radius: 12px; font-size: 12px;">${statut}</span>
+            </div>
+            <div style="font-size: 13px; color: #5a5a55; margin-bottom: 4px;">
+              🕐 ${cmd.heureLivraison || '?'} — ${cmd.mode || 'Livraison'}
+              ${cmd.creneauHoraire ? ` — ${cmd.creneauHoraire}` : ''}
+            </div>
+            ${cmd.telephone ? `<div style="font-size: 13px; color: #5a5a55;">📞 ${cmd.telephone}</div>` : ''}
+            ${cmd.adresseLivraison ? `<div style="font-size: 13px; color: #5a5a55;">📍 ${cmd.adresseLivraison}</div>` : ''}
+            <div style="font-size: 13px; color: #1c1c18; margin-top: 6px;">🛒 ${produitsList}</div>
+            ${cmd.prixEstime ? `<div style="font-size: 13px; color: #004275; margin-top: 4px; font-weight: 600;">💶 ${cmd.prixEstime} €</div>` : ''}
+            ${cmd.instructionsSpeciales ? `<div style="font-size: 12px; color: #b45309; margin-top: 4px; font-style: italic;">⚠️ ${cmd.instructionsSpeciales}</div>` : ''}
+          </div>
+        `;
+        }
+    }
+    htmlBody += `
+        <p style="font-size: 12px; color: #9a9a94; margin-top: 32px; border-top: 1px solid #ede9e1; padding-top: 12px;">
+          Matias — récap automatique envoyé chaque matin à 8h.<br>
+          Consulter toutes les commandes : <a href="https://cuisine-yorgios.web.app/corner/commandes" style="color: #004275;">App Matias</a>
+        </p>
+      </div>
+    `;
+    const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: { user: gmailUser, pass: gmailPass },
+    });
+    await transporter.sendMail({
+        from: `"Matias" <${gmailUser}>`,
+        to: 'a.cozzika@gmail.com',
+        subject: `📋 Commandes J+7 — ${snap.size} commande(s) à venir`,
+        html: htmlBody,
+    });
+    console.log(`[J7] Email envoyé — ${snap.size} commande(s) du ${dateFrom} au ${dateTo}`);
 });
 // ─────────────────────────────────────────────────────────────────
 // COMMANDES — Commande prête → notif FCM + message messagerie
@@ -402,6 +581,146 @@ exports.onCommandePrete = (0, https_1.onCall)({ region: 'europe-west1' }, async 
         expiresAt,
     });
     return { ok: true };
+});
+// ─────────────────────────────────────────────────────────────────
+// COMMANDES — Action email : met à jour le statut via lien cliquable
+// ─────────────────────────────────────────────────────────────────
+exports.updateCommandeStatus = (0, https_1.onRequest)({ region: 'europe-west1' }, async (req, res) => {
+    const { cmdId, statut, token } = req.query;
+    function htmlPage(title, body, color = '#004275') {
+        return `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title}</title>
+<style>body{font-family:sans-serif;background:#fcf9f3;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+.card{background:#fff;border-radius:16px;padding:32px 28px;max-width:400px;width:100%;text-align:center;box-shadow:0 4px 24px rgba(28,28,24,0.10)}
+h1{color:${color};font-size:22px;margin:0 0 12px}p{color:#5a5a55;font-size:15px;line-height:1.6;margin:0 0 20px}
+a{display:inline-block;background:${color};color:#fff;padding:12px 24px;border-radius:10px;text-decoration:none;font-weight:600;font-size:14px}</style>
+</head><body><div class="card">${body}</div></body></html>`;
+    }
+    const STATUTS_VALIDES = ['Devis envoyé', 'Accepté', 'Refusé', 'Annulé'];
+    if (!cmdId || !statut || !token) {
+        res.status(400).send(htmlPage('Erreur', '<h1>⚠️ Paramètres manquants</h1><p>Le lien est incomplet.</p>', '#c0392b'));
+        return;
+    }
+    if (!STATUTS_VALIDES.includes(statut)) {
+        res.status(400).send(htmlPage('Erreur', '<h1>⚠️ Statut invalide</h1>', '#c0392b'));
+        return;
+    }
+    if (!verifyActionToken(cmdId, statut, token)) {
+        res.status(403).send(htmlPage('Accès refusé', '<h1>🔒 Token invalide</h1><p>Ce lien n\'est pas valide ou a expiré.</p>', '#c0392b'));
+        return;
+    }
+    // Trouver la commande par son champ `id`
+    const snap = await db.collection('commandes_externes').where('id', '==', cmdId).limit(1).get();
+    if (snap.empty) {
+        res.status(404).send(htmlPage('Introuvable', `<h1>🔍 Commande introuvable</h1><p>La commande <strong>${cmdId}</strong> n'existe pas.</p>`, '#b45309'));
+        return;
+    }
+    const docRef = snap.docs[0].ref;
+    const current = snap.docs[0].data();
+    if (current.statut === statut) {
+        res.send(htmlPage('Déjà à jour', `<h1>✅ Déjà mis à jour</h1><p>La commande <strong>${cmdId}</strong> est déjà au statut <strong>${statut}</strong>.</p><a href="https://cuisine-yorgios.web.app/corner/commandes">Voir dans l'app</a>`));
+        return;
+    }
+    await docRef.update({ statut, updatedAt: firestore_1.Timestamp.now(), updatedViaEmail: true });
+    const colors = {
+        'Accepté': '#2d7a4f',
+        'Devis envoyé': '#004275',
+        'Refusé': '#c0392b',
+        'Annulé': '#9a9a94',
+    };
+    const c = colors[statut] || '#004275';
+    res.send(htmlPage('Statut mis à jour', `<h1 style="color:${c}">✅ Statut mis à jour</h1><p>La commande <strong>${cmdId}</strong> — ${current.prenom || ''} ${current.nom || ''}<br>est maintenant : <strong style="color:${c}">${statut}</strong></p><a href="https://cuisine-yorgios.web.app/corner/commandes">Voir toutes les commandes</a>`));
+});
+// ─────────────────────────────────────────────────────────────────
+// COMMANDES — Relance email toutes les 6h pour commandes "En cours"
+//   Horaires : 6h, 12h, 18h (Europe/Paris) — pas d'envoi entre 20h et 6h
+// ─────────────────────────────────────────────────────────────────
+exports.relanceCommandes = (0, scheduler_1.onSchedule)({ schedule: '0 6,12,18 * * *', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
+    const gmailUser = process.env.GMAIL_USER;
+    const gmailPass = process.env.GMAIL_APP_PASSWORD;
+    if (!gmailUser || !gmailPass) {
+        console.error('[relance] GMAIL_USER / GMAIL_APP_PASSWORD manquants');
+        return;
+    }
+    const snap = await db.collection('commandes_externes')
+        .where('statut', '==', 'En cours')
+        .orderBy('dateSaisie', 'asc')
+        .get();
+    if (snap.empty) {
+        console.log('[relance] Aucune commande En cours — email non envoyé');
+        return;
+    }
+    const formatDate = (iso) => {
+        if (!iso)
+            return '?';
+        const [y, m, d] = iso.split('-');
+        const days = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'];
+        const months = ['jan', 'fév', 'mar', 'avr', 'mai', 'juin', 'juil', 'aoû', 'sep', 'oct', 'nov', 'déc'];
+        const dt = new Date(iso);
+        return `${days[dt.getDay()]} ${parseInt(d)} ${months[parseInt(m) - 1]} ${y}`;
+    };
+    const heureActuelle = new Date().toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit' });
+    let htmlBody = `
+      <div style="font-family:sans-serif;max-width:660px;margin:0 auto;color:#1c1c18;">
+        <h2 style="color:#b45309;border-bottom:2px solid #b45309;padding-bottom:8px;">
+          ⚠️ ${snap.size} commande(s) en attente de traitement
+        </h2>
+        <p style="color:#5a5a55;font-size:14px;">
+          Relance automatique — ${heureActuelle} (Europe/Paris).<br>
+          Ces commandes sont au statut <strong>En cours</strong> et nécessitent votre attention.
+        </p>
+    `;
+    for (const d of snap.docs) {
+        const cmd = d.data();
+        const produitsList = Array.isArray(cmd.produits) && cmd.produits.length
+            ? cmd.produits.map((p) => `${p.produit}${p.quantite ? ' × ' + p.quantite : ''}${p.unite ? ' ' + p.unite : ''}`).join(', ')
+            : '—';
+        const linkDevis = actionLink(cmd.id, 'Devis envoyé');
+        const linkAccept = actionLink(cmd.id, 'Accepté');
+        htmlBody += `
+        <div style="background:#f6f3ed;border-left:4px solid #b45309;padding:14px 16px;margin-bottom:14px;border-radius:6px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px;">
+            <strong style="font-size:15px;">${cmd.prenom || ''} ${cmd.nom || ''}</strong>
+            <span style="font-size:11px;font-weight:700;color:#5a5a55;">${cmd.id}</span>
+          </div>
+          <div style="font-size:13px;color:#5a5a55;margin-bottom:4px;">
+            📅 Livraison : <strong>${formatDate(cmd.dateLivraison)}</strong> à ${cmd.heureLivraison || '?'}
+          </div>
+          ${cmd.telephone ? `<div style="font-size:13px;color:#5a5a55;">📞 ${cmd.telephone}</div>` : ''}
+          ${cmd.email ? `<div style="font-size:13px;color:#5a5a55;">✉️ ${cmd.email}</div>` : ''}
+          <div style="font-size:13px;color:#1c1c18;margin-top:6px;">🛒 ${produitsList}</div>
+          ${cmd.prixEstime ? `<div style="font-size:13px;color:#004275;margin-top:4px;font-weight:600;">💶 ${parseFloat(cmd.prixEstime).toFixed(2)} €</div>` : ''}
+          ${cmd.instructionsSpeciales ? `<div style="font-size:12px;color:#b45309;margin-top:4px;font-style:italic;">⚠️ ${cmd.instructionsSpeciales}</div>` : ''}
+          <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;">
+            <a href="${linkDevis}" style="background:#004275;color:#fff;padding:9px 16px;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600;">
+              📄 Devis envoyé
+            </a>
+            <a href="${linkAccept}" style="background:#2d7a4f;color:#fff;padding:9px 16px;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600;">
+              ✅ Commande acceptée
+            </a>
+          </div>
+        </div>
+      `;
+    }
+    htmlBody += `
+        <p style="font-size:12px;color:#9a9a94;margin-top:32px;border-top:1px solid #ede9e1;padding-top:12px;">
+          Matias — relance automatique toutes les 6h (06h·12h·18h).<br>
+          Pas d'envoi entre 20h et 6h.<br>
+          <a href="https://cuisine-yorgios.web.app/corner/commandes" style="color:#004275;">Gérer toutes les commandes dans l'app</a>
+        </p>
+      </div>
+    `;
+    const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: { user: gmailUser, pass: gmailPass },
+    });
+    await transporter.sendMail({
+        from: `"Matias" <${gmailUser}>`,
+        to: 'a.cozzika@gmail.com',
+        subject: `⚠️ ${snap.size} commande(s) En cours — action requise`,
+        html: htmlBody,
+    });
+    console.log(`[relance] Email envoyé — ${snap.size} commande(s) En cours`);
 });
 // ─────────────────────────────────────────────────────────────────
 // MESSAGERIE — Purge quotidienne des messages expirés
@@ -582,12 +901,12 @@ exports.notifTooGoodToGo = (0, scheduler_1.onSchedule)({ schedule: '0 9 * * *', 
 });
 /** 9h30 — Cartons chambre froide — corner + cuisine */
 exports.notifCartonsChambrefroide = (0, scheduler_1.onSchedule)({ schedule: '30 9 * * *', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
-    await notifyRoles('📦 Chambre froide', 'A-t-on besoin de vider les cartons en chambre froide ?', '/corner', ['corner', 'cuisine', 'patron', 'administrateur', 'manager']);
+    await notifyRoles('📦 Chambre froide', 'A-t-on besoin de vider les cartons en chambre froide ?', '/corner', ['corner', 'patron', 'administrateur', 'manager']);
     console.log('[9h30] Notif cartons chambre froide envoyée.');
 });
 /** 11h00 — Plats du jour — tous les employés cuisine et corner */
 exports.notifPlatsJour = (0, scheduler_1.onSchedule)({ schedule: '0 11 * * *', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
-    await notifyRoles('🍽️ Plats du jour', 'Faire les plats du jour.', '/cuisine', ['cuisine', 'corner', 'patron', 'administrateur', 'manager']);
+    await notifyRoles('🍽️ Plats du jour', 'Faire les plats du jour.', '/cuisine', ['corner', 'patron', 'administrateur', 'manager']);
     console.log('[11h] Notif plats du jour envoyée.');
 });
 // ─────────────────────────────────────────────────────────────────
@@ -903,6 +1222,75 @@ exports.weeklyHygieneRecap = (0, scheduler_1.onSchedule)({ schedule: '0 8 * * 1'
         text: lines.join('\n'),
     });
     console.log(`[weeklyRecap] Email envoyé à ${emails.join(', ')} — ${missingTemps.length} temp, ${missingHygiene.length} hygiene manquants.`);
+});
+// ─────────────────────────────────────────────────────────────────
+// GMAO — Email à Christelle (callable) + rappel hebdo lundi 9h
+// ─────────────────────────────────────────────────────────────────
+exports.sendGmaoEmail = (0, https_1.onCall)({ region: 'europe-west1' }, async (request) => {
+    var _a;
+    if (!request.auth)
+        throw new https_1.HttpsError('unauthenticated', 'Auth required');
+    const { demandeId, to } = request.data;
+    const demandeSnap = await db.collection('gmao_demandes').doc(demandeId).get();
+    if (!demandeSnap.exists)
+        throw new https_1.HttpsError('not-found', 'Demande introuvable');
+    const d = demandeSnap.data();
+    const gmailUser = process.env.GMAIL_USER;
+    const gmailPass = process.env.GMAIL_APP_PASSWORD;
+    const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: { user: gmailUser, pass: gmailPass },
+    });
+    await transporter.sendMail({
+        from: `"Matias App" <${gmailUser}>`,
+        to,
+        subject: `[GMAO] ${d.departement} — ${String((_a = d.motif) !== null && _a !== void 0 ? _a : '').substring(0, 60)}`,
+        html: `
+      <h2>Demande GMAO</h2>
+      <table style="border-collapse:collapse;width:100%">
+        <tr><td style="padding:8px;font-weight:bold;background:#f5f5f5">Département</td><td style="padding:8px">${d.departement}</td></tr>
+        <tr><td style="padding:8px;font-weight:bold;background:#f5f5f5">Motif</td><td style="padding:8px">${d.motif}</td></tr>
+        <tr><td style="padding:8px;font-weight:bold;background:#f5f5f5">Date</td><td style="padding:8px">${d.date}</td></tr>
+        <tr><td style="padding:8px;font-weight:bold;background:#f5f5f5">N° intervention</td><td style="padding:8px">${d.numeroIntervention || '—'}</td></tr>
+        <tr><td style="padding:8px;font-weight:bold;background:#f5f5f5">Statut</td><td style="padding:8px">${d.statut}</td></tr>
+      </table>
+      ${d.photoUrl ? `<br><a href="${d.photoUrl}">📎 Voir le document joint</a>` : ''}
+    `,
+    });
+    return { success: true };
+});
+exports.gmaoWeeklyReminder = (0, scheduler_1.onSchedule)({
+    schedule: 'every monday 09:00',
+    timeZone: 'Europe/Paris',
+    region: 'europe-west1',
+}, async () => {
+    const snap = await db.collection('gmao_demandes').where('statut', '==', 'en cours').get();
+    if (snap.empty)
+        return;
+    const demandes = snap.docs.map(d => d.data());
+    const html = `
+    <h2>⚠️ Rappel hebdomadaire GMAO — ${demandes.length} demande(s) en cours</h2>
+    ${demandes.map((d) => `
+      <div style="border:1px solid #ddd;border-radius:8px;padding:12px;margin-bottom:12px">
+        <strong>${d.departement}</strong>${d.numeroIntervention ? ` — #${d.numeroIntervention}` : ''}<br>
+        ${d.motif}<br>
+        <small style="color:#666">Depuis le ${d.date}</small>
+        ${d.photoUrl ? `<br><a href="${d.photoUrl}">📎 Document</a>` : ''}
+      </div>
+    `).join('')}
+  `;
+    const gmailUser = process.env.GMAIL_USER;
+    const gmailPass = process.env.GMAIL_APP_PASSWORD;
+    const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: { user: gmailUser, pass: gmailPass },
+    });
+    await transporter.sendMail({
+        from: `"Matias App" <${gmailUser}>`,
+        to: ['a.cozzika@gmail.com', 'sebastien.coenca@gmail.com'],
+        subject: `[GMAO] ${demandes.length} demande(s) en cours`,
+        html,
+    });
 });
 // ─────────────────────────────────────────────────────────────────
 // CONFIGURATION POST-DÉPLOIEMENT

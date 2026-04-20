@@ -1064,7 +1064,7 @@ export const notifCartonsChambrefroide = onSchedule(
       '📦 Chambre froide',
       'A-t-on besoin de vider les cartons en chambre froide ?',
       '/corner',
-      ['corner', 'cuisine', 'patron', 'administrateur', 'manager'],
+      ['corner', 'patron', 'administrateur', 'manager'],
     )
     console.log('[9h30] Notif cartons chambre froide envoyée.')
   }
@@ -1078,7 +1078,7 @@ export const notifPlatsJour = onSchedule(
       '🍽️ Plats du jour',
       'Faire les plats du jour.',
       '/cuisine',
-      ['cuisine', 'corner', 'patron', 'administrateur', 'manager'],
+      ['corner', 'patron', 'administrateur', 'manager'],
     )
     console.log('[11h] Notif plats du jour envoyée.')
   }
@@ -1463,6 +1463,80 @@ export const weeklyHygieneRecap = onSchedule(
     console.log(`[weeklyRecap] Email envoyé à ${emails.join(', ')} — ${missingTemps.length} temp, ${missingHygiene.length} hygiene manquants.`)
   }
 )
+
+// ─────────────────────────────────────────────────────────────────
+// GMAO — Email à Christelle (callable) + rappel hebdo lundi 9h
+// ─────────────────────────────────────────────────────────────────
+
+export const sendGmaoEmail = onCall({ region: 'europe-west1' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Auth required')
+  const { demandeId, to } = request.data as { demandeId: string; to: string }
+
+  const demandeSnap = await db.collection('gmao_demandes').doc(demandeId).get()
+  if (!demandeSnap.exists) throw new HttpsError('not-found', 'Demande introuvable')
+  const d = demandeSnap.data() as any
+
+  const gmailUser = process.env.GMAIL_USER
+  const gmailPass = process.env.GMAIL_APP_PASSWORD
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user: gmailUser, pass: gmailPass },
+  })
+
+  await transporter.sendMail({
+    from: `"Matias App" <${gmailUser}>`,
+    to,
+    subject: `[GMAO] ${d.departement} — ${String(d.motif ?? '').substring(0, 60)}`,
+    html: `
+      <h2>Demande GMAO</h2>
+      <table style="border-collapse:collapse;width:100%">
+        <tr><td style="padding:8px;font-weight:bold;background:#f5f5f5">Département</td><td style="padding:8px">${d.departement}</td></tr>
+        <tr><td style="padding:8px;font-weight:bold;background:#f5f5f5">Motif</td><td style="padding:8px">${d.motif}</td></tr>
+        <tr><td style="padding:8px;font-weight:bold;background:#f5f5f5">Date</td><td style="padding:8px">${d.date}</td></tr>
+        <tr><td style="padding:8px;font-weight:bold;background:#f5f5f5">N° intervention</td><td style="padding:8px">${d.numeroIntervention || '—'}</td></tr>
+        <tr><td style="padding:8px;font-weight:bold;background:#f5f5f5">Statut</td><td style="padding:8px">${d.statut}</td></tr>
+      </table>
+      ${d.photoUrl ? `<br><a href="${d.photoUrl}">📎 Voir le document joint</a>` : ''}
+    `,
+  })
+  return { success: true }
+})
+
+export const gmaoWeeklyReminder = onSchedule({
+  schedule: 'every monday 09:00',
+  timeZone: 'Europe/Paris',
+  region: 'europe-west1',
+}, async () => {
+  const snap = await db.collection('gmao_demandes').where('statut', '==', 'en cours').get()
+  if (snap.empty) return
+
+  const demandes = snap.docs.map(d => d.data() as any)
+  const html = `
+    <h2>⚠️ Rappel hebdomadaire GMAO — ${demandes.length} demande(s) en cours</h2>
+    ${demandes.map((d: any) => `
+      <div style="border:1px solid #ddd;border-radius:8px;padding:12px;margin-bottom:12px">
+        <strong>${d.departement}</strong>${d.numeroIntervention ? ` — #${d.numeroIntervention}` : ''}<br>
+        ${d.motif}<br>
+        <small style="color:#666">Depuis le ${d.date}</small>
+        ${d.photoUrl ? `<br><a href="${d.photoUrl}">📎 Document</a>` : ''}
+      </div>
+    `).join('')}
+  `
+
+  const gmailUser = process.env.GMAIL_USER
+  const gmailPass = process.env.GMAIL_APP_PASSWORD
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user: gmailUser, pass: gmailPass },
+  })
+
+  await transporter.sendMail({
+    from: `"Matias App" <${gmailUser}>`,
+    to: ['a.cozzika@gmail.com', 'sebastien.coenca@gmail.com'],
+    subject: `[GMAO] ${demandes.length} demande(s) en cours`,
+    html,
+  })
+})
 
 // ─────────────────────────────────────────────────────────────────
 // CONFIGURATION POST-DÉPLOIEMENT
