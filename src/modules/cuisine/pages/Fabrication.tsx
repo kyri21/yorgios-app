@@ -98,6 +98,7 @@ export default function Fabrication() {
   const [receptions, setReceptions] = useState<ReceptionSource[]>([])
   const [receptionsLoaded, setReceptionsLoaded] = useState(false)
   const [selectedReceptionId, setSelectedReceptionId] = useState('')
+  const [showExpiredReceptions, setShowExpiredReceptions] = useState(false)
 
   // Formulaire
   const [producedDate, setProducedDate] = useState(nowLocalDateValue())
@@ -149,11 +150,18 @@ export default function Fabrication() {
     setProduits(list)
   }
 
+  const VIANDE_CATS = ['VIANDE', 'VIANDE_HACHEE']
+
   async function loadReceptions() {
     setReceptionsLoaded(false)
     try {
       const snap = await getDocs(query(collection(db, 'receptions'), orderBy('receivedAt', 'desc'), limit(40)))
-      setReceptions(snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as ReceptionSource[])
+      const allRaw = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as ReceptionSource[]
+      const viande = allRaw.filter(r => {
+        const cat = ((r.category ?? '') as string).toUpperCase().replace(/[\s_-]/g, '')
+        return VIANDE_CATS.some(v => cat.includes(v.replace('_', '')))
+      })
+      setReceptions(viande)
     } catch {
       // silently ignore
     } finally {
@@ -522,34 +530,79 @@ export default function Fabrication() {
               ) : receptions.length === 0 ? (
                 <p style={{ fontSize: 13, color: 'var(--on-surface-3)' }}>Aucune réception enregistrée.</p>
               ) : (
-                <div style={{ maxHeight: 220, overflowY: 'auto', borderRadius: 10, background: 'var(--surface-mid)' }}>
-                  {receptions.map(r => {
-                    const pad2 = (n: number) => String(n).padStart(2, '0')
+                <>
+                  <div style={{ maxHeight: 260, overflowY: 'auto', borderRadius: 10, background: 'var(--surface-mid)' }}>
+                    {(() => {
+                      const fourDaysAgo = new Date()
+                      fourDaysAgo.setDate(fourDaysAgo.getDate() - 4)
+                      const filtered = receptions.filter(r => {
+                        const d = r.receivedAt?.toDate?.() ?? new Date()
+                        const isExpired = d < fourDaysAgo
+                        return showExpiredReceptions || !isExpired
+                      })
+                      if (filtered.length === 0) {
+                        return (
+                          <p style={{ fontSize: 13, color: 'var(--on-surface-3)', padding: '12px 14px', margin: 0 }}>
+                            Aucune réception viande récente.
+                          </p>
+                        )
+                      }
+                      return filtered.map(r => {
+                        const _pad2 = (n: number) => String(n).padStart(2, '0')
+                        const d = r.receivedAt?.toDate?.() ?? new Date()
+                        const dateStr = `${_pad2(d.getDate())}/${_pad2(d.getMonth()+1)} ${_pad2(d.getHours())}:${_pad2(d.getMinutes())}`
+                        const isExpired = d < fourDaysAgo
+                        const active = selectedReceptionId === r.id
+                        return (
+                          <div
+                            key={r.id}
+                            onClick={() => setSelectedReceptionId(active ? '' : r.id)}
+                            style={{
+                              padding: '10px 12px', cursor: 'pointer',
+                              borderLeft: active ? '3px solid var(--primary)' : '3px solid transparent',
+                              background: active ? 'rgba(0,66,117,0.07)' : 'transparent',
+                              transition: 'background 0.12s',
+                              opacity: isExpired ? 0.7 : 1,
+                            }}
+                          >
+                            <div style={{ fontSize: 13, fontWeight: active ? 700 : 500, color: active ? 'var(--primary)' : 'var(--on-surface)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                              {r.productName}
+                              {isExpired && (
+                                <span style={{
+                                  fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 99,
+                                  background: 'rgba(192,57,43,0.12)', color: 'var(--danger)', marginLeft: 6,
+                                  whiteSpace: 'nowrap',
+                                }}>
+                                  ⚠️ +4j
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2 }}>
+                              {r.fournisseur} · {dateStr}
+                              {r.supplierLot ? ` · Lot ${r.supplierLot}` : ''}
+                            </div>
+                          </div>
+                        )
+                      })
+                    })()}
+                  </div>
+                  {receptions.some(r => {
+                    const fourDaysAgo = new Date()
+                    fourDaysAgo.setDate(fourDaysAgo.getDate() - 4)
                     const d = r.receivedAt?.toDate?.() ?? new Date()
-                    const dateStr = `${pad2(d.getDate())}/${pad2(d.getMonth()+1)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
-                    const active = selectedReceptionId === r.id
-                    return (
-                      <div
-                        key={r.id}
-                        onClick={() => setSelectedReceptionId(active ? '' : r.id)}
-                        style={{
-                          padding: '10px 12px', cursor: 'pointer',
-                          borderLeft: active ? '3px solid var(--primary)' : '3px solid transparent',
-                          background: active ? 'rgba(0,66,117,0.07)' : 'transparent',
-                          transition: 'background 0.12s',
-                        }}
-                      >
-                        <div style={{ fontSize: 13, fontWeight: active ? 700 : 500, color: active ? 'var(--primary)' : 'var(--on-surface)' }}>
-                          {r.productName}
-                        </div>
-                        <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2 }}>
-                          {r.fournisseur} · {dateStr}
-                          {r.supplierLot ? ` · Lot ${r.supplierLot}` : ''}
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
+                    return d < fourDaysAgo
+                  }) && (
+                    <button
+                      onClick={() => setShowExpiredReceptions(v => !v)}
+                      style={{
+                        background: 'none', border: 'none', color: 'var(--on-surface-3)',
+                        fontSize: 12, cursor: 'pointer', padding: '4px 0', fontFamily: 'Manrope, sans-serif',
+                      }}
+                    >
+                      {showExpiredReceptions ? '▲ Masquer périmés' : '▼ Voir réceptions > 4j'}
+                    </button>
+                  )}
+                </>
               )}
               {selectedReceptionId && (() => {
                 const r = receptions.find(r => r.id === selectedReceptionId)
