@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect } from 'react'
-import { doc, getDoc, setDoc } from 'firebase/firestore'
-import { db } from '../firebase/config'
+import { collection, doc, getDoc, getDocs, query, setDoc, where } from 'firebase/firestore'
+import { db, functions } from '../firebase/config'
+import { httpsCallable } from 'firebase/functions'
 import { useNavigate } from 'react-router-dom'
 
 /* ─── Types ─────────────────────────────────────────── */
@@ -37,6 +38,17 @@ interface TemperaturesSettings {
 interface RupturesSettings {
   produits: string[]
 }
+export interface PriorityLevel {
+  level: number
+  name: string
+  color: string
+}
+export const DEFAULT_PRIORITY_LEVELS: PriorityLevel[] = [
+  { level: 1, name: 'Best Seller',      color: '#c0392b' },
+  { level: 2, name: 'Grande priorité',  color: '#e67e22' },
+  { level: 3, name: 'Priorité moyenne', color: '#b45309' },
+  { level: 4, name: 'Faible priorité',  color: '#2d7a4f' },
+]
 
 const DEFAULT_NOTIFS: NotificationsSettings = {
   lateThresholdMinutes: 10,
@@ -64,7 +76,7 @@ const DEFAULT_TEMPERATURES: TemperaturesSettings = {
   alertMinC: -3,
 }
 const DEFAULT_RUPTURES: RupturesSettings = {
-  produits: ['Briam', 'Moussaka', 'Brochette poulet', 'Kefta', 'Riz épinard', 'Orzo nature', 'Tzatziki', 'Houmous', 'Tiropita épinard', 'Tiropita menthe'],
+  produits: ['Briam', 'Moussaka', 'Brochette de Poulet Mariné au Citron', 'Boulette Kefta', 'Riz Épinard', 'Orzo Nature', 'Tzatziki', 'Houmous Classique', 'Tiropita épinards, Olives de Kalamata & Feta', 'Tiropita Menthe, Feta'],
 }
 
 /* ─── Composants UI ─────────────────────────────────── */
@@ -138,6 +150,24 @@ function NavRow({ label, sub, onClick, last }: { label: string; sub: string; onC
 }
 
 /* ─── Page principale ─────────────────────────────────── */
+function TestRupturesButton() {
+  const [status, setStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle')
+  async function send() {
+    setStatus('loading')
+    try {
+      await httpsCallable(functions, 'sendNightlyRupturesNow')({})
+      setStatus('ok')
+      setTimeout(() => setStatus('idle'), 4000)
+    } catch { setStatus('error'); setTimeout(() => setStatus('idle'), 4000) }
+  }
+  return (
+    <button onClick={send} disabled={status === 'loading'} className="btn-secondary"
+      style={{ width: 'auto', padding: '10px 18px', fontSize: 13 }}>
+      {status === 'loading' ? '⏳ Envoi…' : status === 'ok' ? '✓ Email envoyé à Timour' : status === 'error' ? '✗ Erreur' : '📧 Tester l\'envoi maintenant'}
+    </button>
+  )
+}
+
 export default function AdminSettings() {
   const navigate = useNavigate()
   const [notifs, setNotifs] = useState<NotificationsSettings>(DEFAULT_NOTIFS)
@@ -148,8 +178,9 @@ export default function AdminSettings() {
   const fournisseurInputRef = useRef<HTMLInputElement>(null)
   const [temperatures, setTemperatures] = useState<TemperaturesSettings>(DEFAULT_TEMPERATURES)
   const [ruptures, setRuptures] = useState<RupturesSettings>(DEFAULT_RUPTURES)
-  const [newRuptureProduit, setNewRuptureProduit] = useState('')
-  const ruptureProduitInputRef = useRef<HTMLInputElement>(null)
+  const [ruptureCatalogueSearch, setRuptureCatalogueSearch] = useState('')
+  const [catalogueProduits, setCatalogueProduits] = useState<{ id: string; name: string; priority: number | null }[]>([])
+  const [priorityLevels, setPriorityLevels] = useState<PriorityLevel[]>(DEFAULT_PRIORITY_LEVELS)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -157,13 +188,15 @@ export default function AdminSettings() {
   useEffect(() => {
     async function load() {
       try {
-        const [nSnap, eSnap, xSnap, rSnap, tSnap, rupSnap] = await Promise.all([
+        const [nSnap, eSnap, xSnap, rSnap, tSnap, rupSnap, plSnap, catSnap] = await Promise.all([
           getDoc(doc(db, 'settings', 'notifications')),
           getDoc(doc(db, 'settings', 'emails')),
           getDoc(doc(db, 'settings', 'exports')),
           getDoc(doc(db, 'settings', 'reception')),
           getDoc(doc(db, 'settings', 'temperatures')),
           getDoc(doc(db, 'settings', 'ruptures')),
+          getDoc(doc(db, 'settings', 'priority_levels')),
+          getDocs(query(collection(db, 'catalogue'), where('active', '==', true))),
         ])
         if (nSnap.exists()) setNotifs({ ...DEFAULT_NOTIFS, ...nSnap.data() } as NotificationsSettings)
         if (eSnap.exists()) setEmails({ ...DEFAULT_EMAILS, ...eSnap.data() } as EmailsSettings)
@@ -171,6 +204,15 @@ export default function AdminSettings() {
         if (rSnap.exists()) setReception({ ...DEFAULT_RECEPTION, ...rSnap.data() } as ReceptionSettings)
         if (tSnap.exists()) setTemperatures({ ...DEFAULT_TEMPERATURES, ...tSnap.data() } as TemperaturesSettings)
         if (rupSnap.exists()) setRuptures({ ...DEFAULT_RUPTURES, ...rupSnap.data() } as RupturesSettings)
+        if (plSnap.exists()) {
+          const lvls = (plSnap.data() as any).levels
+          if (Array.isArray(lvls) && lvls.length > 0) setPriorityLevels(lvls)
+        }
+        const catItems = catSnap.docs
+          .map(d => ({ id: d.id, name: (d.data() as any).name as string, priority: (d.data() as any).priority ?? null }))
+          .filter(p => p.name)
+          .sort((a, b) => a.name.localeCompare(b.name, 'fr'))
+        setCatalogueProduits(catItems)
       } finally {
         setLoading(false)
       }
@@ -188,6 +230,7 @@ export default function AdminSettings() {
         setDoc(doc(db, 'settings', 'reception'), reception),
         setDoc(doc(db, 'settings', 'temperatures'), temperatures),
         setDoc(doc(db, 'settings', 'ruptures'), ruptures),
+        setDoc(doc(db, 'settings', 'priority_levels'), { levels: priorityLevels }),
       ])
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
@@ -384,56 +427,139 @@ export default function AdminSettings() {
         <p className="section-label" style={{ marginBottom: 8 }}>Plats disponibilité (Ruptures)</p>
         <div className="card">
           <p style={{ fontSize: 12, color: 'var(--on-surface-3)', margin: '0 0 12px' }}>
-            Liste des plats affichés dans la section "Est-ce que j'ai du stock ?" des Ruptures.
+            Produits affichés en priorité dans la section "Disponibilité" des Ruptures. Liés au catalogue — le nom exact est utilisé pour le tri par priorité dans le Dashboard cuisine.
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
             {ruptures.produits.length === 0 && (
-              <p style={{ fontSize: 13, color: 'var(--on-surface-3)', margin: 0 }}>Aucun plat configuré.</p>
+              <p style={{ fontSize: 13, color: 'var(--on-surface-3)', margin: 0 }}>Aucun produit configuré.</p>
             )}
-            {ruptures.produits.map((p, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', background: 'var(--surface-low)', borderRadius: 10 }}>
-                <span style={{ flex: 1, fontSize: 14, color: 'var(--on-surface)', fontWeight: 500 }}>{p}</span>
-                <button
-                  onClick={() => setRuptures(r => ({ ...r, produits: r.produits.filter((_, j) => j !== i) }))}
-                  style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: '0 2px' }}
-                >✕</button>
+            {ruptures.produits.map((p, i) => {
+              const cat = catalogueProduits.find(c => c.name === p)
+              const lvl = cat?.priority != null ? priorityLevels.find(l => l.level === cat.priority) : null
+              return (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', background: 'var(--surface-low)', borderRadius: 10 }}>
+                  {lvl && (
+                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: lvl.color, flexShrink: 0 }} />
+                  )}
+                  {!lvl && cat && (
+                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--on-surface-3)', flexShrink: 0 }} />
+                  )}
+                  {!cat && (
+                    <span style={{ fontSize: 11, color: 'var(--warning)', flexShrink: 0 }}>⚠️</span>
+                  )}
+                  <span style={{ flex: 1, fontSize: 14, color: cat ? 'var(--on-surface)' : 'var(--warning)', fontWeight: 500 }}>{p}</span>
+                  {!cat && (
+                    <span style={{ fontSize: 10, color: 'var(--warning)' }}>hors catalogue</span>
+                  )}
+                  <button
+                    onClick={() => setRuptures(r => ({ ...r, produits: r.produits.filter((_, j) => j !== i) }))}
+                    style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: '0 2px' }}
+                  >✕</button>
+                </div>
+              )
+            })}
+          </div>
+          {/* Picker catalogue */}
+          {(() => {
+            const available = catalogueProduits.filter(c => !ruptures.produits.includes(c.name))
+            const filtered = ruptureCatalogueSearch.trim()
+              ? available.filter(c => c.name.toLowerCase().includes(ruptureCatalogueSearch.toLowerCase()))
+              : available
+            return (
+              <div>
+                <input
+                  className="input-filled"
+                  placeholder="Rechercher un produit du catalogue…"
+                  value={ruptureCatalogueSearch}
+                  onChange={e => setRuptureCatalogueSearch(e.target.value)}
+                  style={{ marginBottom: ruptureCatalogueSearch ? 6 : 0 }}
+                />
+                {ruptureCatalogueSearch.trim() && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 220, overflowY: 'auto' }}>
+                    {filtered.length === 0 && (
+                      <p style={{ fontSize: 12, color: 'var(--on-surface-3)', margin: '4px 0' }}>Aucun résultat.</p>
+                    )}
+                    {filtered.slice(0, 20).map(c => {
+                      const lvl = c.priority != null ? priorityLevels.find(l => l.level === c.priority) : null
+                      return (
+                        <button
+                          key={c.id}
+                          onClick={() => {
+                            setRuptures(r => ({ ...r, produits: [...r.produits, c.name] }))
+                            setRuptureCatalogueSearch('')
+                          }}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 8,
+                            padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border-soft)',
+                            background: 'var(--surface)', cursor: 'pointer', textAlign: 'left',
+                          }}
+                        >
+                          {lvl
+                            ? <div style={{ width: 8, height: 8, borderRadius: '50%', background: lvl.color, flexShrink: 0 }} />
+                            : <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--on-surface-3)', flexShrink: 0 }} />
+                          }
+                          <span style={{ flex: 1, fontSize: 13, color: 'var(--on-surface)' }}>{c.name}</span>
+                          {lvl && <span style={{ fontSize: 11, color: lvl.color, fontWeight: 600 }}>{lvl.name}</span>}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
-            ))}
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input
-              ref={ruptureProduitInputRef}
-              className="input-filled"
-              placeholder="Ajouter un plat…"
-              value={newRuptureProduit}
-              onChange={e => setNewRuptureProduit(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && newRuptureProduit.trim()) {
-                  e.preventDefault()
-                  const val = newRuptureProduit.trim()
-                  if (!ruptures.produits.includes(val))
-                    setRuptures(r => ({ ...r, produits: [...r.produits, val] }))
-                  setNewRuptureProduit('')
-                }
-              }}
-              style={{ flex: 1 }}
-            />
-            <button
-              onClick={() => {
-                const val = newRuptureProduit.trim()
-                if (!val) return
-                if (!ruptures.produits.includes(val))
-                  setRuptures(r => ({ ...r, produits: [...r.produits, val] }))
-                setNewRuptureProduit('')
-                ruptureProduitInputRef.current?.focus()
-              }}
-              className="btn-primary"
-              style={{ padding: '0 16px', fontSize: 20, lineHeight: 1 }}
-            >+</button>
-          </div>
+            )
+          })()}
           <p style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 8, marginBottom: 0 }}>
-            Appuie sur Entrée ou + pour ajouter. N'oublie pas de sauvegarder.
+            Recherche dans le catalogue · N'oublie pas de sauvegarder.
           </p>
+        </div>
+      </div>
+
+      {/* ── Section : Niveaux de priorité catalogue ── */}
+      <div>
+        <p className="section-label" style={{ marginBottom: 4 }}>Niveaux de priorité catalogue</p>
+        <p style={{ fontSize: 12, color: 'var(--on-surface-3)', margin: '0 0 10px' }}>
+          Attribuez une priorité à chaque produit dans le Catalogue. Utilisée pour trier les ruptures dans le Dashboard cuisine.
+        </p>
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {priorityLevels.sort((a, b) => a.level - b.level).map((lvl, i) => (
+            <div key={lvl.level} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{
+                width: 28, height: 28, borderRadius: 8, flexShrink: 0,
+                background: lvl.color, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 11, fontWeight: 800, color: '#fff',
+              }}>{lvl.level}</div>
+              <input
+                className="input-filled"
+                value={lvl.name}
+                onChange={e => setPriorityLevels(prev => prev.map((l, j) => j === i ? { ...l, name: e.target.value } : l))}
+                style={{ flex: 1, fontSize: 13 }}
+              />
+              <input
+                type="color"
+                value={lvl.color}
+                onChange={e => setPriorityLevels(prev => prev.map((l, j) => j === i ? { ...l, color: e.target.value } : l))}
+                style={{ width: 36, height: 36, borderRadius: 8, border: '1px solid var(--border)', cursor: 'pointer', padding: 2, flexShrink: 0 }}
+                title="Changer la couleur"
+              />
+              <button
+                onClick={() => setPriorityLevels(prev => prev.filter((_, j) => j !== i))}
+                style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: 16, padding: '0 2px', flexShrink: 0 }}
+                title="Supprimer ce niveau"
+              >✕</button>
+            </div>
+          ))}
+          <button
+            onClick={() => {
+              const maxLevel = priorityLevels.reduce((m, l) => Math.max(m, l.level), 0)
+              setPriorityLevels(prev => [...prev, { level: maxLevel + 1, name: `Priorité ${maxLevel + 1}`, color: '#9a9a94' }])
+            }}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+              fontSize: 12, fontWeight: 700, color: 'var(--primary)',
+              background: 'rgba(0,66,117,0.06)', border: '1.5px dashed rgba(0,66,117,0.25)',
+              borderRadius: 10, padding: '8px 14px', cursor: 'pointer', marginTop: 2,
+            }}
+          >+ Ajouter un niveau</button>
         </div>
       </div>
 
@@ -458,6 +584,20 @@ export default function AdminSettings() {
             <div style={{ fontSize: 14, color: 'var(--on-surface)', fontWeight: 500, marginBottom: 2 }}>iPad Cuisine</div>
             <div style={{ fontSize: 12, color: 'var(--on-surface-3)' }}>ipad.cuisine@yorgios.fr</div>
           </div>
+        </div>
+      </div>
+
+      {/* ── Email récap ruptures Timour ── */}
+      <div>
+        <p className="section-label" style={{ marginBottom: 8 }}>Email récap nuit — Timour</p>
+        <div className="card" style={{ padding: '14px 16px' }}>
+          <div style={{ fontSize: 14, color: 'var(--on-surface)', fontWeight: 500, marginBottom: 4 }}>
+            Ruptures + Commandes — envoi automatique à 21h30
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginBottom: 14 }}>
+            Destinataire : ytimour86@gmail.com · Trié par priorité catalogue, sans doublons
+          </div>
+          <TestRupturesButton />
         </div>
       </div>
 

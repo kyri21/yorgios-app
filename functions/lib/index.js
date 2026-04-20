@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.clearRupturesAt13h = exports.incomingSms = exports.createPointage = exports.validatePromoCodePublic = exports.validatePromoCode = exports.syncContactToBrevo = exports.gmaoWeeklyReminder = exports.sendGmaoEmail = exports.weeklyHygieneRecap = exports.notifHygieneMensuel = exports.notifHygieneHebdo = exports.notifTemperaturesEvening = exports.notifUrgences = exports.onLivraisonReception = exports.onLivraisonTemperature = exports.onPointageLate = exports.notifPlatsJour = exports.notifCartonsChambrefroide = exports.notifTooGoodToGo = exports.notifTemperatures = exports.updateUserPassword = exports.deleteUser = exports.createUser = exports.sendPasswordReset = exports.purgeOldMessages = exports.relanceCommandes = exports.updateCommandeStatus = exports.onCommandePrete = exports.notifCommandesJ7 = exports.notifCommandesJJ = exports.notifCommandesJ2 = exports.onCommandeUpdated = exports.onNewCommande = exports.onNewMessage = void 0;
+exports.clearRupturesAt13h = exports.incomingSms = exports.createPointage = exports.validatePromoCodePublic = exports.validatePromoCode = exports.syncContactToBrevo = exports.sendNightlyRupturesNow = exports.notifNightlyRuptures = exports.gmaoWeeklyReminder = exports.sendGmaoEmail = exports.weeklyHygieneRecap = exports.notifHygieneMensuel = exports.notifHygieneHebdo = exports.notifTemperaturesEvening = exports.notifUrgences = exports.onLivraisonReception = exports.onLivraisonTemperature = exports.onPointageLate = exports.notifPlatsJour = exports.notifCartonsChambrefroide = exports.notifTooGoodToGo = exports.notifTemperatures = exports.updateUserPassword = exports.deleteUser = exports.createUser = exports.sendPasswordReset = exports.purgeOldMessages = exports.relanceCommandes = exports.updateCommandeStatus = exports.onCommandePrete = exports.notifCommandesJ7 = exports.notifCommandesJJ = exports.notifCommandesJ2 = exports.onCommandeUpdated = exports.onNewCommande = exports.onNewMessage = void 0;
 // Node.js 22
 const app_1 = require("firebase-admin/app");
 const firestore_1 = require("firebase-admin/firestore");
@@ -1294,6 +1294,126 @@ exports.gmaoWeeklyReminder = (0, scheduler_1.onSchedule)({
         subject: `[GMAO] ${demandes.length} demande(s) en cours`,
         html,
     });
+});
+// ─────────────────────────────────────────────────────────────────
+// RUPTURES + COMMANDES — Email Timour 21h30 chaque soir
+// ─────────────────────────────────────────────────────────────────
+async function buildRupturesCommandesEmail() {
+    var _a, _b, _c;
+    const now = new Date();
+    const midnight = new Date(now);
+    midnight.setHours(0, 0, 0, 0);
+    // 1. Ruptures actives depuis minuit
+    const ruptSnap = await db.collection('ruptures_actives')
+        .where('createdAt', '>=', firestore_1.Timestamp.fromDate(midnight))
+        .get();
+    // 2. FlatMap + déduplication case-insensitive
+    const urgentMap = new Map();
+    const moinsMap = new Map();
+    for (const d of ruptSnap.docs) {
+        const data = d.data();
+        for (const name of ((_a = data.ruptures) !== null && _a !== void 0 ? _a : [])) {
+            const k = String(name).toLowerCase().trim();
+            if (!urgentMap.has(k))
+                urgentMap.set(k, name);
+        }
+        for (const name of ((_b = data.presqueRuptures) !== null && _b !== void 0 ? _b : [])) {
+            const k = String(name).toLowerCase().trim();
+            if (!urgentMap.has(k) && !moinsMap.has(k))
+                moinsMap.set(k, name);
+        }
+    }
+    // 3. Priorités depuis catalogue
+    const catSnap = await db.collection('catalogue').get();
+    const prio = new Map();
+    for (const d of catSnap.docs) {
+        const data = d.data();
+        if (data.name)
+            prio.set(String(data.name).toLowerCase().trim(), (_c = data.priority) !== null && _c !== void 0 ? _c : 9999);
+    }
+    const byPrio = (a, b) => { var _a, _b; return ((_a = prio.get(a.toLowerCase().trim())) !== null && _a !== void 0 ? _a : 9999) - ((_b = prio.get(b.toLowerCase().trim())) !== null && _b !== void 0 ? _b : 9999); };
+    const urgentList = [...urgentMap.values()].sort(byPrio);
+    const moinsUrgList = [...moinsMap.values()].sort(byPrio);
+    // 4. Commandes actives
+    const cmdSnap = await db.collection('commandes_externes')
+        .where('statut', 'in', ['en cours', 'devis envoyé', 'accepté'])
+        .get();
+    const commandes = cmdSnap.docs.map(d => d.data());
+    const hasContent = urgentList.length > 0 || moinsUrgList.length > 0 || commandes.length > 0;
+    const dateStr = now.toLocaleDateString('fr-FR', { weekday: 'long', day: '2-digit', month: 'long' });
+    const ruptHtml = (urgentList.length === 0 && moinsUrgList.length === 0)
+        ? '<p style="color:#666">Aucune rupture aujourd\'hui ✓</p>'
+        : `
+      ${urgentList.length > 0 ? `
+        <p style="font-weight:700;color:#c0392b;margin:12px 0 6px">🔴 Urgent</p>
+        <ul style="margin:0;padding-left:20px;color:#c0392b">
+          ${urgentList.map(n => `<li style="margin-bottom:4px;font-weight:600">${n}</li>`).join('')}
+        </ul>` : ''}
+      ${moinsUrgList.length > 0 ? `
+        <p style="font-weight:700;color:#e67500;margin:12px 0 6px">🟠 Moins urgent</p>
+        <ul style="margin:0;padding-left:20px;color:#e67500">
+          ${moinsUrgList.map(n => `<li style="margin-bottom:4px">${n}</li>`).join('')}
+        </ul>` : ''}
+    `;
+    const cmdHtml = commandes.length === 0
+        ? '<p style="color:#666">Aucune commande active</p>'
+        : `<ul style="margin:0;padding-left:20px">
+        ${commandes.map(c => {
+            var _a, _b;
+            return `<li style="margin-bottom:6px">
+          <strong>${(_a = c.prenom) !== null && _a !== void 0 ? _a : ''} ${(_b = c.nom) !== null && _b !== void 0 ? _b : ''}</strong>
+          ${c.dateLivraison ? ` — livraison le <strong>${c.dateLivraison}</strong>` : ''}
+          ${c.statut ? ` — <em>${c.statut}</em>` : ''}
+        </li>`;
+        }).join('')}
+      </ul>`;
+    const html = `
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+      <h2 style="color:#004275;border-bottom:2px solid #004275;padding-bottom:8px">
+        Récap soir — ${dateStr}
+      </h2>
+
+      <h3 style="color:#c0392b;margin-top:24px">Ruptures</h3>
+      ${ruptHtml}
+
+      <h3 style="color:#004275;margin-top:24px">Commandes actives (${commandes.length})</h3>
+      ${cmdHtml}
+
+      <p style="color:#999;font-size:12px;margin-top:32px;border-top:1px solid #eee;padding-top:12px">
+        Envoyé automatiquement par Matias — ${now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+      </p>
+    </div>
+  `;
+    return { subject: `[Yorgios] Récap ruptures + commandes — ${dateStr}`, html, hasContent };
+}
+/** 21h30 — Email récap ruptures + commandes à Timour */
+exports.notifNightlyRuptures = (0, scheduler_1.onSchedule)({
+    schedule: '30 21 * * *',
+    timeZone: 'Europe/Paris',
+    region: 'europe-west1',
+}, async () => {
+    const { subject, html } = await buildRupturesCommandesEmail();
+    const gmailUser = process.env.GMAIL_USER;
+    const gmailPass = process.env.GMAIL_APP_PASSWORD;
+    const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } });
+    await transporter.sendMail({ from: `"Matias" <${gmailUser}>`, to: 'ytimour86@gmail.com', subject, html });
+    console.log('[21h30] Email récap ruptures+commandes envoyé à Timour.');
+});
+/** Callable — test immédiat (patron/admin uniquement) */
+exports.sendNightlyRupturesNow = (0, https_1.onCall)({ region: 'europe-west1' }, async (request) => {
+    var _a;
+    if (!request.auth)
+        throw new https_1.HttpsError('unauthenticated', 'Auth required');
+    const userDoc = await db.collection('users').doc(request.auth.uid).get();
+    const role = (_a = userDoc.data()) === null || _a === void 0 ? void 0 : _a.role;
+    if (!['patron', 'administrateur'].includes(role))
+        throw new https_1.HttpsError('permission-denied', 'Patron/admin uniquement');
+    const { subject, html } = await buildRupturesCommandesEmail();
+    const gmailUser = process.env.GMAIL_USER;
+    const gmailPass = process.env.GMAIL_APP_PASSWORD;
+    const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } });
+    await transporter.sendMail({ from: `"Matias" <${gmailUser}>`, to: 'ytimour86@gmail.com', subject, html });
+    return { success: true };
 });
 // ─────────────────────────────────────────────────────────────────
 // CONFIGURATION POST-DÉPLOIEMENT

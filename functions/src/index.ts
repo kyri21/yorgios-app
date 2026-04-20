@@ -1543,6 +1543,134 @@ export const gmaoWeeklyReminder = onSchedule({
 })
 
 // ─────────────────────────────────────────────────────────────────
+// RUPTURES + COMMANDES — Email Timour 21h30 chaque soir
+// ─────────────────────────────────────────────────────────────────
+
+async function buildRupturesCommandesEmail(): Promise<{ subject: string; html: string; hasContent: boolean }> {
+  const now = new Date()
+  const midnight = new Date(now)
+  midnight.setHours(0, 0, 0, 0)
+
+  // 1. Ruptures actives depuis minuit
+  const ruptSnap = await db.collection('ruptures_actives')
+    .where('createdAt', '>=', Timestamp.fromDate(midnight))
+    .get()
+
+  // 2. FlatMap + déduplication case-insensitive
+  const urgentMap = new Map<string, string>()
+  const moinsMap  = new Map<string, string>()
+  for (const d of ruptSnap.docs) {
+    const data = d.data()
+    for (const name of (data.ruptures ?? [])) {
+      const k = String(name).toLowerCase().trim()
+      if (!urgentMap.has(k)) urgentMap.set(k, name)
+    }
+    for (const name of (data.presqueRuptures ?? [])) {
+      const k = String(name).toLowerCase().trim()
+      if (!urgentMap.has(k) && !moinsMap.has(k)) moinsMap.set(k, name)
+    }
+  }
+
+  // 3. Priorités depuis catalogue
+  const catSnap = await db.collection('catalogue').get()
+  const prio = new Map<string, number>()
+  for (const d of catSnap.docs) {
+    const data = d.data()
+    if (data.name) prio.set(String(data.name).toLowerCase().trim(), data.priority ?? 9999)
+  }
+
+  const byPrio = (a: string, b: string) =>
+    (prio.get(a.toLowerCase().trim()) ?? 9999) - (prio.get(b.toLowerCase().trim()) ?? 9999)
+
+  const urgentList   = [...urgentMap.values()].sort(byPrio)
+  const moinsUrgList = [...moinsMap.values()].sort(byPrio)
+
+  // 4. Commandes actives
+  const cmdSnap = await db.collection('commandes_externes')
+    .where('statut', 'in', ['en cours', 'devis envoyé', 'accepté'])
+    .get()
+  const commandes = cmdSnap.docs.map(d => d.data() as any)
+
+  const hasContent = urgentList.length > 0 || moinsUrgList.length > 0 || commandes.length > 0
+
+  const dateStr = now.toLocaleDateString('fr-FR', { weekday: 'long', day: '2-digit', month: 'long' })
+
+  const ruptHtml = (urgentList.length === 0 && moinsUrgList.length === 0)
+    ? '<p style="color:#666">Aucune rupture aujourd\'hui ✓</p>'
+    : `
+      ${urgentList.length > 0 ? `
+        <p style="font-weight:700;color:#c0392b;margin:12px 0 6px">🔴 Urgent</p>
+        <ul style="margin:0;padding-left:20px;color:#c0392b">
+          ${urgentList.map(n => `<li style="margin-bottom:4px;font-weight:600">${n}</li>`).join('')}
+        </ul>` : ''}
+      ${moinsUrgList.length > 0 ? `
+        <p style="font-weight:700;color:#e67500;margin:12px 0 6px">🟠 Moins urgent</p>
+        <ul style="margin:0;padding-left:20px;color:#e67500">
+          ${moinsUrgList.map(n => `<li style="margin-bottom:4px">${n}</li>`).join('')}
+        </ul>` : ''}
+    `
+
+  const cmdHtml = commandes.length === 0
+    ? '<p style="color:#666">Aucune commande active</p>'
+    : `<ul style="margin:0;padding-left:20px">
+        ${commandes.map(c => `<li style="margin-bottom:6px">
+          <strong>${c.prenom ?? ''} ${c.nom ?? ''}</strong>
+          ${c.dateLivraison ? ` — livraison le <strong>${c.dateLivraison}</strong>` : ''}
+          ${c.statut ? ` — <em>${c.statut}</em>` : ''}
+        </li>`).join('')}
+      </ul>`
+
+  const html = `
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+      <h2 style="color:#004275;border-bottom:2px solid #004275;padding-bottom:8px">
+        Récap soir — ${dateStr}
+      </h2>
+
+      <h3 style="color:#c0392b;margin-top:24px">Ruptures</h3>
+      ${ruptHtml}
+
+      <h3 style="color:#004275;margin-top:24px">Commandes actives (${commandes.length})</h3>
+      ${cmdHtml}
+
+      <p style="color:#999;font-size:12px;margin-top:32px;border-top:1px solid #eee;padding-top:12px">
+        Envoyé automatiquement par Matias — ${now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+      </p>
+    </div>
+  `
+
+  return { subject: `[Yorgios] Récap ruptures + commandes — ${dateStr}`, html, hasContent }
+}
+
+/** 21h30 — Email récap ruptures + commandes à Timour */
+export const notifNightlyRuptures = onSchedule({
+  schedule: '30 21 * * *',
+  timeZone: 'Europe/Paris',
+  region: 'europe-west1',
+}, async () => {
+  const { subject, html } = await buildRupturesCommandesEmail()
+  const gmailUser = process.env.GMAIL_USER
+  const gmailPass = process.env.GMAIL_APP_PASSWORD
+  const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } })
+  await transporter.sendMail({ from: `"Matias" <${gmailUser}>`, to: 'ytimour86@gmail.com', subject, html })
+  console.log('[21h30] Email récap ruptures+commandes envoyé à Timour.')
+})
+
+/** Callable — test immédiat (patron/admin uniquement) */
+export const sendNightlyRupturesNow = onCall({ region: 'europe-west1' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Auth required')
+  const userDoc = await db.collection('users').doc(request.auth.uid).get()
+  const role = userDoc.data()?.role
+  if (!['patron', 'administrateur'].includes(role)) throw new HttpsError('permission-denied', 'Patron/admin uniquement')
+
+  const { subject, html } = await buildRupturesCommandesEmail()
+  const gmailUser = process.env.GMAIL_USER
+  const gmailPass = process.env.GMAIL_APP_PASSWORD
+  const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } })
+  await transporter.sendMail({ from: `"Matias" <${gmailUser}>`, to: 'ytimour86@gmail.com', subject, html })
+  return { success: true }
+})
+
+// ─────────────────────────────────────────────────────────────────
 // CONFIGURATION POST-DÉPLOIEMENT
 // ─────────────────────────────────────────────────────────────────
 //
