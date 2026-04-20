@@ -6,7 +6,8 @@ import Livraisons from "./pages/Livraisons";
 import Temperatures from "./pages/Temperatures";
 import Controle from "./pages/Controle";
 import ReceptionHistorique from "./pages/ReceptionHistorique";
-import CaptationPage from "../crm/CaptationPage";
+import CaptationPage from "../crm/CaptationPage"
+import Commandes from "../corner/pages/Commandes";
 
 const NAV = [
   { path: '', label: 'Accueil', end: true },
@@ -16,6 +17,7 @@ const NAV = [
   { path: 'temperatures', label: 'Températures' },
   { path: 'controle', label: 'Contrôle' },
   { path: 'crm', label: 'CRM' },
+  { path: 'commandes', label: 'Commandes clients' },
 ]
 
 export default function CuisineModule() {
@@ -43,6 +45,7 @@ export default function CuisineModule() {
         <Route path="controle" element={<Controle />} />
         <Route path="reception-historique" element={<ReceptionHistorique />} />
         <Route path="crm" element={<CaptationPage />} />
+        <Route path="commandes" element={<Commandes />} />
       </Routes>
     </div>
   );

@@ -60,6 +60,13 @@ function formatDate(iso: string): string {
   return `${d}/${m}/${y}`
 }
 
+function getMonthRange(): { start: string; end: string } {
+  const d = new Date()
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0')
+  const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()
+  return { start: `${y}-${m}-01`, end: `${y}-${m}-${String(lastDay).padStart(2, '0')}` }
+}
+
 function thisWeekRange(): [Date, Date] {
   const now = new Date()
   const mon = new Date(now); mon.setDate(now.getDate() - now.getDay() + 1); mon.setHours(0,0,0,0)
@@ -361,6 +368,7 @@ function GestionCommandes({ user }: { user: any }) {
   const [filtreDateFrom, setFiltreDateFrom] = useState('')
   const [filtreDateTo, setFiltreDateTo]     = useState('')
   const [expanded, setExpanded]   = useState<string | null>(null)
+  const [dateFilter, setDateFilter] = useState<'semaine' | 'mois'>('semaine')
 
   async function load() {
     setLoading(true)
@@ -373,10 +381,19 @@ function GestionCommandes({ user }: { user: any }) {
 
   const [mon, sun] = thisWeekRange()
 
+  // Plage rapide semaine/mois (appliquée uniquement si pas de filtre date manuel)
+  const quickRange = dateFilter === 'semaine'
+    ? { start: mon.toISOString().slice(0, 10), end: sun.toISOString().slice(0, 10) }
+    : getMonthRange()
+
   const filtered = commandes.filter(c => {
     if (filtreStatuts.length && !filtreStatuts.includes(c.statut)) return false
     if (filtreDateFrom && c.dateLivraison < filtreDateFrom) return false
     if (filtreDateTo   && c.dateLivraison > filtreDateTo)   return false
+    // filtre rapide semaine/mois (ignoré si filtre date manuel actif)
+    if (!filtreDateFrom && !filtreDateTo) {
+      if (c.dateLivraison < quickRange.start || c.dateLivraison > quickRange.end) return false
+    }
     return true
   })
 
@@ -404,6 +421,26 @@ function GestionCommandes({ user }: { user: any }) {
             <div style={{ fontSize: 28, fontWeight: 800, color, fontFamily: 'Epilogue, sans-serif', lineHeight: 1 }}>{val}</div>
             <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--on-surface-2)', marginTop: 4, fontFamily: 'Manrope, sans-serif' }}>{label}</div>
           </div>
+        ))}
+      </div>
+
+      {/* Filtre rapide semaine / mois */}
+      <div style={{ display: 'flex', gap: 4, padding: 4, background: 'var(--surface-mid)', borderRadius: 12, marginBottom: 0 }}>
+        {(['semaine', 'mois'] as const).map(f => (
+          <button
+            key={f}
+            onClick={() => setDateFilter(f)}
+            style={{
+              flex: 1, padding: '8px 0', borderRadius: 9, border: 'none', cursor: 'pointer',
+              background: dateFilter === f ? 'var(--surface)' : 'transparent',
+              color: dateFilter === f ? 'var(--primary)' : 'var(--on-surface-3)',
+              fontWeight: 700, fontSize: 13, fontFamily: 'Manrope, sans-serif',
+              boxShadow: dateFilter === f ? '0 1px 6px rgba(28,28,24,0.08)' : 'none',
+              transition: 'all 0.15s',
+            }}
+          >
+            {f === 'semaine' ? 'Cette semaine' : 'Ce mois'}
+          </button>
         ))}
       </div>
 

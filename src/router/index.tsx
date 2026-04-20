@@ -22,7 +22,8 @@ const AdminPointages  = lazy(() => import('../pages/AdminPointages'));
 const AdminProduits   = lazy(() => import('../pages/AdminProduits'));
 const AllergeneMenu   = lazy(() => import('../pages/AllergeneMenu'));
 const CaptationPage   = lazy(() => import('../modules/crm/CaptationPage'));
-const Livraisons      = lazy(() => import('../pages/Livraisons'));
+const Livraisons      = lazy(() => import('../pages/Livraisons'))
+const Commandes       = lazy(() => import('../modules/corner/pages/Commandes'));
 
 function RootRedirect() {
   const { user, loading } = useAuth();
@@ -174,6 +175,16 @@ export default function AppRouter() {
           element={
             <AuthGuard allowedRoles={['patron', 'administrateur', 'manager', 'cuisine', 'corner']}>
               <Layout><Livraisons /></Layout>
+            </AuthGuard>
+          }
+        />
+
+        {/* Commandes clients — tous les rôles */}
+        <Route
+          path="/commandes"
+          element={
+            <AuthGuard allowedRoles={['patron', 'administrateur', 'manager', 'cuisine', 'corner']}>
+              <Layout><Commandes /></Layout>
             </AuthGuard>
           }
         />
