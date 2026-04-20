@@ -24,6 +24,7 @@ const AllergeneMenu   = lazy(() => import('../pages/AllergeneMenu'));
 const CaptationPage   = lazy(() => import('../modules/crm/CaptationPage'));
 const Livraisons      = lazy(() => import('../pages/Livraisons'))
 const Commandes       = lazy(() => import('../modules/corner/pages/Commandes'));
+const AdminDocuments  = lazy(() => import('../pages/AdminDocuments'));
 
 function RootRedirect() {
   const { user, loading } = useAuth();
@@ -145,6 +146,16 @@ export default function AppRouter() {
           element={
             <AuthGuard allowedRoles={['patron', 'administrateur']}>
               <Layout><AdminProduits /></Layout>
+            </AuthGuard>
+          }
+        />
+
+        {/* Documents GMAO + CRETA GEL — patron + administrateur */}
+        <Route
+          path="/admin/documents"
+          element={
+            <AuthGuard allowedRoles={['patron', 'administrateur']}>
+              <Layout><AdminDocuments /></Layout>
             </AuthGuard>
           }
         />

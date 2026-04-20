@@ -192,6 +192,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!user) return
+    if (user.email === 'planning@yorgios.fr') return
     if (shouldShowGate(user.role, user.uid)) setShowGate(true)
   }, [user?.uid, user?.role])
 
@@ -252,7 +253,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     bannerTimer.current = setTimeout(() => setNotifBanner(null), 5000)
   }
 
-  const visibleItems = NAV_ITEMS.filter(item => user && item.roles.includes(user.role))
+  const isPlanningOnly = user?.email === 'planning@yorgios.fr'
+  const visibleItems = isPlanningOnly
+    ? NAV_ITEMS.filter(item => item.path === '/planning')
+    : NAV_ITEMS.filter(item => user && item.roles.includes(user.role))
 
   async function handleLogout() {
     if (user?.uid) dismissGate(user.uid)
@@ -407,6 +411,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               >
                 <span style={{ fontSize: 16, flexShrink: 0 }}>⚠️</span>
                 <span>Allergènes</span>
+              </NavLink>
+            )}
+            {isAdmin && (
+              <NavLink to="/admin/documents"
+                style={({ isActive }) => sidebarItemStyle(isActive)}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--surface-low)'; (e.currentTarget as HTMLElement).style.color = 'var(--on-surface)' }}
+                onMouseLeave={e => { const a = (e.currentTarget as HTMLElement).getAttribute('aria-current') === 'page'; (e.currentTarget as HTMLElement).style.background = a ? 'rgba(0,66,117,0.08)' : 'transparent'; (e.currentTarget as HTMLElement).style.color = a ? '#004275' : '#5a5a55' }}
+              >
+                <span style={{ fontSize: 18, flexShrink: 0 }}>📁</span>
+                <span>Documents</span>
               </NavLink>
             )}
             {isAdmin && (
