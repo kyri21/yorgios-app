@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { collection, getDocs, getDoc, doc, query, where, orderBy, limit, onSnapshot, writeBatch, Timestamp } from 'firebase/firestore'
+import { collection, getDocs, getDocsFromServer, getDoc, doc, query, where, orderBy, limit, onSnapshot, writeBatch, Timestamp } from 'firebase/firestore'
 import { db } from '../../../firebase/config'
 import { SkeletonList } from '../../../components/Skeleton'
 import { EmptyState } from '../../../components/EmptyState'
+import { DEFAULT_PRIORITY_LEVELS, type PriorityLevel } from '../../../pages/AdminSettings'
 
 function endOfWeekISO() {
   const d = new Date()
@@ -113,6 +114,8 @@ export default function CuisineDashboard() {
   const [commandesWeek, setCommandesWeek] = useState<CommandeClient[]>([])
   const [commandesMois, setCommandesMois] = useState<CommandeClient[]>([])
   const [weather, setWeather] = useState<WeatherDay[]>([])
+  const [cataloguePriorityMap, setCataloguePriorityMap] = useState<Record<string, number>>({})
+  const [priorityLevels, setPriorityLevels] = useState<PriorityLevel[]>(DEFAULT_PRIORITY_LEVELS)
 
   useEffect(() => {
     async function load() {
@@ -188,18 +191,53 @@ export default function CuisineDashboard() {
         console.error('[dashboard cuisine] commandes:', e)
       }
 
+      // Catalogue priorities + priority levels — chargés au mount, avant l'arrivée des ruptures
+      try {
+        const [catSnap, plSnap] = await Promise.all([
+          getDocsFromServer(collection(db, 'catalogue')),
+          getDoc(doc(db, 'settings', 'priority_levels')),
+        ])
+        const map: Record<string, number> = {}
+        catSnap.docs.forEach(d => {
+          const data = d.data() as any
+          if (data.name && data.priority != null) {
+            map[(data.name as string).toLowerCase().trim()] = Number(data.priority)
+          }
+        })
+        setCataloguePriorityMap(map)
+        if (plSnap.exists()) {
+          const lvls = (plSnap.data() as any).levels
+          if (Array.isArray(lvls) && lvls.length > 0) setPriorityLevels(lvls)
+        }
+      } catch (e) {
+        console.error('[dashboard] loadPriorities:', e)
+      }
+
       setLoading(false)
     }
     load()
   }, [])
 
   // Ruptures actives corner — temps réel
-  // Fenêtre fixe : depuis hier 13h — les ruptures non-traitées restent visibles
-  // jusqu'à ce que la cuisine clique "✓ On s'en occupe" (viewed=true)
+  // Fenêtre : lundi avant midi → depuis samedi 13h ; avant 10h → hier 13h ; après 10h → minuit aujourd'hui
+  // Les ruptures non-traitées restent visibles jusqu'à ce que la cuisine clique "✓ On s'en occupe" (viewed=true)
   useEffect(() => {
-    const cutoffStart = new Date()
-    cutoffStart.setDate(cutoffStart.getDate() - 1)
-    cutoffStart.setHours(13, 0, 0, 0)
+    const now2 = new Date()
+    const dow = now2.getDay() // 0=dim, 1=lun
+    const hour = now2.getHours()
+    const cutoffStart = new Date(now2)
+    if (dow === 1 && hour < 12) {
+      // Lundi avant midi → depuis samedi 13h
+      cutoffStart.setDate(now2.getDate() - 2)
+      cutoffStart.setHours(13, 0, 0, 0)
+    } else if (hour < 10) {
+      // Avant 10h → depuis hier 13h
+      cutoffStart.setDate(now2.getDate() - 1)
+      cutoffStart.setHours(13, 0, 0, 0)
+    } else {
+      // Après 10h → depuis minuit aujourd'hui
+      cutoffStart.setHours(0, 0, 0, 0)
+    }
     const q = query(
       collection(db, 'ruptures_actives'),
       where('viewed', '==', false),
@@ -301,42 +339,89 @@ export default function CuisineDashboard() {
         </span>
       </div>
 
-      {/* ── Alerte ruptures corner ──────────────────────────────────── */}
+      {/* ── Ruptures à commander (triées par priorité) ────────────── */}
       {rupturesActives.length > 0 && (() => {
-        const allRuptures = [...new Set(rupturesActives.flatMap(r => r.ruptures))]
-        const allPresque  = [...new Set(rupturesActives.flatMap(r => r.presqueRuptures).filter(p => !allRuptures.includes(p)))]
-        const personnes   = [...new Set(rupturesActives.map(r => r.personne))].join(', ')
-        const latestTime  = rupturesActives[0]?.createdAt?.toDate
+        const dedup = (names: string[]) => {
+          const seen = new Map<string, string>()
+          for (const n of names) { const k = n.toLowerCase().trim(); if (!seen.has(k)) seen.set(k, n) }
+          return [...seen.values()]
+        }
+        const allRuptures = dedup(rupturesActives.flatMap(r => r.ruptures ?? []))
+        const allPresque  = dedup(rupturesActives.flatMap(r => r.presqueRuptures ?? []).filter(p => !allRuptures.some(r => r.toLowerCase().trim() === p.toLowerCase().trim())))
+        if (allRuptures.length === 0 && allPresque.length === 0) return null
+        const personnes  = [...new Set(rupturesActives.map(r => r.personne))].join(', ')
+        const latestTime = rupturesActives[0]?.createdAt?.toDate
           ? rupturesActives[0].createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+        type RItem = { name: string; type: 'rupture' | 'presque'; priority: number | null }
+        const items: RItem[] = [
+          ...allRuptures.map(name => ({ name, type: 'rupture' as const, priority: cataloguePriorityMap[name.toLowerCase().trim()] ?? null })),
+          ...allPresque.map(name =>  ({ name, type: 'presque' as const, priority: cataloguePriorityMap[name.toLowerCase().trim()] ?? null })),
+        ]
+        items.sort((a, b) => {
+          if (a.priority === b.priority) return a.name.localeCompare(b.name, 'fr')
+          if (a.priority === null) return 1
+          if (b.priority === null) return -1
+          return a.priority - b.priority
+        })
+        const grouped = new Map<number | null, RItem[]>()
+        for (const item of items) {
+          const key = item.priority
+          if (!grouped.has(key)) grouped.set(key, [])
+          grouped.get(key)!.push(item)
+        }
+        const sortedKeys = [...grouped.keys()].sort((a, b) => {
+          if (a === null) return 1
+          if (b === null) return -1
+          return a - b
+        })
         return (
-          <div style={{ background: 'rgba(192,57,43,0.10)', border: '2px solid rgba(192,57,43,0.35)', borderRadius: 14, padding: '14px 16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <div style={{ background: 'rgba(192,57,43,0.08)', border: '2px solid rgba(192,57,43,0.30)', borderRadius: 14, padding: '14px 16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontSize: 18 }}>🔴</span>
-                <span style={{ fontFamily: 'Epilogue, sans-serif', fontSize: 14, fontWeight: 800, color: 'var(--danger)' }}>
-                  CORNER — {rupturesActives.length > 1 ? `${rupturesActives.length} DEMANDES` : 'RUPTURE SIGNALÉE'}
-                </span>
+                <div>
+                  <p className="section-label" style={{ marginBottom: 1, color: 'var(--danger)' }}>
+                    CORNER — {rupturesActives.length > 1 ? `${rupturesActives.length} DEMANDES` : 'RUPTURE SIGNALÉE'}
+                  </p>
+                  <h2 style={{ fontFamily: 'Epilogue, sans-serif', fontSize: 14, fontWeight: 800, color: 'var(--danger)', margin: 0, letterSpacing: '-0.02em' }}>
+                    À commander — par priorité
+                  </h2>
+                </div>
               </div>
-              <span style={{ fontSize: 11, color: 'var(--on-surface-3)' }}>{personnes}{latestTime ? ` · ${latestTime}` : ''}</span>
+              <span style={{ fontSize: 11, color: 'var(--on-surface-3)', textAlign: 'right' }}>{personnes}{latestTime ? `\n· ${latestTime}` : ''}</span>
             </div>
-            {allRuptures.length > 0 && (
-              <div style={{ marginBottom: 6 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--danger)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Rupture totale</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
-                  {allRuptures.map(p => <span key={p} style={{ background: 'rgba(192,57,43,0.12)', color: 'var(--danger)', borderRadius: 6, padding: '3px 8px', fontSize: 12, fontWeight: 700 }}>{p}</span>)}
-                </div>
-              </div>
-            )}
-            {allPresque.length > 0 && (
-              <div style={{ marginBottom: 10 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--warning)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Presque rupture</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
-                  {allPresque.map(p => <span key={p} style={{ background: 'rgba(180,83,9,0.10)', color: 'var(--warning)', borderRadius: 6, padding: '3px 8px', fontSize: 12, fontWeight: 700 }}>{p}</span>)}
-                </div>
-              </div>
-            )}
-            <button onClick={async () => { const b = writeBatch(db); rupturesActives.forEach(r => b.update(doc(db, 'ruptures_actives', r.id), { viewed: true })); await b.commit() }}
-              style={{ fontSize: 12, fontWeight: 700, color: 'var(--danger)', background: 'rgba(192,57,43,0.10)', border: '1px solid rgba(192,57,43,0.25)', borderRadius: 8, padding: '7px 14px', cursor: 'pointer' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {sortedKeys.map(key => {
+                const lvl = key != null ? priorityLevels.find(l => l.level === key) : null
+                const color = lvl?.color ?? 'var(--on-surface-3)'
+                const levelName = lvl?.name ?? (key != null ? `Priorité ${key}` : 'Sans priorité')
+                return (
+                  <div key={String(key)}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 4 }}>
+                      <div style={{ width: 7, height: 7, borderRadius: '50%', background: color, flexShrink: 0 }} />
+                      <span style={{ fontSize: 10, fontWeight: 800, color, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                        {levelName}
+                      </span>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 3, paddingLeft: 12 }}>
+                      {grouped.get(key)!.map(item => (
+                        <span key={item.name} style={{
+                          fontSize: 11, fontWeight: 600, lineHeight: 1.3,
+                          padding: '3px 7px', borderRadius: 6,
+                          color: item.type === 'rupture' ? 'var(--danger)' : 'var(--warning)',
+                          background: item.type === 'rupture' ? 'rgba(192,57,43,0.10)' : 'rgba(180,83,9,0.10)',
+                          border: `1px solid ${item.type === 'rupture' ? 'rgba(192,57,43,0.20)' : 'rgba(180,83,9,0.20)'}`,
+                          wordBreak: 'break-word',
+                        }}>{item.name}</span>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            <button
+              onClick={async () => { const b = writeBatch(db); rupturesActives.forEach(r => b.update(doc(db, 'ruptures_actives', r.id), { viewed: true })); await b.commit() }}
+              style={{ marginTop: 12, fontSize: 12, fontWeight: 700, color: 'var(--danger)', background: 'rgba(192,57,43,0.10)', border: '1px solid rgba(192,57,43,0.25)', borderRadius: 8, padding: '7px 14px', cursor: 'pointer' }}>
               ✓ On s'en occupe
             </button>
           </div>
@@ -633,6 +718,7 @@ export default function CuisineDashboard() {
           </div>
         )}
       </div>
+
 
     </div>
   )
