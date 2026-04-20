@@ -1651,7 +1651,7 @@ export const notifNightlyRuptures = onSchedule({
   const gmailUser = process.env.GMAIL_USER
   const gmailPass = process.env.GMAIL_APP_PASSWORD
   const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } })
-  await transporter.sendMail({ from: `"Matias" <${gmailUser}>`, to: 'ytimour86@gmail.com', subject, html })
+  await transporter.sendMail({ from: `"Matias" <${gmailUser}>`, to: 'ytimour86@gmail.com', cc: 'yorgios.system@gmail.com', subject, html })
   console.log('[21h30] Email récap ruptures+commandes envoyé à Timour.')
 })
 
@@ -1666,7 +1666,7 @@ export const sendNightlyRupturesNow = onCall({ region: 'europe-west1' }, async (
   const gmailUser = process.env.GMAIL_USER
   const gmailPass = process.env.GMAIL_APP_PASSWORD
   const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } })
-  await transporter.sendMail({ from: `"Matias" <${gmailUser}>`, to: 'ytimour86@gmail.com', subject, html })
+  await transporter.sendMail({ from: `"Matias" <${gmailUser}>`, to: 'ytimour86@gmail.com', cc: 'yorgios.system@gmail.com', subject, html })
   return { success: true }
 })
 
