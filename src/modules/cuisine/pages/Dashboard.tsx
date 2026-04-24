@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { collection, getDocs, getDocsFromServer, getDoc, doc, query, where, orderBy, limit, onSnapshot, writeBatch, Timestamp } from 'firebase/firestore'
+import { collection, getDocs, getDocsFromServer, getDoc, doc, query, where, orderBy, limit, onSnapshot, Timestamp } from 'firebase/firestore'
 import { db } from '../../../firebase/config'
 import { SkeletonList } from '../../../components/Skeleton'
 import { EmptyState } from '../../../components/EmptyState'
@@ -219,28 +219,23 @@ export default function CuisineDashboard() {
   }, [])
 
   // Ruptures actives corner — temps réel
-  // Fenêtre : lundi avant midi → depuis samedi 13h ; avant 10h → hier 13h ; après 10h → minuit aujourd'hui
-  // Les ruptures non-traitées restent visibles jusqu'à ce que la cuisine clique "✓ On s'en occupe" (viewed=true)
+  // Fenêtre : reset à midi chaque jour. Lundi avant midi → depuis samedi 13h (week-end entier cumulé)
   useEffect(() => {
     const now2 = new Date()
-    const dow = now2.getDay() // 0=dim, 1=lun
+    const dow  = now2.getDay() // 0=dim, 1=lun
     const hour = now2.getHours()
     const cutoffStart = new Date(now2)
     if (dow === 1 && hour < 12) {
-      // Lundi avant midi → depuis samedi 13h
+      // Lundi avant midi → depuis samedi 13h (accumule tout le week-end)
       cutoffStart.setDate(now2.getDate() - 2)
       cutoffStart.setHours(13, 0, 0, 0)
-    } else if (hour < 10) {
-      // Avant 10h → depuis hier 13h
-      cutoffStart.setDate(now2.getDate() - 1)
-      cutoffStart.setHours(13, 0, 0, 0)
     } else {
-      // Après 10h → depuis minuit aujourd'hui
-      cutoffStart.setHours(0, 0, 0, 0)
+      // Autres jours : depuis le dernier midi (reset à 12h)
+      cutoffStart.setHours(12, 0, 0, 0)
+      if (now2 < cutoffStart) cutoffStart.setDate(cutoffStart.getDate() - 1)
     }
     const q = query(
       collection(db, 'ruptures_actives'),
-      where('viewed', '==', false),
       where('createdAt', '>=', Timestamp.fromDate(cutoffStart)),
       orderBy('createdAt', 'desc'),
       limit(20)
@@ -408,9 +403,9 @@ export default function CuisineDashboard() {
                         <span key={item.name} style={{
                           fontSize: 11, fontWeight: 600, lineHeight: 1.3,
                           padding: '3px 7px', borderRadius: 6,
-                          color: item.type === 'rupture' ? 'var(--danger)' : 'var(--warning)',
-                          background: item.type === 'rupture' ? 'rgba(192,57,43,0.10)' : 'rgba(180,83,9,0.10)',
-                          border: `1px solid ${item.type === 'rupture' ? 'rgba(192,57,43,0.20)' : 'rgba(180,83,9,0.20)'}`,
+                          color: item.priority === null ? '#ca8a04' : item.type === 'rupture' ? 'var(--danger)' : 'var(--warning)',
+                          background: item.priority === null ? 'rgba(202,138,4,0.10)' : item.type === 'rupture' ? 'rgba(192,57,43,0.10)' : 'rgba(180,83,9,0.10)',
+                          border: `1px solid ${item.priority === null ? 'rgba(202,138,4,0.25)' : item.type === 'rupture' ? 'rgba(192,57,43,0.20)' : 'rgba(180,83,9,0.20)'}`,
                           wordBreak: 'break-word',
                         }}>{item.name}</span>
                       ))}
@@ -419,11 +414,6 @@ export default function CuisineDashboard() {
                 )
               })}
             </div>
-            <button
-              onClick={async () => { const b = writeBatch(db); rupturesActives.forEach(r => b.update(doc(db, 'ruptures_actives', r.id), { viewed: true })); await b.commit() }}
-              style={{ marginTop: 12, fontSize: 12, fontWeight: 700, color: 'var(--danger)', background: 'rgba(192,57,43,0.10)', border: '1px solid rgba(192,57,43,0.25)', borderRadius: 8, padding: '7px 14px', cursor: 'pointer' }}>
-              ✓ On s'en occupe
-            </button>
           </div>
         )
       })()}

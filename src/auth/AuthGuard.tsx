@@ -47,6 +47,10 @@ export default function AuthGuard({ allowedRoles, children }: Props) {
   if (loading) return <LoadingScreen />;
   if (!user)   return <Navigate to="/login" replace />;
 
+  if (user.email === 'planning@yorgios.fr' && !window.location.pathname.startsWith('/planning')) {
+    return <Navigate to="/planning" replace />;
+  }
+
   if (!allowedRoles.includes(user.role)) {
     return <Navigate to={getRoleHome(user.role)} replace />;
   }

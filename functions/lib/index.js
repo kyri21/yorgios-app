@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.clearRupturesAt13h = exports.incomingSms = exports.createPointage = exports.validatePromoCodePublic = exports.validatePromoCode = exports.syncContactToBrevo = exports.sendNightlyRupturesNow = exports.notifNightlyRuptures = exports.gmaoWeeklyReminder = exports.sendGmaoEmail = exports.weeklyHygieneRecap = exports.notifHygieneMensuel = exports.notifHygieneHebdo = exports.notifTemperaturesEvening = exports.notifUrgences = exports.onLivraisonReception = exports.onLivraisonTemperature = exports.onPointageLate = exports.notifPlatsJour = exports.notifCartonsChambrefroide = exports.notifTooGoodToGo = exports.notifTemperatures = exports.updateUserPassword = exports.deleteUser = exports.createUser = exports.sendPasswordReset = exports.purgeOldMessages = exports.relanceCommandes = exports.updateCommandeStatus = exports.onCommandePrete = exports.notifCommandesJ7 = exports.notifCommandesJJ = exports.notifCommandesJ2 = exports.onCommandeUpdated = exports.onNewCommande = exports.onNewMessage = void 0;
+exports.clearRupturesAt13h = exports.incomingSms = exports.createPointage = exports.validatePromoCodePublic = exports.validatePromoCode = exports.syncContactToBrevo = exports.previewNightlyRuptures = exports.sendNightlyRupturesNow = exports.notifNightlyRuptures = exports.gmaoWeeklyReminder = exports.sendGmaoEmail = exports.weeklyHygieneRecap = exports.notifHygieneMensuel = exports.notifHygieneHebdo = exports.notifTemperaturesEvening = exports.notifUrgences = exports.onNonConformiteCreated = exports.onLivraisonReception = exports.onLivraisonTemperature = exports.autoCheckoutSortie = exports.onPointageLate = exports.notifPlatsJour = exports.notifCartonsChambrefroide = exports.notifTooGoodToGo = exports.notifTemperatures = exports.updateUserPassword = exports.deleteUser = exports.createUser = exports.sendPasswordReset = exports.purgeOldMessages = exports.relanceCommandes = exports.updateCommandeStatus = exports.onCommandePrete = exports.notifCommandesJ7 = exports.notifCommandesJJ = exports.notifCommandesJ2 = exports.onCommandeUpdated = exports.onNewCommande = exports.onNewMessage = void 0;
 // Node.js 22
 const app_1 = require("firebase-admin/app");
 const firestore_1 = require("firebase-admin/firestore");
@@ -910,84 +910,184 @@ exports.notifPlatsJour = (0, scheduler_1.onSchedule)({ schedule: '0 11 * * *', t
     console.log('[11h] Notif plats du jour envoyée.');
 });
 // ─────────────────────────────────────────────────────────────────
-// POINTAGE — Email au patron si retard > 10 min (a.cozzika@gmail.com)
-// Prérequis : GMAIL_USER + GMAIL_APP_PASSWORD dans functions/.env
+// UTILITAIRE — Timestamp Paris pour une heure donnée d'un jour donné
+// ─────────────────────────────────────────────────────────────────
+function buildParisTimestamp(dateISO, hour, minute = 0) {
+    // noonUTC sert à détecter l'offset DST Paris (été/hiver) pour ce jour
+    const noonUTC = new Date(`${dateISO}T12:00:00Z`);
+    const parisNoonH = parseInt(noonUTC.toLocaleString('en-US', {
+        timeZone: 'Europe/Paris', hour: 'numeric', hour12: false,
+    }));
+    const offsetH = parisNoonH - 12; // +2 été, +1 hiver
+    const utcHour = hour - offsetH;
+    const d = new Date(`${dateISO}T00:00:00Z`);
+    d.setUTCHours(utcHour, minute, 0, 0);
+    return firestore_1.Timestamp.fromDate(d);
+}
+// ─────────────────────────────────────────────────────────────────
+// UTILITAIRE — Chargement du shift d'un employé depuis le planning
+// ─────────────────────────────────────────────────────────────────
+async function getEmployeeShift(dateISO, employeeId) {
+    var _a;
+    const dateObj = new Date(dateISO + 'T12:00:00Z');
+    const jsDay = dateObj.getUTCDay();
+    const dayIndex = jsDay === 0 ? 6 : jsDay - 1;
+    const monday = new Date(dateObj);
+    monday.setUTCDate(monday.getUTCDate() - dayIndex);
+    const weekId = monday.toISOString().slice(0, 10);
+    const daySnap = await db.doc(`planningWeeks/${weekId}/days/${dayIndex}`).get();
+    if (!daySnap.exists)
+        return null;
+    const hoursMap = (_a = daySnap.data()) === null || _a === void 0 ? void 0 : _a.hours;
+    if (!hoursMap)
+        return null;
+    const workedHours = Object.entries(hoursMap)
+        .filter(([, emps]) => emps.includes(employeeId))
+        .map(([h]) => parseInt(h))
+        .sort((a, b) => a - b);
+    if (!workedHours.length)
+        return null;
+    return { weekId, dayIndex, firstHour: workedHours[0], lastHour: workedHours[workedHours.length - 1] };
+}
+// ─────────────────────────────────────────────────────────────────
+// POINTAGE — Retard → email HTML tous responsables + event planning
 // ─────────────────────────────────────────────────────────────────
 exports.onPointageLate = (0, firestore_2.onDocumentCreated)({ document: 'pointages/{id}', region: 'europe-west1', database: 'test' }, async (event) => {
-    var _a, _b, _c;
+    var _a, _b, _c, _d;
     const data = (_a = event.data) === null || _a === void 0 ? void 0 : _a.data();
     if (!data)
         return;
     if (data.typePointage !== 'arrivée' || data.statut !== 'validé')
         return;
-    // Récupérer l'employeeId lié au compte
     const userSnap = await db.collection('users').doc(data.userId).get();
     const employeeId = (_b = userSnap.data()) === null || _b === void 0 ? void 0 : _b.employeeId;
     if (!employeeId) {
         console.log(`[retard] ${data.userName} sans lien planning — ignoré.`);
         return;
     }
-    // Calculer le weekId et le dayIndex depuis la date du pointage
-    const dateObj = new Date(data.date + 'T12:00:00Z');
-    const jsDay = dateObj.getUTCDay(); // 0=Sun
-    const dayIndex = jsDay === 0 ? 6 : jsDay - 1; // 0=Mon, 6=Sun
-    const monday = new Date(dateObj);
-    monday.setUTCDate(monday.getUTCDate() - dayIndex);
-    const weekId = monday.toISOString().slice(0, 10);
-    // Charger le planning du jour
-    const daySnap = await db.doc(`planningWeeks/${weekId}/days/${dayIndex}`).get();
-    if (!daySnap.exists)
+    const shift = await getEmployeeShift(data.date, employeeId);
+    if (!shift)
         return;
-    const hoursMap = (_c = daySnap.data()) === null || _c === void 0 ? void 0 : _c.hours;
-    if (!hoursMap)
-        return;
-    // Trouver la première heure prévue pour cet employé
-    const workedHours = Object.entries(hoursMap)
-        .filter(([, emps]) => emps.includes(employeeId))
-        .map(([h]) => parseInt(h))
-        .sort((a, b) => a - b);
-    if (workedHours.length === 0)
-        return;
-    const firstHour = workedHours[0];
-    // Comparer l'heure réelle (Paris) à l'heure prévue
     const pointageTime = data.timestamp.toDate();
     const parisLocale = pointageTime.toLocaleString('fr-FR', {
         timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit', hour12: false,
     });
     const [hStr, mStr] = parisLocale.split(':');
     const actualMinutes = parseInt(hStr) * 60 + parseInt(mStr);
-    const lateMinutes = actualMinutes - firstHour * 60;
+    const lateMinutes = actualMinutes - shift.firstHour * 60;
+    // Stocker les minutes de retard sur le doc pointage (no-loop : onDocumentCreated ne refire pas sur update)
+    await event.data.ref.update({
+        lateMinutes: lateMinutes > 0 ? lateMinutes : 0,
+        plannedStartHour: shift.firstHour,
+        plannedEndHour: shift.lastHour + 1,
+    });
     if (lateMinutes <= 10) {
         console.log(`[retard] ${data.userName} à l'heure (${lateMinutes} min).`);
         return;
     }
-    // Envoyer email au patron
+    // Créer / mettre à jour l'event retard dans le planning
+    const eventsRef = db.doc(`planningWeeks/${shift.weekId}/events/${data.date}`);
+    const eventsSnap = await eventsRef.get();
+    const existingEvents = eventsSnap.exists ? ((_d = (_c = eventsSnap.data()) === null || _c === void 0 ? void 0 : _c.events) !== null && _d !== void 0 ? _d : []) : [];
+    const filtered = existingEvents.filter((e) => !(e.empId === employeeId && e.type === 'retard'));
+    filtered.push({ empId: employeeId, type: 'retard', minutes: lateMinutes });
+    await eventsRef.set({ date: data.date, events: filtered, updatedAt: firestore_1.Timestamp.now(), updatedBy: 'system' }, { merge: true });
+    // Push FCM aux responsables
+    await notifyRoles(`⏰ Retard — ${data.userName}`, `Prévu ${shift.firstHour}h00, pointé ${parisLocale} (+${lateMinutes} min)`, '/admin/pointages', ['patron', 'administrateur', 'manager']);
+    // Email HTML à tous les responsables
     const gmailUser = process.env.GMAIL_USER;
     const gmailPass = process.env.GMAIL_APP_PASSWORD;
-    if (!gmailUser || !gmailPass) {
-        console.error('[retard] GMAIL_USER / GMAIL_APP_PASSWORD manquants dans functions/.env');
+    if (!gmailUser || !gmailPass)
         return;
-    }
-    const transporter = nodemailer.createTransport({
-        service: 'gmail',
-        auth: { user: gmailUser, pass: gmailPass },
-    });
+    const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } });
+    const dayLabel = new Date(data.date + 'T12:00:00Z').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
+    const html = `
+      <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto">
+        <div style="background:#b45309;padding:18px 22px;border-radius:10px 10px 0 0">
+          <h2 style="color:#fff;margin:0;font-size:18px">⏰ Retard — ${data.userName}</h2>
+          <p style="color:rgba(255,255,255,0.8);margin:4px 0 0;font-size:13px">Yorgios · ${dayLabel}</p>
+        </div>
+        <div style="background:#fff;border:1px solid #e5e5e5;border-top:none;padding:22px;border-radius:0 0 10px 10px">
+          <table style="width:100%;border-collapse:collapse;margin-bottom:18px">
+            <tr><td style="padding:7px 0;color:#666;font-size:13px;width:140px">Employé</td><td style="font-weight:700;color:#1a1a1a">${data.userName}</td></tr>
+            <tr style="background:#fafafa"><td style="padding:7px 0;color:#666;font-size:13px">Heure prévue</td><td style="font-weight:600;color:#1a1a1a">${shift.firstHour}h00</td></tr>
+            <tr><td style="padding:7px 0;color:#666;font-size:13px">Heure pointée</td><td style="font-weight:700;color:#b45309">${parisLocale}</td></tr>
+            <tr style="background:#fafafa"><td style="padding:7px 0;color:#666;font-size:13px">Retard</td><td style="font-weight:700;color:#c0392b;font-size:16px">+${lateMinutes} minutes</td></tr>
+            <tr><td style="padding:7px 0;color:#666;font-size:13px">Zone</td><td style="color:#1a1a1a">${data.zoneLabel}</td></tr>
+          </table>
+          <p style="margin:0;font-size:12px;color:#999">Ce retard a été automatiquement enregistré dans le récapitulatif mensuel.</p>
+        </div>
+      </div>`;
     await transporter.sendMail({
         from: `"Matias" <${gmailUser}>`,
-        to: 'a.cozzika@gmail.com',
-        subject: `⏰ Retard — ${data.userName} (+${lateMinutes} min)`,
-        text: [
-            `Bonjour Alexandre,`,
-            ``,
-            `${data.userName} était prévu(e) à ${firstHour}h00 mais a pointé à ${parisLocale}.`,
-            `Retard : ${lateMinutes} minutes.`,
-            `Zone : ${data.zoneLabel}`,
-            ``,
-            `Cordialement,`,
-            `Matias`,
-        ].join('\n'),
+        to: RESPONSABLES_EMAILS,
+        subject: `⏰ Retard ${data.userName} — ${lateMinutes} min (${dayLabel})`,
+        html,
+    }).catch((e) => console.error('[retard] Email error:', e));
+    console.log(`[retard] Email + event planning créés pour ${data.userName} (${lateMinutes} min).`);
+});
+// ─────────────────────────────────────────────────────────────────
+// AUTO-CHECKOUT — Toutes les 30 min : crée pointage sortie automatique
+// si l'employé n'a pas pointé sa sortie 1h après la fin de shift prévue
+// ─────────────────────────────────────────────────────────────────
+exports.autoCheckoutSortie = (0, scheduler_1.onSchedule)({ schedule: '*/30 7-23 * * *', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
+    var _a, _b, _c, _d;
+    const today = new Date().toLocaleDateString('fr-CA', { timeZone: 'Europe/Paris' });
+    const parisNow = new Date().toLocaleString('fr-FR', {
+        timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit', hour12: false,
     });
-    console.log(`[retard] Email envoyé pour ${data.userName} (${lateMinutes} min de retard).`);
+    const [nowH, nowM] = parisNow.split(':').map(Number);
+    const nowTotalMin = nowH * 60 + nowM;
+    // Tous les arrivées validées d'aujourd'hui
+    const arrivees = await db.collection('pointages')
+        .where('date', '==', today)
+        .where('typePointage', '==', 'arrivée')
+        .where('statut', '==', 'validé')
+        .get();
+    if (arrivees.empty)
+        return;
+    for (const arriveeDoc of arrivees.docs) {
+        const d = arriveeDoc.data();
+        const userId = d.userId;
+        // Vérifier si un départ existe déjà (validé ou auto)
+        const departSnap = await db.collection('pointages')
+            .where('userId', '==', userId)
+            .where('date', '==', today)
+            .where('typePointage', '==', 'départ')
+            .limit(1)
+            .get();
+        if (!departSnap.empty)
+            continue;
+        // Récupérer le shift depuis le planning
+        const userSnap = await db.collection('users').doc(userId).get();
+        const employeeId = (_a = userSnap.data()) === null || _a === void 0 ? void 0 : _a.employeeId;
+        if (!employeeId)
+            continue;
+        const shift = await getEmployeeShift(today, employeeId);
+        if (!shift)
+            continue;
+        const shiftEndMin = (shift.lastHour + 1) * 60; // ex: lastHour=14 → fin 15h = 900 min
+        if (nowTotalMin < shiftEndMin + 60)
+            continue; // pas encore 1h après la fin
+        // Créer le pointage sortie automatique à l'heure de fin prévue
+        const userName = ((_b = userSnap.data()) === null || _b === void 0 ? void 0 : _b.displayName) || ((_d = (_c = userSnap.data()) === null || _c === void 0 ? void 0 : _c.email) === null || _d === void 0 ? void 0 : _d.split('@')[0]) || 'Inconnu';
+        const plannedEndTimestamp = buildParisTimestamp(today, shift.lastHour + 1);
+        await db.collection('pointages').add({
+            userId,
+            userName,
+            date: today,
+            typePointage: 'départ',
+            zoneId: 'auto',
+            zoneLabel: 'Automatique (fin de shift)',
+            timestamp: plannedEndTimestamp,
+            latitude: 0, longitude: 0, accuracy: 0, distanceToZone: 0,
+            statut: 'validé',
+            autoCheckout: true,
+            plannedEndHour: shift.lastHour + 1,
+            _serverValidated: true,
+        });
+        console.log(`[auto-checkout] Sortie créée pour ${userName} — shift fin ${shift.lastHour + 1}h`);
+    }
 });
 // ─────────────────────────────────────────────────────────────────
 // LIVRAISON — Départ cuisine → notif patron + admin + manager
@@ -1008,10 +1108,11 @@ exports.onLivraisonTemperature = (0, firestore_2.onDocumentCreated)({ document: 
     console.log(`[livraison-depart] Notif envoyée pour lot ${lot} — ${tempStr} ${result}`);
 });
 // ─────────────────────────────────────────────────────────────────
-// LIVRAISON — Réception corner → notif patron + admin + manager
+// LIVRAISON — Réception corner → notif + email patron + admin + manager
 // Se déclenche à la mise à jour d'un doc livraisons/ quand
-// receptionTempC passe de null à une valeur saisie
+// receptionAt passe de null à une valeur saisie
 // ─────────────────────────────────────────────────────────────────
+const RESPONSABLES_EMAILS = ['a.cozzika@gmail.com', 'kyriazis@outlook.fr', 'sebastien.coenca@gmail.com'];
 exports.onLivraisonReception = (0, firestore_2.onDocumentUpdated)({ document: 'livraisons/{livId}', region: 'europe-west1', database: 'test' }, async (event) => {
     var _a, _b, _c, _d;
     const before = (_b = (_a = event.data) === null || _a === void 0 ? void 0 : _a.before) === null || _b === void 0 ? void 0 : _b.data();
@@ -1026,6 +1127,7 @@ exports.onLivraisonReception = (0, firestore_2.onDocumentUpdated)({ document: 'l
     const produit = after.productName || 'produit inconnu';
     const lot = after.lotCode || event.params.livId;
     const tempC = after.receptionTempC;
+    const maxTol = after.ruleMaxTol;
     const result = after.result || 'A_VERIFIER';
     const emoji = result === 'ACCEPTE' ? '✅' : result === 'REFUSE' ? '❌' : '⚠️';
     const tempLabel = tempC != null ? `${tempC}°C` : 'sans temp.';
@@ -1034,22 +1136,101 @@ exports.onLivraisonReception = (0, firestore_2.onDocumentUpdated)({ document: 'l
     if (result === 'REFUSE') {
         const gmailUser = process.env.GMAIL_USER;
         const gmailPass = process.env.GMAIL_APP_PASSWORD;
-        if (gmailUser && gmailPass) {
-            const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } });
-            await transporter.sendMail({
-                from: `"Matias" <${gmailUser}>`,
-                to: 'a.cozzika@gmail.com',
-                subject: `❌ Non-conformité température — ${produit}`,
-                text: [
-                    `Non-conformité détectée au corner Yorgios.`,
-                    `Produit : ${produit}`,
-                    `Lot : ${lot}`,
-                    `Température réception : ${tempC}°C`,
-                    `Résultat : REFUSÉ (hors tolérance GEP)`,
-                ].join('\n'),
-            }).catch((e) => console.error('[livraison-reception] Email error:', e));
-        }
+        if (!gmailUser || !gmailPass)
+            return;
+        const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } });
+        const now = new Date().toLocaleString('fr-FR', { timeZone: 'Europe/Paris' });
+        const html = `
+        <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto">
+          <div style="background:#c0392b;padding:20px 24px;border-radius:10px 10px 0 0">
+            <h2 style="color:#fff;margin:0;font-size:20px">❌ ALERTE — Produit refusé à la réception</h2>
+            <p style="color:rgba(255,255,255,0.85);margin:6px 0 0;font-size:13px">Action immédiate requise — Yorgios Corner</p>
+          </div>
+          <div style="background:#fff;border:1px solid #e5e5e5;border-top:none;padding:24px;border-radius:0 0 10px 10px">
+            <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
+              <tr><td style="padding:8px 0;color:#666;font-size:13px;width:140px">Produit</td><td style="padding:8px 0;font-weight:700;font-size:15px;color:#1a1a1a">${produit}</td></tr>
+              <tr style="background:#fafafa"><td style="padding:8px 0;color:#666;font-size:13px">N° lot</td><td style="padding:8px 0;font-weight:600;color:#1a1a1a">${lot}</td></tr>
+              <tr><td style="padding:8px 0;color:#666;font-size:13px">Température mesurée</td><td style="padding:8px 0;font-weight:700;color:#c0392b;font-size:16px">${tempC != null ? `${tempC}°C` : '—'}</td></tr>
+              <tr style="background:#fafafa"><td style="padding:8px 0;color:#666;font-size:13px">Tolérance max GEP</td><td style="padding:8px 0;font-weight:600;color:#1a1a1a">${maxTol != null ? `${maxTol}°C` : '—'}</td></tr>
+              <tr><td style="padding:8px 0;color:#666;font-size:13px">Date / heure</td><td style="padding:8px 0;color:#1a1a1a">${now}</td></tr>
+              <tr style="background:#fafafa"><td style="padding:8px 0;color:#666;font-size:13px">Statut</td><td style="padding:8px 0;font-weight:700;color:#c0392b">⛔ REFUSÉ — EN ATTENTE D'ACTION</td></tr>
+            </table>
+            <div style="background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:16px;margin-bottom:20px">
+              <p style="margin:0;font-weight:700;color:#856404;font-size:14px">Action requise :</p>
+              <ul style="margin:8px 0 0;padding-left:20px;color:#856404;font-size:13px">
+                <li>Consulter la décision prise par le corner (retour / quarantaine / destruction)</li>
+                <li>Valider ou modifier la décision dans l'application</li>
+                <li>Informer le fournisseur si nécessaire</li>
+                <li>Archiver le bon de non-conformité</li>
+              </ul>
+            </div>
+            <a href="https://cuisine-yorgios.web.app/corner/livraison" style="display:inline-block;background:#004275;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px">Voir dans l'application →</a>
+            <p style="margin:20px 0 0;font-size:11px;color:#999">Un email de confirmation avec la décision du corner sera envoyé dès qu'elle sera enregistrée.</p>
+          </div>
+        </div>`;
+        await transporter.sendMail({
+            from: `"Matias" <${gmailUser}>`,
+            to: RESPONSABLES_EMAILS,
+            subject: `❌ ALERTE réception — ${produit} refusé (${tempC != null ? `${tempC}°C` : '?'})`,
+            html,
+        }).catch((e) => console.error('[livraison-reception] Email error:', e));
+        console.log(`[livraison-reception] Email REFUSE envoyé pour lot ${lot}`);
     }
+});
+// ─────────────────────────────────────────────────────────────────
+// NON-CONFORMITÉ — Email décision corner → patron + admin + manager
+// Se déclenche à la création d'un doc non_conformites/
+// ─────────────────────────────────────────────────────────────────
+exports.onNonConformiteCreated = (0, firestore_2.onDocumentCreated)({ document: 'non_conformites/{ncId}', region: 'europe-west1', database: 'test' }, async (event) => {
+    var _a;
+    const data = (_a = event.data) === null || _a === void 0 ? void 0 : _a.data();
+    if (!data)
+        return;
+    const produit = data.productName || 'produit inconnu';
+    const lot = data.lotCode || event.params.ncId;
+    const tempC = data.tempC;
+    const decision = data.decision || '—';
+    const now = new Date().toLocaleString('fr-FR', { timeZone: 'Europe/Paris' });
+    const gmailUser = process.env.GMAIL_USER;
+    const gmailPass = process.env.GMAIL_APP_PASSWORD;
+    if (!gmailUser || !gmailPass)
+        return;
+    const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } });
+    const decisionColor = decision.toLowerCase().includes('destruct') ? '#c0392b'
+        : decision.toLowerCase().includes('quarant') ? '#e67e22'
+            : '#2980b9';
+    const html = `
+      <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto">
+        <div style="background:#856404;padding:20px 24px;border-radius:10px 10px 0 0">
+          <h2 style="color:#fff;margin:0;font-size:20px">📋 Décision non-conformité enregistrée</h2>
+          <p style="color:rgba(255,255,255,0.85);margin:6px 0 0;font-size:13px">Le corner a enregistré une décision — Yorgios Corner</p>
+        </div>
+        <div style="background:#fff;border:1px solid #e5e5e5;border-top:none;padding:24px;border-radius:0 0 10px 10px">
+          <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
+            <tr><td style="padding:8px 0;color:#666;font-size:13px;width:140px">Produit</td><td style="padding:8px 0;font-weight:700;font-size:15px;color:#1a1a1a">${produit}</td></tr>
+            <tr style="background:#fafafa"><td style="padding:8px 0;color:#666;font-size:13px">N° lot</td><td style="padding:8px 0;font-weight:600;color:#1a1a1a">${lot}</td></tr>
+            <tr><td style="padding:8px 0;color:#666;font-size:13px">Température mesurée</td><td style="padding:8px 0;font-weight:700;color:#c0392b">${tempC != null ? `${tempC}°C` : '—'}</td></tr>
+            <tr style="background:#fafafa"><td style="padding:8px 0;color:#666;font-size:13px">Date / heure</td><td style="padding:8px 0;color:#1a1a1a">${now}</td></tr>
+            <tr><td style="padding:8px 0;color:#666;font-size:13px">Décision corner</td><td style="padding:8px 0;font-weight:700;color:${decisionColor};font-size:15px">${decision}</td></tr>
+          </table>
+          <div style="background:#f8f9fa;border:1px solid #dee2e6;border-radius:8px;padding:16px;margin-bottom:20px">
+            <p style="margin:0;font-weight:700;color:#495057;font-size:14px">À valider de votre côté :</p>
+            <ul style="margin:8px 0 0;padding-left:20px;color:#495057;font-size:13px">
+              <li>Confirmer la décision prise par le corner</li>
+              <li>Remplir le bon de non-conformité papier si nécessaire</li>
+              <li>Notifier le fournisseur / faire un avoir</li>
+            </ul>
+          </div>
+          <a href="https://cuisine-yorgios.web.app/corner/livraison" style="display:inline-block;background:#004275;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px">Voir dans l'application →</a>
+        </div>
+      </div>`;
+    await transporter.sendMail({
+        from: `"Matias" <${gmailUser}>`,
+        to: RESPONSABLES_EMAILS,
+        subject: `📋 NC — ${produit} : ${decision}`,
+        html,
+    }).catch((e) => console.error('[nc-created] Email error:', e));
+    console.log(`[nc-created] Email décision envoyé pour lot ${lot} — ${decision}`);
 });
 /** 15h00 — Urgences corner — aux employés qui ont pointé */
 exports.notifUrgences = (0, scheduler_1.onSchedule)({ schedule: '0 15 * * *', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
@@ -1257,6 +1438,7 @@ exports.sendGmaoEmail = (0, https_1.onCall)({ region: 'europe-west1' }, async (r
     await transporter.sendMail({
         from: `"Matias App" <${gmailUser}>`,
         to,
+        cc: 'jlemperiere@la-grande-epicerie.fr',
         subject: `[GMAO] ${d.departement} — ${String((_a = d.motif) !== null && _a !== void 0 ? _a : '').substring(0, 60)} — YORGIOS`,
         html: bodyHtml,
     });
@@ -1295,19 +1477,17 @@ exports.gmaoWeeklyReminder = (0, scheduler_1.onSchedule)({
         html,
     });
 });
-// ─────────────────────────────────────────────────────────────────
-// RUPTURES + COMMANDES — Email Timour 21h30 chaque soir
-// ─────────────────────────────────────────────────────────────────
-async function buildRupturesCommandesEmail() {
-    var _a, _b, _c;
+async function buildRupturesData() {
+    var _a, _b, _c, _d;
     const now = new Date();
     const midnight = new Date(now);
     midnight.setHours(0, 0, 0, 0);
-    // 1. Ruptures actives depuis minuit
-    const ruptSnap = await db.collection('ruptures_actives')
-        .where('createdAt', '>=', firestore_1.Timestamp.fromDate(midnight))
-        .get();
-    // 2. FlatMap + déduplication case-insensitive
+    const [ruptSnap, catSnap, cmdSnap, plSnap] = await Promise.all([
+        db.collection('ruptures_actives').where('createdAt', '>=', firestore_1.Timestamp.fromDate(midnight)).get(),
+        db.collection('catalogue').get(),
+        db.collection('commandes_externes').where('statut', 'in', ['en cours', 'devis envoyé', 'accepté']).get(),
+        db.doc('settings/priority_levels').get(),
+    ]);
     const urgentMap = new Map();
     const moinsMap = new Map();
     for (const d of ruptSnap.docs) {
@@ -1323,42 +1503,80 @@ async function buildRupturesCommandesEmail() {
                 moinsMap.set(k, name);
         }
     }
-    // 3. Priorités depuis catalogue
-    const catSnap = await db.collection('catalogue').get();
     const prio = new Map();
     for (const d of catSnap.docs) {
         const data = d.data();
         if (data.name)
-            prio.set(String(data.name).toLowerCase().trim(), (_c = data.priority) !== null && _c !== void 0 ? _c : 9999);
+            prio.set(String(data.name).toLowerCase().trim(), (_c = data.priority) !== null && _c !== void 0 ? _c : null);
     }
-    const byPrio = (a, b) => { var _a, _b; return ((_a = prio.get(a.toLowerCase().trim())) !== null && _a !== void 0 ? _a : 9999) - ((_b = prio.get(b.toLowerCase().trim())) !== null && _b !== void 0 ? _b : 9999); };
-    const urgentList = [...urgentMap.values()].sort(byPrio);
-    const moinsUrgList = [...moinsMap.values()].sort(byPrio);
-    // 4. Commandes actives
-    const cmdSnap = await db.collection('commandes_externes')
-        .where('statut', 'in', ['en cours', 'devis envoyé', 'accepté'])
-        .get();
+    const items = [
+        ...[...urgentMap.values()].map(name => { var _a; return ({ name, type: 'urgent', priority: (_a = prio.get(name.toLowerCase().trim())) !== null && _a !== void 0 ? _a : null }); }),
+        ...[...moinsMap.values()].map(name => { var _a; return ({ name, type: 'moins-urgent', priority: (_a = prio.get(name.toLowerCase().trim())) !== null && _a !== void 0 ? _a : null }); }),
+    ];
+    items.sort((a, b) => {
+        if (a.priority === b.priority)
+            return a.name.localeCompare(b.name, 'fr');
+        if (a.priority === null)
+            return 1;
+        if (b.priority === null)
+            return -1;
+        return a.priority - b.priority;
+    });
     const commandes = cmdSnap.docs.map(d => d.data());
-    const hasContent = urgentList.length > 0 || moinsUrgList.length > 0 || commandes.length > 0;
+    const rawLevels = (_d = plSnap.data()) === null || _d === void 0 ? void 0 : _d.levels;
+    const priorityLevels = Array.isArray(rawLevels) ? rawLevels : [
+        { level: 1, name: 'Best Seller', color: '#c0392b' },
+        { level: 2, name: 'Grande priorité', color: '#e67e22' },
+        { level: 3, name: 'Priorité moyenne', color: '#b45309' },
+        { level: 4, name: 'Faible priorité', color: '#2d7a4f' },
+    ];
+    return { items, commandes, priorityLevels, hasContent: items.length > 0 || commandes.length > 0 };
+}
+async function buildRupturesCommandesEmail() {
+    const now = new Date();
+    const { items, commandes, priorityLevels, hasContent } = await buildRupturesData();
     const dateStr = now.toLocaleDateString('fr-FR', { weekday: 'long', day: '2-digit', month: 'long' });
-    const ruptHtml = (urgentList.length === 0 && moinsUrgList.length === 0)
-        ? '<p style="color:#666">Aucune rupture aujourd\'hui ✓</p>'
-        : `
-      ${urgentList.length > 0 ? `
-        <p style="font-weight:700;color:#c0392b;margin:12px 0 6px">🔴 Urgent</p>
-        <ul style="margin:0;padding-left:20px;color:#c0392b">
-          ${urgentList.map(n => `<li style="margin-bottom:4px;font-weight:600">${n}</li>`).join('')}
-        </ul>` : ''}
-      ${moinsUrgList.length > 0 ? `
-        <p style="font-weight:700;color:#e67500;margin:12px 0 6px">🟠 Moins urgent</p>
-        <ul style="margin:0;padding-left:20px;color:#e67500">
-          ${moinsUrgList.map(n => `<li style="margin-bottom:4px">${n}</li>`).join('')}
-        </ul>` : ''}
-    `;
+    // Grouper les items par priorité
+    const grouped = new Map();
+    for (const item of items) {
+        const k = item.priority;
+        if (!grouped.has(k))
+            grouped.set(k, []);
+        grouped.get(k).push(item);
+    }
+    const sortedKeys = [...grouped.keys()].sort((a, b) => {
+        if (a === null)
+            return 1;
+        if (b === null)
+            return -1;
+        return a - b;
+    });
+    const ruptHtml = items.length === 0
+        ? '<p style="color:#666;margin:0">Aucune rupture aujourd\'hui ✓</p>'
+        : sortedKeys.map(key => {
+            var _a, _b;
+            const lvl = key != null ? priorityLevels.find(l => l.level === key) : null;
+            const color = (_a = lvl === null || lvl === void 0 ? void 0 : lvl.color) !== null && _a !== void 0 ? _a : (key != null ? '#b45309' : '#ca8a04');
+            const groupName = (_b = lvl === null || lvl === void 0 ? void 0 : lvl.name) !== null && _b !== void 0 ? _b : (key != null ? `Priorité ${key}` : 'Sans priorité');
+            const groupItems = grouped.get(key);
+            return `
+          <div style="margin-bottom:14px">
+            <p style="margin:0 0 6px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:${color}">${groupName}</p>
+            <div style="display:flex;flex-wrap:wrap;gap:6px">
+              ${groupItems.map(item => {
+                const badgeColor = item.type === 'urgent' ? '#c0392b' : '#e67500';
+                const bgColor = item.type === 'urgent' ? 'rgba(192,57,43,0.10)' : 'rgba(230,117,0,0.10)';
+                const border = item.type === 'urgent' ? 'rgba(192,57,43,0.30)' : 'rgba(230,117,0,0.30)';
+                const emoji = item.type === 'urgent' ? '🔴' : '🟠';
+                return `<span style="display:inline-block;padding:3px 9px;border-radius:6px;font-size:13px;font-weight:600;color:${badgeColor};background:${bgColor};border:1px solid ${border}">${emoji} ${item.name}</span>`;
+            }).join('')}
+            </div>
+          </div>`;
+        }).join('');
     const cmdHtml = commandes.length === 0
-        ? '<p style="color:#666">Aucune commande active</p>'
+        ? '<p style="color:#666;margin:0">Aucune commande active</p>'
         : `<ul style="margin:0;padding-left:20px">
-        ${commandes.map(c => {
+        ${commandes.map((c) => {
             var _a, _b;
             return `<li style="margin-bottom:6px">
           <strong>${(_a = c.prenom) !== null && _a !== void 0 ? _a : ''} ${(_b = c.nom) !== null && _b !== void 0 ? _b : ''}</strong>
@@ -1369,14 +1587,14 @@ async function buildRupturesCommandesEmail() {
       </ul>`;
     const html = `
     <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-      <h2 style="color:#004275;border-bottom:2px solid #004275;padding-bottom:8px">
+      <h2 style="color:#004275;border-bottom:2px solid #004275;padding-bottom:8px;margin-top:0">
         Récap soir — ${dateStr}
       </h2>
 
-      <h3 style="color:#c0392b;margin-top:24px">Ruptures</h3>
+      <h3 style="color:#c0392b;margin-top:24px;margin-bottom:12px">🧾 Ruptures (${items.length})</h3>
       ${ruptHtml}
 
-      <h3 style="color:#004275;margin-top:24px">Commandes actives (${commandes.length})</h3>
+      <h3 style="color:#004275;margin-top:24px;margin-bottom:12px">📦 Commandes actives (${commandes.length})</h3>
       ${cmdHtml}
 
       <p style="color:#999;font-size:12px;margin-top:32px;border-top:1px solid #eee;padding-top:12px">
@@ -1392,6 +1610,21 @@ exports.notifNightlyRuptures = (0, scheduler_1.onSchedule)({
     timeZone: 'Europe/Paris',
     region: 'europe-west1',
 }, async () => {
+    var _a;
+    // Vérification paramètre on/off + vacances
+    const cfgSnap = await db.doc('settings/nightly_ruptures').get();
+    const cfg = (_a = cfgSnap.data()) !== null && _a !== void 0 ? _a : {};
+    if (cfg.enabled === false) {
+        console.log('[21h30] notifNightlyRuptures désactivé dans les paramètres.');
+        return;
+    }
+    if (cfg.pauseFrom && cfg.pauseTo) {
+        const today = new Date().toLocaleDateString('fr-CA'); // YYYY-MM-DD
+        if (today >= cfg.pauseFrom && today <= cfg.pauseTo) {
+            console.log(`[21h30] notifNightlyRuptures en pause vacances (${cfg.pauseFrom} → ${cfg.pauseTo}).`);
+            return;
+        }
+    }
     const { subject, html } = await buildRupturesCommandesEmail();
     const gmailUser = process.env.GMAIL_USER;
     const gmailPass = process.env.GMAIL_APP_PASSWORD;
@@ -1414,6 +1647,19 @@ exports.sendNightlyRupturesNow = (0, https_1.onCall)({ region: 'europe-west1' },
     const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } });
     await transporter.sendMail({ from: `"Matias" <${gmailUser}>`, to: 'ytimour86@gmail.com', cc: 'yorgios.system@gmail.com', subject, html });
     return { success: true };
+});
+/** Callable — aperçu sans envoi (patron/admin uniquement) */
+exports.previewNightlyRuptures = (0, https_1.onCall)({ region: 'europe-west1' }, async (request) => {
+    var _a;
+    if (!request.auth)
+        throw new https_1.HttpsError('unauthenticated', 'Auth required');
+    const userDoc = await db.collection('users').doc(request.auth.uid).get();
+    const role = (_a = userDoc.data()) === null || _a === void 0 ? void 0 : _a.role;
+    if (!['patron', 'administrateur'].includes(role))
+        throw new https_1.HttpsError('permission-denied', 'Patron/admin uniquement');
+    const { items, commandes, hasContent } = await buildRupturesData();
+    const { html } = await buildRupturesCommandesEmail();
+    return { items, commandes, hasContent, emailHtml: html };
 });
 // ─────────────────────────────────────────────────────────────────
 // CONFIGURATION POST-DÉPLOIEMENT
@@ -1486,7 +1732,7 @@ function haversineServer(lat1, lon1, lat2, lon2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 exports.createPointage = (0, https_1.onCall)({ region: 'europe-west1' }, async (req) => {
-    var _a, _b, _c, _d, _e, _f, _g;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
     if (!req.auth)
         throw new https_1.HttpsError('unauthenticated', 'Authentification requise');
     const { latitude, longitude, accuracy, typePointage } = req.data;
@@ -1509,18 +1755,72 @@ exports.createPointage = (0, https_1.onCall)({ region: 'europe-west1' }, async (
     if (accuracy > GPS_ACCURACY_LIMIT_SERVER) {
         throw new https_1.HttpsError('failed-precondition', `Signal GPS trop imprécis (±${Math.round(accuracy)} m)`);
     }
-    // Anti-doublon : pas deux pointages de même type valides le même jour
-    const today = new Date().toISOString().slice(0, 10);
-    const existingSnap = await db.collection('pointages')
-        .where('userId', '==', uid)
-        .where('date', '==', today)
-        .where('typePointage', '==', typePointage)
-        .where('statut', '==', 'validé')
-        .limit(1)
-        .get();
-    if (!existingSnap.empty) {
-        const existing = existingSnap.docs[0].data();
-        throw new https_1.HttpsError('already-exists', `Pointage ${typePointage} déjà enregistré aujourd'hui à ${(_d = (_c = (_b = existing.timestamp) === null || _b === void 0 ? void 0 : _b.toDate) === null || _c === void 0 ? void 0 : _c.call(_b).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })) !== null && _d !== void 0 ? _d : '—'}`);
+    const today = new Date().toLocaleDateString('fr-CA', { timeZone: 'Europe/Paris' });
+    // ── CAS ARRIVÉE ─────────────────────────────────────────────
+    if (typePointage === 'arrivée') {
+        // Vérifier si un pointage arrivée existe déjà
+        const existingArrivee = await db.collection('pointages')
+            .where('userId', '==', uid)
+            .where('date', '==', today)
+            .where('typePointage', '==', 'arrivée')
+            .where('statut', '==', 'validé')
+            .limit(1)
+            .get();
+        if (!existingArrivee.empty) {
+            // Auto-checkout existe ? → mode heures sup : on le supprime et on laisse passer
+            const autoDepart = await db.collection('pointages')
+                .where('userId', '==', uid)
+                .where('date', '==', today)
+                .where('typePointage', '==', 'départ')
+                .where('autoCheckout', '==', true)
+                .limit(1)
+                .get();
+            if (!autoDepart.empty) {
+                await autoDepart.docs[0].ref.delete();
+                console.log(`[createPointage] Auto-checkout supprimé pour ${userName} → mode heures sup`);
+                // Continue : on crée la nouvelle arrivée (overtime)
+            }
+            else {
+                const existing = existingArrivee.docs[0].data();
+                throw new https_1.HttpsError('already-exists', `Pointage arrivée déjà enregistré aujourd'hui à ${(_d = (_c = (_b = existing.timestamp) === null || _b === void 0 ? void 0 : _b.toDate) === null || _c === void 0 ? void 0 : _c.call(_b).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })) !== null && _d !== void 0 ? _d : '—'}`);
+            }
+        }
+    }
+    // ── CAS DÉPART ──────────────────────────────────────────────
+    if (typePointage === 'départ') {
+        // Vérifier doublon départ
+        const existingDepart = await db.collection('pointages')
+            .where('userId', '==', uid)
+            .where('date', '==', today)
+            .where('typePointage', '==', 'départ')
+            .where('statut', '==', 'validé')
+            .limit(1)
+            .get();
+        if (!existingDepart.empty) {
+            const existing = existingDepart.docs[0].data();
+            throw new https_1.HttpsError('already-exists', `Pointage départ déjà enregistré aujourd'hui à ${(_g = (_f = (_e = existing.timestamp) === null || _e === void 0 ? void 0 : _e.toDate) === null || _f === void 0 ? void 0 : _f.call(_e).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })) !== null && _g !== void 0 ? _g : '—'}`);
+        }
+        // Bloquer le départ si arrivée < 1h
+        const arriveeSnap = await db.collection('pointages')
+            .where('userId', '==', uid)
+            .where('date', '==', today)
+            .where('typePointage', '==', 'arrivée')
+            .where('statut', '==', 'validé')
+            .limit(1)
+            .get();
+        if (!arriveeSnap.empty) {
+            const arriveeData = arriveeSnap.docs[0].data();
+            const arriveeMs = arriveeData.timestamp.toMillis();
+            const elapsedMin = (Date.now() - arriveeMs) / 60000;
+            if (elapsedMin < 60) {
+                const remainMin = Math.ceil(60 - elapsedMin);
+                const unlockTime = new Date(arriveeMs + 60 * 60000);
+                const unlockStr = unlockTime.toLocaleTimeString('fr-FR', {
+                    timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit', hour12: false,
+                });
+                throw new https_1.HttpsError('failed-precondition', `BLOCKED_1H:${unlockStr}:Départ bloqué encore ${remainMin} min (disponible à ${unlockStr})`);
+            }
+        }
     }
     // Calcul zone côté serveur
     let detectedZone = null;
@@ -1540,13 +1840,13 @@ exports.createPointage = (0, https_1.onCall)({ region: 'europe-west1' }, async (
         userName,
         date: today,
         typePointage,
-        zoneId: (_e = detectedZone === null || detectedZone === void 0 ? void 0 : detectedZone.id) !== null && _e !== void 0 ? _e : 'hors_zone',
-        zoneLabel: (_f = detectedZone === null || detectedZone === void 0 ? void 0 : detectedZone.label) !== null && _f !== void 0 ? _f : 'Hors zone',
+        zoneId: (_h = detectedZone === null || detectedZone === void 0 ? void 0 : detectedZone.id) !== null && _h !== void 0 ? _h : 'hors_zone',
+        zoneLabel: (_j = detectedZone === null || detectedZone === void 0 ? void 0 : detectedZone.label) !== null && _j !== void 0 ? _j : 'Hors zone',
         timestamp: firestore_1.Timestamp.now(),
         latitude,
         longitude,
         accuracy: Math.round(accuracy),
-        distanceToZone: (_g = detectedZone === null || detectedZone === void 0 ? void 0 : detectedZone.dist) !== null && _g !== void 0 ? _g : minDistance,
+        distanceToZone: (_k = detectedZone === null || detectedZone === void 0 ? void 0 : detectedZone.dist) !== null && _k !== void 0 ? _k : minDistance,
         statut,
         _serverValidated: true,
     });

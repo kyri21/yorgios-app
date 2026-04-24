@@ -1,4 +1,95 @@
-# CLAUDE.md — Matias PWA (v6)
+# CLAUDE.md — Matias PWA
+
+## ✅ SESSION 2026-04-24 — Pointages, GEP, alertes réception
+
+### Déployé
+| Fonctionnalité | Fichier(s) | Notes |
+|----------------|-----------|-------|
+| Login — "Mot de passe oublié" avec `sendPasswordResetEmail` | `src/pages/Login.tsx` | Caché en mode iPad. Email vide → message d'erreur. |
+| `onLivraisonReception` — email REFUSE à tous responsables (HTML) | `functions/src/index.ts` | Destinataires : Alexandre + Arthur + Sébastien |
+| `onNonConformiteCreated` — email décision NC à tous responsables | `functions/src/index.ts` | Déclenché à la création d'un doc `non_conformites/` |
+| Règles GEP mises à jour — nomenclature officielle | `src/modules/cuisine/pages/Livraisons.tsx` | Voir tableau ci-dessous |
+| Aliases catégories GEP élargis | `src/modules/cuisine/pages/Livraisons.tsx` | `plat_cuisine_frais`, `patisserie_fraiche`, `poisson_frais`… |
+| Fix Firestore — Feuille de Vigne Farcie (24/04) → ACCEPTE | script node | `managerOverride: true`, validé par manager |
+| `onPointageLate` — email HTML + event planning + FCM | `functions/src/index.ts` | Email tous responsables, event `retard` dans `planningWeeks` |
+| `autoCheckoutSortie` — CF scheduler toutes les 30 min | `functions/src/index.ts` | Auto-checkout 1h après fin shift si pas de départ manuel |
+| `createPointage` — bloc départ < 1h après arrivée | `functions/src/index.ts` | Erreur `BLOCKED_1H:HH:MM:message` |
+| `createPointage` — overtime : re-arrivée après auto-checkout | `functions/src/index.ts` | Supprime auto-checkout, laisse passer nouvelle arrivée |
+| `usePointageSortie` — expose `blockedUntil` | `src/hooks/usePointageSortie.ts` | Date quand sortie devient disponible |
+| Layout modal sortie — double confirmation + message blocage | `src/components/Layout.tsx` | 2 étapes : "Pointer ma sortie" → "Oui, je quitte mon poste" |
+
+### Règles GEP officielles (seuils tolérance max)
+| Clé RULES | max_tol |
+|-----------|---------|
+| `VIANDE_HACHEE` | 3°C |
+| `VIANDE` | 5°C |
+| `POISSON` | 3°C |
+| `LAIT` | 6°C |
+| `PLAT_CUISINE` | 5°C |
+| `PATISSERIE` | 5°C |
+| `LEGUME` | 10°C |
+
+### Règles issues de cette session
+- **`RESPONSABLES_EMAILS`** → constante globale dans `functions/src/index.ts` : `['a.cozzika@gmail.com', 'kyriazis@outlook.fr', 'sebastien.coenca@gmail.com']`. Utiliser partout pour les emails d'alerte.
+- **Email REFUSE livraison** → 2 emails : (1) alerte immédiate à la réception (`onLivraisonReception`), (2) confirmation décision corner (`onNonConformiteCreated`).
+- **`managerOverride: true`** → champ sur doc `livraisons/` pour signaler une validation manuelle hors tolérance GEP.
+- **Retard planning** → `onPointageLate` écrit dans `planningWeeks/{weekId}/events/{dateISO}` : `{ empId, type: 'retard', minutes }`. Visible dans l'onglet "Mois".
+- **Champs ajoutés sur pointage arrivée** → `lateMinutes`, `plannedStartHour`, `plannedEndHour` (écrits par `onPointageLate` via `event.data.ref.update()`).
+- **`autoCheckoutSortie`** → schedule `*/30 7-23 * * *` Paris. Crée un départ `{ autoCheckout: true, plannedEndHour }` si aucun départ manuel 1h après fin shift. Timestamp = heure de fin prévue (pas l'heure courante).
+- **Overtime** → si employé re-pointe arrivée après auto-checkout : `createPointage` supprime l'auto-checkout et crée nouvelle arrivée (pas d'erreur doublon).
+- **Bloc sortie 1h** → `createPointage` (départ) vérifie que l'arrivée a > 60 min. Renvoie `failed-precondition` avec message `BLOCKED_1H:HH:MM:...`.
+- **Double confirmation sortie** → Layout.tsx : 1er clic = "Pointer ma sortie", 2ème clic = "Oui, je quitte mon poste". Le FAB affiche `blockedUntil` si < 1h.
+
+---
+
+## ✅ SESSION 2026-04-21 — Email Timour + Dashboard ruptures
+
+### Déployé
+| Fonctionnalité | Fichier(s) | Notes |
+|----------------|-----------|-------|
+| Email Timour redesigné — groupé par priorité catalogue | `functions/src/index.ts` | badges 🔴/🟠 par groupe de priorité |
+| CF `previewNightlyRuptures` — aperçu sans envoi | `functions/src/index.ts` | callable patron/admin |
+| CF `notifNightlyRuptures` — check enabled + pause vacances | `functions/src/index.ts` | lit `settings/nightly_ruptures` |
+| AdminSettings — toggle on/off + date pickers vacances | `src/pages/AdminSettings.tsx` | sauvegardé dans `settings/nightly_ruptures` |
+| AdminSettings — bouton "👁 Aperçu" + modal HTML | `src/pages/AdminSettings.tsx` | appelle `previewNightlyRuptures` |
+| Dashboard cuisine — pastilles jaunes pour priority=null | `src/modules/cuisine/pages/Dashboard.tsx` | couleur `#ca8a04` |
+
+### Règles issues de cette session
+- **`settings/nightly_ruptures`** → `{ enabled: boolean, pauseFrom: string, pauseTo: string }` (format YYYY-MM-DD). La CF 21h30 vérifie ce doc avant d'envoyer.
+- **Email ruptures** → groupé par niveau de priorité (comme le dashboard), puis trié alpha dans chaque groupe. Items `priority=null` → groupe "Sans priorité" en dernier.
+- **Dashboard cuisine — pastilles** → `priority === null` = jaune `#ca8a04`. Priorité définie = rouge (rupture) ou orange (presque rupture).
+- **`previewNightlyRuptures`** → callable (patron/admin) → retourne `{ items, commandes, hasContent, emailHtml }` sans envoyer.
+
+---
+
+## ✅ SESSION 2026-04-20 — Chantier multi-features (13 tâches toutes terminées)
+
+| # | Tâche | Commit |
+|---|-------|--------|
+| 1 | Vitrine pastilles AUJ.=orange DEMAIN=violet + colonnes header +12px | 44e010f |
+| 2 | Vitrine bug retour cuisine sans lotCode → `lots_cuisine.sent=false` | 44e010f |
+| 3 | Dashboard cuisine ruptures : Sam+Dim cumulés jusqu'à lundi 12h | 7a9c9a7 |
+| 4 | Fabrication — filtre viande (VIANDE/VIANDE_HACHEE) + badge >4j | b02fd7b |
+| 5 | Fabrication — lots `sent=true` visibles + delete/modify tous rôles | b02fd7b |
+| 6 | Notifications — retirer cuisine de `notifPlatsJour` + `notifCartonsChambrefroide` | f589cc6 |
+| 7 | WhatsApp wa.me lien vers Timour (+33781468107) après envoi ruptures | 1010fe4 |
+| 8 | Commandes clients — route `/commandes` tous rôles + filtre semaine/mois | 415e222 |
+| 9 | Firestore rules — `gmao_demandes` + `creta_gel_docs` | 933e28a |
+| 10 | Page `AdminDocuments.tsx` — GMAO (form + photo + email Christelle) + CRETA GEL (upload/view) | 598697f |
+| 11 | Router + sidebar — route `/admin/documents` patron/admin | 598697f |
+| 12 | CFs `sendGmaoEmail` (callable) + `gmaoWeeklyReminder` (scheduler lundi 9h) | f589cc6 |
+| 13 | Build + deploy hosting | — |
+
+### Règles issues de ce chantier
+- **Documents GMAO** → collection `gmao_demandes` : `{ motif, departement, date, numeroIntervention, statut, photoUrl?, createdAt }`. Statuts : `en cours` / `en attente` / `terminé`.
+- **CRETA GEL** → collection `creta_gel_docs` : `{ label, fileUrl, fileType, date, createdAt }`. Fichiers dans Storage `creta_gel/`.
+- **Photos GMAO** → Storage `gmao/`.
+- **Route `/commandes`** → accessible à TOUS les rôles. La page `Commandes.tsx` est réutilisée depuis `modules/corner/pages/`.
+- **CF `sendGmaoEmail`** → callable (patron/admin) → envoie email à Christelle `cvandaele@la-grande-epicerie.fr`. Objet éditable avec template pré-rempli, champ `customBody` supporté.
+- **CF `gmaoWeeklyReminder`** → scheduler lundi 9h → email à Alexandre + Sébastien si demandes "en cours".
+- **`notifPlatsJour` + `notifCartonsChambrefroide`** → cuisine retirée des destinataires.
+
+---
 
 ## ⚠️ RÈGLES ABSOLUES — lire avant toute action
 
@@ -25,9 +116,18 @@
 
 8. **Pointages** → NE JAMAIS écrire directement dans `pointages` depuis le client.
    → Appeler `createPointage` via `httpsCallable(functions, 'createPointage')`.
-   → La règle Firestore bloque les `create` directs.
 
 9. **Route cuisine** → `/cuisine` rend `CuisineDashboard`. Réception = `/cuisine/reception`.
+
+10. **Ruptures — accumulation obligatoire** → Chaque envoi corner crée un **nouveau doc** `ruptures_actives` sans jamais archiver les précédents. `flatMap` + déduplication case-insensitive sur TOUS les docs non-vus → les envois du jour s'additionnent.
+    → NE JAMAIS marquer `viewed: true` les ruptures existantes lors d'un nouvel envoi corner.
+    → NE JAMAIS cliquer "✓ On s'en occupe" lors des tests.
+
+11. **Ruptures — tri par priorité** → Dashboard cuisine groupe par champ `priority` de `catalogue`. Noms dans `ruptures_actives` doivent correspondre EXACTEMENT aux noms du catalogue. Priorité 1 en premier, `null` = "Sans priorité" en dernier.
+
+12. **Catalogue** → collection `catalogue` (pas `produits`). Noms exacts obligatoires partout (ruptures, best-sellers dans settings, pertes, vitrine). Best-sellers dans `settings/ruptures.produits[]` doivent matcher exactement les noms du catalogue.
+
+13. **Compte `planning@yorgios.fr`** → accès planning lecture seule uniquement. Pas de DailyPointageGate, pas d'autres routes. Bouton "📅 Mon planning" sur Login → connexion automatique sans saisie.
 
 ---
 
@@ -49,7 +149,7 @@
 | `patron` | Tout | `/planning` |
 | `administrateur` | Tout (= patron) | `/planning` |
 | `manager` | Planning + Corner + CA + Commandes + Pointages | `/planning` |
-| `corner` | `/corner` (+ CA lecture seule) + `/messages` + `/planning` (lecture) + `/pointage` | `/corner` |
+| `corner` | `/corner` + CA lecture + `/messages` + `/planning` lecture + `/pointage` | `/corner` |
 | `cuisine` | `/cuisine` + `/messages` + `/pointage` + `/crm/captation` | `/cuisine` |
 
 ### Utilisateurs
@@ -68,7 +168,9 @@
 | Elena | `corner` | elenaakt9@hotmail.com |
 | Wahib | `corner` | wahibjeanbaptistelinard@gmail.com |
 | Layal | `corner` | lay.berkous@gmail.com |
+| Mellina | `corner` | mellinaten@gmail.com |
 | **iPad Corner** | `corner` | ipad@yorgios.fr |
+| **Planning** | `corner` | planning@yorgios.fr |
 
 > Mots de passe : Firebase Console → Authentication.
 
@@ -80,34 +182,31 @@
 src/
   firebase/
     config.ts           ← UNIQUE initializeApp() — exporte db, auth, storage, functions
-    messaging.ts        ← FCM
+    messaging.ts        ← FCM + registerDeviceAsIPad()
   auth/
     useAuth.ts / AuthGuard.tsx
   router/index.tsx      ← React.lazy() + Suspense (code splitting)
   components/
-    Layout.tsx          ← sidebar + bottom nav + bouton ⣿ + FAB pointage sortie
+    Layout.tsx          ← sidebar + bottom nav + FAB pointage sortie + bannière messages
     ModuleGridPanel.tsx ← bottom sheet grille 3×3 sous-pages Corner/Cuisine
-    Skeleton.tsx / EmptyState.tsx / Toast.tsx / DailyPointageGate.tsx
+    DailyPointageGate.tsx ← gate géoloc (exclut planning@yorgios.fr)
   pages/
-    Login.tsx / CommandePublique.tsx / CA.tsx / Profile.tsx
-    AdminUsers.tsx / AdminSettings.tsx / AdminProduits.tsx / AdminPointages.tsx
-    Pointage.tsx / AllergeneMenu.tsx
+    Login.tsx           ← boutons iPad Corner/Cuisine + bouton Planning (auto-login)
+    AdminProduits.tsx   ← catalogue (filtre catégorie + priorité)
+    AdminSettings.tsx   ← fournisseurs, alertes temp, best-sellers ruptures, niveaux priorité, barème CA
   modules/
-    planning/     ← PlanningGrid (desktop drag-paint) + MobilePlanningView (< 768px)
+    planning/     ← PlanningGrid (desktop) + MobilePlanningView (< 768px)
     cuisine/      ← Dashboard + Réception + Fabrication + Livraisons + Températures + Contrôle + ReceptionHistorique
     corner/       ← Dashboard + Températures + Hygiene + Livraison + Vitrine + StockageFrigo
                      Ruptures + Commandes + Pertes + Controle + PlanningCorner
     crm/          ← CaptationPage + useCaptation hook
-    messagerie/   ← index.tsx
   hooks/
     usePointageSortie.ts ← FAB sortie, appelle CF createPointage
-  config/
-    pointageZones.ts  ← zones GPS (validation réelle côté serveur)
 
 functions/src/
-  index.ts          ← 25 Cloud Functions
-  domain/loyalty.ts ← paliers fidélité (10→5%, 25→10%, 50→15%)
-  crm/index.ts      ← syncContactToBrevo, validatePromoCode, fidélité
+  index.ts          ← 26 Cloud Functions
+  domain/loyalty.ts ← paliers fidélité
+  crm/index.ts      ← syncContactToBrevo, validatePromoCode
 ```
 
 ---
@@ -116,32 +215,40 @@ functions/src/
 
 | Collection | Accès | Usage |
 |-----------|-------|-------|
-| `users` | tous (own) + patron/admin/manager (all) | profils, role, fcmToken, employeeId |
+| `users` | own + patron/admin/manager | profils, role, fcmToken |
 | `employees` | patron/admin/manager | employés planning |
 | `planningWeeks` | lecture tous, écriture patron/admin/manager | semaines planning |
-| `produits` | lecture tous, écriture patron/admin/manager | catalogue — `name`, `abrv`, `defaultCategory`, `dlcDays`, `allergenes[]`, `active`, `inVitrine`, `inReception`, `inMenu` |
+| `catalogue` | lecture isAnyRole, écriture isPatronOrManager | 104 produits — `name`, `abrv`, `defaultCategory`, `gepCategory`, `dlcDays`, `priority`, `active`, `inVitrine`, `inReception`, `inFabrication`, `allergenes[]` |
 | `receptions` | cuisine | réceptions HACCP |
-| `lots_cuisine` | cuisine | lots fabrication |
+| `lots_cuisine` | lecture isAnyRole, create cuisine, update isAnyRole, delete corner | lots fabrication — `receptionId`, `fournisseur` pour traçabilité |
 | `lot_counters` | cuisine | séquences numéros de lot |
-| `livraisons` | tous | livraisons cuisine → corner |
-| `temperatures` | tous | relevés frigos — doc ID `{YYYY-MM-DD}_{fridgeId}_{session}` |
+| `livraisons` | lecture isAnyRole, create cuisine, update isAnyRole | livraisons cuisine → corner |
+| `temperatures` | lecture isAnyRole, create/update isAnyRole, delete patron/manager | relevés frigos — doc ID `{YYYY-MM-DD}_{fridgeId}_{session}` |
 | `archives` | cuisine | archives mensuelles |
 | `hygiene_corner` | corner | checklists — `{date}_quotidien` / `{YYYY-WXX}_hebdo` / `{YYYY-MM}_mensuel` |
 | `corner_stock` | corner | produits vitrine avec DLC |
+| `stockage_frigo` | corner | stock frigos corner (mutuellement exclusif avec corner_stock) |
+| `ruptures_actives` | create corner, update cuisine/patron/admin/manager | `{ ruptures[], presqueRuptures[], personne, createdAt, viewed }` |
 | `messages` | tous | messagerie interne (TTL 7j) |
 | `commandes_externes` | create public, read/update corner | commandes clients |
 | `non_conformites` | corner | livraisons refusées + décisions |
-| `objectifs_ca` | patron/admin/manager (écriture), corner (lecture) | CA mensuel (doc ID = YYYY-MM) |
-| `stockage_frigo` | tous | stock frigos corner |
+| `objectifs_ca` | écriture patron/admin/manager, lecture corner | CA mensuel (doc ID = YYYY-MM) |
 | `pointages` | write bloqué client (CF uniquement), read patron/admin/manager | pointages GPS |
-| `settings` | patron/admin (écriture), tous (lecture) | `reception.fournisseurs[]`, `temperatures.alertMinC`, `ruptures.produits[]` |
-| `pertes_corner` | corner | pertes — `date`, `productName`, `type`, `valeur`, `unite`, `note` |
-| `customers` | CRM functions | clients — doc ID = E.164 sans `+` — fidélité + promos |
-| `crm_sync_log` | CRM functions | logs sync Brevo |
+| `settings` | écriture patron/admin, lecture tous | fournisseurs, alertes, best-sellers ruptures, priority_levels, primes_ca |
+| `pertes_corner` | corner | pertes |
+| `deliveries` | lecture isAuth, write CF uniquement | suivi coursier Twilio — `trackingUrl`, `eta`, `status`, `rawMessage` |
+| `devices` | lecture isAnyRole, écriture own ou patron/admin | `{ type: 'ipad_corner'\|'mobile', fcmToken, label }` |
+| `customers` | CRM functions | fidélité + promos |
+
+### Catalogue — champs clés
+- `defaultCategory` : groupement affichage (Mezze · Plats · Bowl · Tiropitas · Salades · Desserts · Boissons · Autre)
+- `gepCategory` : seuil GEP livraison (VIANDE, POISSON, PLAT_CUISINE, LEGUMES, etc.)
+- `priority` : number | null — 1 = urgent (affiché en premier dans dashboard cuisine)
+- `inFabrication: true` par défaut si absent — filtre `!== false`
 
 ---
 
-## Cloud Functions (`europe-west1`) — 25 fonctions
+## Cloud Functions (`europe-west1`)
 
 | Fonction | Déclencheur | Rôle |
 |----------|------------|------|
@@ -150,13 +257,13 @@ functions/src/
 | `onNewCommande` | Firestore create `commandes_externes/{id}` | Anti-spam 3/24h + Push FCM |
 | `onCommandeUpdated` | Firestore update `commandes_externes/{id}` | Acceptée → GCal + FCM ; Livrée → Brevo + fidélité |
 | `onCommandePrete` | httpsCallable | FCM patron+manager+cuisine + messagerie |
-| `notifCommandesJ2` | Scheduler 14h00 | Rappel J-2 livraisons |
-| `notifCommandesJJ` | Scheduler 09h00 | Rappel jour-J livraisons |
+| `notifCommandesJ7` | Scheduler 8h00 | Email HTML toutes commandes J+0→J+7 |
+| `notifCommandesJ2` | Scheduler 14h00 | FCM + Email HTML commandes dans 2 jours |
+| `notifCommandesJJ` | Scheduler 09h00 | FCM rappel jour-J |
 | `onPointageLate` | Firestore create `pointages/{id}` | Email si retard > 10 min |
-| `createPointage` | httpsCallable | Validation GPS Haversine serveur, anti-doublon |
+| `createPointage` | httpsCallable | Validation GPS Haversine, anti-doublon |
 | `notifTemperatures` | Scheduler 8h30 | FCM si frigos matin non saisis |
 | `notifTemperaturesEvening` | Scheduler 22h00 | FCM si frigos soir non saisis |
-| `notifTooGoodToGo` | Scheduler 9h00 | FCM employés pointés |
 | `notifCartonsChambrefroide` | Scheduler 9h30 | FCM corner+cuisine |
 | `notifPlatsJour` | Scheduler 11h00 | FCM cuisine+corner |
 | `notifUrgences` | Scheduler 15h00 | FCM employés pointés |
@@ -166,44 +273,38 @@ functions/src/
 | `createUser` | httpsCallable (patron/admin) | Créer compte utilisateur |
 | `deleteUser` | httpsCallable (patron/admin) | Supprimer compte utilisateur |
 | `onLivraisonTemperature` | Firestore create `livraisons/{id}` | FCM départ livraison |
-| `onLivraisonReception` | Firestore update `livraisons/{id}` | FCM réception livraison |
+| `onLivraisonReception` | Firestore update `livraisons/{id}` | FCM + email patron si REFUSE |
+| `incomingSms` | onRequest (Twilio webhook) | Parse SMS coursier → `deliveries` + FCM |
 | `syncContactToBrevo` | httpsCallable | Sync contact Brevo + `customers/` |
 | `validatePromoCode` | httpsCallable | Vérifie code promo (app) |
-| `validatePromoCodePublic` | onRequest | Vérifie code promo (WordPress, X-Yorgios-Secret) |
+| `validatePromoCodePublic` | onRequest | Vérifie code promo (WordPress) |
 
 ---
 
 ## Routes
 
-| Route | Auth | Accès |
-|-------|------|-------|
-| `/login` | Non | Public |
-| `/commande` | Non | Public |
-| `/planning/*` | Oui | patron, admin, manager, corner (lecture) |
-| `/cuisine` | Oui | patron, admin, manager, cuisine — Dashboard |
-| `/cuisine/reception` | Oui | patron, admin, manager, cuisine |
-| `/cuisine/fabrication` | Oui | patron, admin, manager, cuisine |
-| `/cuisine/livraisons` | Oui | patron, admin, manager, cuisine |
-| `/cuisine/temperatures` | Oui | patron, admin, manager, cuisine |
-| `/cuisine/controle` | Oui | patron, admin, manager, cuisine |
-| `/cuisine/reception-historique` | Oui | patron, admin, manager, cuisine |
-| `/corner/*` | Oui | patron, admin, manager, corner |
-| `/ca` | Oui | patron, admin, manager |
-| `/messages` | Oui | tous |
-| `/pointage` | Oui | tous sauf manager |
-| `/profile` | Oui | tous |
-| `/admin/users` | Oui | patron, admin |
-| `/admin/settings` | Oui | patron, admin |
-| `/admin/pointages` | Oui | patron, admin, manager |
-| `/admin/produits` | Oui | patron, admin |
-| `/admin/allergenes` | Oui | patron, admin, manager |
-| `/crm/captation` | Oui | patron, admin, manager, corner, cuisine |
+| Route | Accès |
+|-------|-------|
+| `/login` | Public |
+| `/commande` | Public |
+| `/planning/*` | patron, admin, manager, corner |
+| `/cuisine/*` | patron, admin, manager, cuisine |
+| `/corner/*` | patron, admin, manager, corner |
+| `/ca` | patron, admin, manager |
+| `/messages` | tous |
+| `/pointage` | tous sauf manager |
+| `/profile` | tous |
+| `/livraisons` | tous |
+| `/admin/users` | patron, admin |
+| `/admin/settings` | patron, admin |
+| `/admin/pointages` | patron, admin, manager |
+| `/admin/produits` | patron, admin |
+| `/admin/allergenes` | patron, admin, manager |
+| `/crm/captation` | tous |
 
 ---
 
 ## Design System — Aegean Precision (light mode)
-
-> Références visuelles : `reference/UI UX/` (31 écrans PNG)
 
 **LIGHT MODE uniquement** — zéro fond sombre, zéro `#000`, `#1c1c1e`, `bg-gray-9*`, `bg-slate-*`.
 
@@ -224,27 +325,24 @@ functions/src/
 | `--border` | `rgba(28,28,24,0.12)` | Bordures |
 | `--border-soft` | `rgba(28,28,24,0.06)` | Séparateurs légers |
 
-### Classes disponibles
+### Classes
 `.page` · `.card` · `.btn-primary` · `.btn-secondary` · `.btn-danger` · `.btn-icon`
-`.input` (underlined) · `.input-filled` (fond teinté) · `.section-title` · `.section-label`
+`.input` · `.input-filled` · `.section-title` · `.section-label`
 `.chip-ok` · `.chip-danger` · `.chip-warn` · `.nav-tabs` / `.nav-tab` · `.glass` · `.divider`
 `.spinner` · `.skeleton`
 
 ### Règles
-- Overlays modals : `rgba(28,28,24,0.45)` — pas `rgba(0,0,0,...)`
-- Fond lightbox photo : `rgba(28,28,24,0.88)` OK (contexte sombre intentionnel)
-- Texte blanc sur bouton coloré (`.btn-primary`, chips) : OK
-- Fonts : **Epilogue** (titres h1-h3) + **Manrope** (body) — chargées globalement
+- Overlays modals : `rgba(28,28,24,0.45)`
+- Fonts : **Epilogue** (titres h1-h3) + **Manrope** (body)
 - Tap targets min 44×44px mobile
-- Lire le `screen.png` de référence avant de coder une page
 
 ---
 
 ## Frigos — IDs Firestore
 
 ### Corner
-| ID | Nom affiché |
-|----|-------------|
+| ID | Nom |
+|----|-----|
 | `FRIGO_3P` | Frigo 3 portes |
 | `VITRINE_1` | Vitrine 1 |
 | `VITRINE_2` | Vitrine 2 |
@@ -252,8 +350,8 @@ functions/src/
 | `GRAND_FRIGO` | Grand frigo |
 
 ### Cuisine
-| ID | Nom affiché |
-|----|-------------|
+| ID | Nom |
+|----|-----|
 | `CUI_FRIGO1_ENTREE` | Frigo 1 entrée |
 | `CUI_GRAND_FRIGO_INOX` | Grand frigo porte inox |
 | `CUI_GRAND_FRIGO_VERRE` | Grand frigo porte verre |
@@ -289,14 +387,16 @@ functions/src/
 | Pâtisserie fraîche | 3°C | 5°C |
 | Légumes | 8°C | 10°C |
 
+Tout dépassement de `maxTol` → `result: 'REFUSE'` → email patron + push FCM.
+
 ---
 
 ## PWA
 
 - **Nom** : `Matias` — icône oeil grec dans `public/icons/`
-- `vite-plugin-pwa` — SW auto-généré
+- `vite-plugin-pwa` — SW auto-généré, `skipWaiting: true`, `clientsClaim: true`
 - `public/firebase-messaging-sw.js` — SW FCM background
-- `VITE_FIREBASE_VAPID_KEY` dans `.env`
+- Bannière "Nouvelle version disponible" via `onNeedRefresh` dans `main.tsx`
 
 ---
 
@@ -321,6 +421,8 @@ GMAIL_APP_PASSWORD=xxxx
 BREVO_API_KEY=xxxx
 BREVO_LIST_ID=3
 YORGIOS_WP_SECRET=xxxx
+TWILIO_AUTH_TOKEN=xxxx
+TWILIO_ACCOUNT_SID=xxxx
 ```
 
 ---
@@ -329,21 +431,17 @@ YORGIOS_WP_SECRET=xxxx
 
 ```bash
 npm run dev
-npm run deploy                                    # build + firebase deploy hosting
+npm run build && firebase deploy --only hosting
 cd functions && npm run build && cd .. && firebase deploy --only functions:nomFonction
 firebase deploy --only firestore:rules
+firebase deploy --only firestore:indexes
 ```
 
 ---
 
 ## ⚠️ ARCHITECTURE MÉTIER — RÈGLES INVIOLABLES
 
-> Ces règles décrivent les dépendances logiques et codépendances entre onglets.  
-> **Ne JAMAIS modifier un onglet sans vérifier que ces invariants sont respectés.**
-
----
-
-### Cycle de vie d'un lot cuisine (flux principal)
+### Cycle de vie d'un lot cuisine
 
 ```
 Fabrication (cuisine)
@@ -353,421 +451,113 @@ Fabrication (cuisine)
       → Vitrine directe (corner_stock)
 ```
 
-**Règles de ce flux :**
-
-1. **Un lot ne peut jamais être en double** dans aucun état : `lots_cuisine`, `stockage_frigo`, `corner_stock`. Si un lotCode existe déjà → erreur bloquante, jamais de doublon silencieux.
-2. **Un lot livré et accepté par le corner est archivé** (`lots_cuisine.archived=true, sent=false`). Il disparaît de la liste "Lots en cours" cuisine.
-3. **Un lot ajouté en vitrine depuis les lots cuisine** → archivage dans `lots_cuisine` + création dans `corner_stock`. Aucun lot déjà en vitrine n'est proposable à la sélection.
-4. **Un lot transféré du frigo vers la vitrine** → `deleteDoc` dans `stockage_frigo` automatiquement. Le frigo et la vitrine sont mutuellement exclusifs pour un même article.
-5. **Retour cuisine depuis Vitrine** → `corner_stock.active=false` + si `lotCode` présent → `lots_cuisine.sent=false` pour réapparition côté cuisine.
+1. **Pas de doublon** dans `lots_cuisine`, `stockage_frigo`, `corner_stock`. Bloquer si doublon.
+2. **Lot livré + accepté** → `lots_cuisine.archived=true`. Disparaît de "Lots en cours".
+3. **Lot ajouté en vitrine depuis lots cuisine** → archive `lots_cuisine` + crée `corner_stock`.
+4. **Lot transféré frigo → vitrine** → `deleteDoc stockage_frigo` automatique. Frigo et vitrine sont mutuellement exclusifs.
+5. **Retour cuisine depuis Vitrine** → `corner_stock.active=false` + `lots_cuisine.sent=false`.
 
 ---
 
 ### Cuisine — Dashboard
 
-- **Bandeau rouge ruptures** : fenêtre dynamique — avant 10h : affiche depuis hier 13h ; après 10h : affiche depuis minuit. Filtre `ruptures_actives where viewed==false`.
-- **Deux envois ruptures/jour** (matin + soir) → s'additionnent, pas de doublon. La déduplification se fait par nom produit avec `Set`.
-- **Encart commandes semaine + mois** : calculé sur `commandes_externes` en temps réel.
-- **Bandeau météo** : Open-Meteo, 7 jours, toujours présent.
-- **Liste d'actions** : températures matin + soir (liens directs), hygiène du jour.
+- **Encadré rouge ruptures** : un seul encadré en haut, triés par priorité catalogue. Fenêtre : avant 10h → depuis hier 13h ; après 10h → depuis minuit.
+- **Ruptures** : `flatMap` sur tous les docs `viewed==false` → déduplication case-insensitive.
+- **"✓ On s'en occupe"** → `batch.update viewed:true` sur tous les docs visibles.
+- **Commandes** : filtre `STATUTS_ACTIFS = ['en cours', 'devis envoyé', 'accepté']`.
 
 ---
 
 ### Cuisine — Réception
 
-- Sélection produits depuis catalogue (`produits where inReception==true && active==true`).
-- **Champ N° lot** : saisie manuelle ou scan code-barres (html5-qrcode, lazy).
-- **Onglet Historique** : toutes réceptions avec photo miniature, badge HACCP, température, N° lot.
-- La réception crée un document dans `receptions` — utilisé pour la traçabilité Fabrication.
+- Produits depuis `catalogue where inReception==true && active==true`.
+- N° lot : saisie manuelle ou scan code-barres (html5-qrcode, lazy).
+- Crée un doc `receptions` — référencé dans Fabrication (`receptionId`).
 
 ---
 
 ### Cuisine — Fabrication
 
-- **Aucun lot en double** : vérifier `lotCode` inexistant avant `setDoc`. Bloquer si doublon.
-- **Lots modifiables** tant que non livrés (`sent != true`).
-- **Mode "📦 Réception"** : pré-remplit `productName` + `fournisseur` depuis la réception source, stocke `receptionId` pour traçabilité 100%.
-- **DLC auto** : J+3 depuis date fabrication (configurable par produit via `dlcDays` du catalogue).
-- Les lots livrés et acceptés corner sont archivés et non modifiables.
+- Vérifier `lotCode` inexistant avant `setDoc`. Bloquer si doublon.
+- Mode "📦 Réception" : pré-remplit `productName` + `fournisseur`, stocke `receptionId`.
+- DLC auto : J+`dlcDays` depuis date fabrication (configurable dans catalogue).
 
 ---
 
 ### Cuisine — Livraison (départ)
 
-- L'employé sélectionne parmi les lots non livrés (`lots_cuisine where sent!=true`).
-- **Température obligatoire** pour les lots soumis à la GEP (2 minimums pour l'ensemble de la livraison).
-- Lots sans température → s'ajoutent à la livraison sans saisie de temp, case à cocher à l'arrivée côté corner.
-- Les lots sélectionnés passent à `sent=true` dans `lots_cuisine`.
-- Items manuels s'ajoutent à la livraison aux côtés des lots.
+- Lots non livrés (`sent!=true`). Température obligatoire pour lots soumis GEP.
+- Lots sans temp → case à cocher côté corner à l'arrivée.
+- Lots sélectionnés → `sent=true`.
 
 ---
 
 ### Corner — Dashboard
 
-- **Bandeau météo** lundi→dimanche, toujours présent.
-- **Actions requises** avec notifications push sonores :
-  - Hygiène quotidienne (cases à cocher, lien direct)
-  - Températures matin + soir (lien direct)
-  - DLC : alerte si un item de `corner_stock` a DLC ≤ 3 jours
-  - Cartons chambre froide
-  - Plats du jour
-- **Bandeau livraison** : livraisons en cours depuis `livraisons`. Filter pending : `receptionTempC == null && !receptionAt && !returned && departAt >= todayStart`. Doit correspondre exactement au filter de `corner/Livraison.tsx`.
-- **Bandeau commandes** : si commande à réaliser cette semaine. Filtre `STATUTS_ACTIFS` (voir ci-dessous).
-- **PAS de bandeau TooGoodToGo** (supprimé définitivement).
-- **PAS de card températures frigos** dans le dashboard cuisine (supprimée — inutile).
+- **Filtre livraisons pending** : `receptionTempC == null && !receptionAt && !returned && departAt >= todayStart`.
+- ⚠️ Ce filtre doit être **identique** dans `corner/Dashboard.tsx` et `corner/Livraison.tsx`.
+- **Commandes** : même filtre `STATUTS_ACTIFS` que cuisine.
 
 ---
 
 ### Corner — Livraison (arrivée)
 
-**Ordre d'affichage impératif** : lots AVEC `departTempC` en premier, lots SANS `departTempC` ensuite.
-
-- Lots avec `departTempC` → champ température arrivée + photo optionnelle → résultat GEP (ACCEPTE / REFUSE / A_VERIFIER).
-- Lots sans `departTempC` → case à cocher "Livraison reçue ✓" → écrit `result: 'ACCEPTE'` sans température.
-- **Si température arrivée > seuil GEP** → email à patron (`a.cozzika@gmail.com`) ET push notification. CF `onLivraisonReception` gère ça.
-- **Bouton "↩ Retour cuisine"** : disponible tous rôles → `returned: true` sur le doc livraison.
-- **Bouton "🗑 Supprimer"** : visible uniquement patron/administrateur/manager.
-- `pending` filter : `receptionTempC == null && !receptionAt && !returned`.
-- `done` filter : `(receptionTempC != null || receptionAt != null) && !returned`.
-
-**Sous-onglets obligatoires** :
-- Aujourd'hui : lots envoyés depuis cuisine (le jour J)
-- Historique : filtrable par date de réception, nom produit, date de retrait
-- Galerie photo : produits relevés en température
-- Coursier : tracking livraison Twilio (`deliveries` collection)
+- Lots AVEC `departTempC` en premier, SANS `departTempC` ensuite.
+- Avec temp → saisie temp arrivée + photo → résultat GEP. Dépassement `maxTol` → email patron + FCM.
+- Sans temp → checkbox groupée "Livraison reçue ✓" → `result: 'ACCEPTE'`.
+- `pending` : `receptionTempC == null && !receptionAt && !returned`.
+- `done` : `(receptionTempC != null || receptionAt != null) && !returned`.
+- Bouton "↩ Retour cuisine" : tous rôles. Bouton "🗑 Supprimer" : patron/admin/manager.
 
 ---
 
 ### Corner — Vitrine
 
-**Trois modes d'ajout** (formulaire) :
-1. **✏️ Manuel** : saisie nom + date fab + DLC auto (fab+3j). Produits depuis catalogue (`produits where inVitrine==true`). Multi-sélection possible.
-2. **📦 Lot cuisine** : lots reçus depuis cuisine (`lots_cuisine where sent==true`). Aucun doublon (lotCode ou productName+fabDay déjà actif en vitrine). Sélection → `addDoc corner_stock` + archive `lots_cuisine`.
-3. **🧊 Frigo** : articles depuis `stockage_frigo`. Sélection → `addDoc corner_stock` + **`deleteDoc stockage_frigo`** automatique.
-
-**Onglets obligatoires** :
-- Stock : items actifs en vitrine (`active==true`)
-- Lots : lots reçus cuisine non encore mis en vitrine
-- Historique : tous les items triés/filtrés (nom, date fab, date entrée, date sortie)
-
----
-
-### Corner — Frigo (Stockage Frigo)
-
-- Articles stockés entre réception cuisine et mise en vitrine.
-- **Dépendance directe avec Vitrine** : si un article frigo est sélectionné pour la vitrine → `deleteDoc stockage_frigo` automatique. Invariant : un article ne peut pas être à la fois dans le frigo ET en vitrine.
-- Permet transfert entre frigos (updateDoc).
+**3 modes d'ajout** :
+1. **✏️ Manuel** : catalogue `inVitrine==true`, multi-sélection.
+2. **📦 Lot cuisine** : `lots_cuisine where sent==true && inVitrine!=false`. Sélection → `addDoc corner_stock` + archive `lots_cuisine`.
+3. **🧊 Frigo** : `stockage_frigo`. Sélection → `addDoc corner_stock` + `deleteDoc stockage_frigo`.
 
 ---
 
 ### Corner — Ruptures
 
-- **Section "Disponibilité plats"** : catalogue complet `produits` (active==true), trié par `defaultCategory` puis `name`, affiché en **grille 2 colonnes**.
-- **3 états par clic** : null → 🔴 urgent → 🟠 moins urgent → null. Déselection directe via ✕.
-- **Produit sélectionné disparaît de la grille** et apparaît dans le panel "Sélection" en tête.
-- Les produits sensibles/best-sellers configurables dans `settings/ruptures` → apparaissent en priorité.
-- `ruptures_actives` : écrit les ruptures urgentes + presques-ruptures, lu par Dashboard cuisine.
-- **Fenêtre lecture Dashboard cuisine** : avant 10h → depuis hier 13h ; après 10h → depuis minuit du jour J.
-- Deux envois possibles par jour **s'additionnent** — chaque envoi = nouveau doc, jamais d'archivage des précédents.
-- Déduplification par `Set` de noms produits côté affichage.
+- Best-sellers depuis `settings/ruptures.produits[]` (noms exacts catalogue).
+- Catalogue depuis `catalogue` (active==true), ordre fixe : Mezze→Salades→Tiropitas→Plats→Bowl→Desserts→Autre→Boissons.
+- 3 états : null → 🔴 urgent → 🟠 moins-urgent → null. ✕ dans panel = null direct.
+- Chaque envoi = **nouveau doc** `ruptures_actives`, jamais d'archivage des précédents.
+- `ruptures[]` = urgent, `presqueRuptures[]` = moins-urgent.
 
 ---
 
 ### Corner — Hygiène
 
-- **Quotidien** : 13 items, case à cocher par jour.
-- **Hebdomadaire** : 5 items, valider 1×/semaine. Notification push jeudi si non fait.
-- **Mensuel** : 1 item, valider 1×/mois. Notification le 20 du mois si non fait.
-- **Historique** : visuel semaine par semaine ✅/🟡/❌ pour chaque période.
+- Quotidien (13 items) / Hebdo (5 items) / Mensuel (1 item).
 - Doc IDs : `{date}_quotidien` / `{YYYY-WXX}_hebdo` / `{YYYY-MM}_mensuel`.
 
 ---
 
 ### Corner — Pertes
 
-- Produit sélectionné depuis catalogue avec son prix unitaire.
-- **Rapport** : affiche par jour/semaine/mois, KPI total combiné (prix exact + estimé). Ne jamais crasher sur champs manquants — guards null impératifs.
+- Produits depuis `catalogue`. Guards null impératifs sur tous les champs.
 
 ---
 
-### Règles GEP — températures réception (inviolables)
+### Livraisons coursier (Twilio)
 
-| Catégorie | Max standard | Max tolérance |
-|-----------|-------------|---------------|
-| Viande hachée | 2°C | 3°C |
-| Viande | 3°C | 5°C |
-| Poisson | 2°C | 3°C |
-| Lait | 4°C | 6°C |
-| Plat cuisiné frais | 3°C | 5°C |
-| Pâtisserie fraîche | 3°C | 5°C |
-| Légumes | 8°C | 10°C |
-
-Tout dépassement de `maxTol` → `result: 'REFUSE'` → email patron + push FCM.
+- CF `incomingSms` → parse SMS → écrit dans `deliveries`.
+- Page `/livraisons` : `onSnapshot deliveries where status=='in_progress'`.
+- iPad Corner : enregistre `devices/{uid}` au login, son + WakeLock sur nouvelle livraison.
 
 ---
 
-## ✅ Suivi livraison Twilio — IMPLÉMENTÉ (session 2026-04-13)
+### Planning — barèmes
 
-### Objectif
-Remplacer le flux `SMS → iPhone → WhatsApp` par `Twilio → Firebase → App React + Push temps réel`.
-Le livreur est externe — format SMS non contrôlé, contient généralement un lien de tracking GPS.
-
-### Variables d'environnement à ajouter (`functions/.env`)
-```
-TWILIO_AUTH_TOKEN=xxxx          # pour vérifier la signature webhook
-TWILIO_ACCOUNT_SID=xxxx
-```
-
-### Cloud Function à créer : `incomingSms`
-- **Type** : `onRequest` (HTTP, public mais sécurisé par signature Twilio)
-- **Endpoint** : `POST /incomingSms`
-- **Sécurité** : vérifier signature Twilio via `twilio.validateRequest(authToken, signature, url, params)`
-- **Parsing** :
-  - extraire URL de tracking (regex robuste : `https?://[^\s]+`)
-  - extraire ETA si présent (regex `\b\d{1,2}[h:]\d{2}\b`)
-  - jamais crasher si format inattendu — tout logger
-- **Déduplication** : si `trackingUrl` déjà actif en Firestore → update `updatedAt` + `rawMessage`, pas de nouveau doc
-- **Notifications** : après écriture, envoyer FCM aux cibles (voir ci-dessous)
-
-### Collection Firestore : `deliveries`
-```
-{
-  trackingUrl:  string           // URL extraite (ou null si non trouvée)
-  rawMessage:   string           // SMS brut complet
-  phoneNumber:  string           // From Twilio
-  eta:          string | null    // "14:30" ou null
-  status:       "in_progress" | "completed"
-  createdAt:    Timestamp
-  updatedAt:    Timestamp
-}
-```
-Index : `status ASC + createdAt DESC`
-
-### Règles Firestore à ajouter
-```
-match /deliveries/{id} {
-  allow read: if request.auth != null;
-  allow write: if false;   // écriture uniquement via CF backend (admin SDK)
-}
-```
-
-### Notifications FCM (dans la CF `incomingSms`)
-Cibles :
-1. `users` où `onShift == true` → envoyer à tous leurs `fcmTokens[]`
-2. `devices` où `type == "ipad_corner"` → envoyer à leur `fcmToken`
-
-Payload :
-```json
-{
-  "notification": { "title": "🚚 Livraison en cours", "body": "ETA {eta} — {trackingUrl}" },
-  "data": { "trackingUrl": "...", "type": "delivery" }
-}
-```
-
-### Collection `devices` (nouveau)
-```
-{
-  type:      "ipad_corner" | "mobile"
-  fcmToken:  string
-  label:     string         // ex: "iPad Corner"
-  updatedAt: Timestamp
-}
-```
-→ L'iPad Corner s'enregistre automatiquement au login avec `type: "ipad_corner"`.
-
-### Page React : `/livraisons`
-- Route accessible à tous les rôles authentifiés
-- **Realtime** : `onSnapshot` sur `deliveries` where `status == "in_progress"` orderBy `createdAt DESC`
-- **Composant `DeliveryCard`** :
-  - Heure de réception + ETA
-  - Bouton "Suivre →" → ouvre `trackingUrl` (nouvel onglet)
-  - Bouton "Livraison terminée" → update `status: "completed"`
-  - Chip statut (`.chip-ok` = terminé, `.chip-warn` = en cours)
-- **Empty state** si aucune livraison active
-- **Son** sur iPad Corner : `new Audio('/sounds/ding.mp3').play()` à chaque nouveau doc Firestore
-
-### iPad Corner — comportements spéciaux
-- Enregistre `devices/{uid}` avec `type: "ipad_corner"` au login
-- Page `/livraisons` affichée en permanence (mode kiosk)
-- Notification sonore à chaque nouvelle livraison (listener Firestore)
-- Écran toujours allumé via `navigator.wakeLock.request('screen')`
-
-### Design (Aegean Precision)
-- Header : section-label "Livraisons" + h1 Epilogue
-- Cards : `.card` avec chip statut + heure + ETA proéminent
-- Bouton tracking : `.btn-primary` pleine largeur
-- Bouton terminer : `.btn-secondary`
-
-### Ajout dans ModuleGridPanel
-- Ajouter "🚚 Livraisons" dans la grille ⣿ Corner + Cuisine (route `/livraisons`)
-
-### Ordre d'implémentation recommandé
-1. CF `incomingSms` (webhook + parsing + Firestore)
-2. Règles Firestore `deliveries`
-3. Page `/livraisons` + `DeliveryCard`
-4. Enregistrement FCM iPad Corner (`devices/`)
-5. Notifications FCM dans la CF
-6. Son + WakeLock iPad Corner
-7. Ajout dans ModuleGridPanel + router
-
----
-
-## ✅ PLANNING — Chantiers réalisés (session 2026-04-10/11)
-
-Branche mergée : `feature/planning-primes-refonte`
-
-| # | Chantier | Fichiers clés |
-|---|----------|---------------|
-| 1 | Fix bug Layal — `EXCLUDED_NAMES` exporte depuis `primes.ts`, filtre `empMap` + filtre chargement Firestore | `PrimesTab.tsx`, `primes.ts` |
-| 2 | Prime CA progressive — `calcCaPrime()` barème 5 paliers, remplace `perfOk` binaire | `primes.ts`, `PrimesTab.tsx`, `MonthlyView.tsx` |
-| 3 | Montants primes custom par employé — champs `primeComportement`/`primePonctualite` sur `employees`, UI dans EmployeeManager, `deleteField()` pour effacement | `EmployeeManager.tsx`, `types.ts`, `primes.ts` |
-| 4 | Fix Stats → colonne 🏆 Prime se rafraîchit — `caRealise`/`caObjectif` désormais inclus dans `primeMois` passé à MonthlyView via `onPrimesChange` | `PrimesTab.tsx`, `MonthlyView.tsx` |
-| 5 | Colonne "Parti tôt" dans Stats mensuel — affiche `partiTotHeures` | `MonthlyView.tsx` |
-| 6 | Découpe heures par mois — semaines frontière filtrées jour par jour, heures supp = 0 sur semaine incomplète | `dateUtils.ts`, `MonthlyView.tsx` |
-| 7 | Avenants contrat — `Avenant` interface, `getContractAt(emp, date)`, UI EmployeeManager, `getPrime()` utilise heures effectives fin de mois | `types.ts`, `primes.ts`, `MonthlyView.tsx`, `EmployeeManager.tsx` |
-
-### Où modifier les barèmes
-
-- **Barème CA progressif** → `/admin/settings` → section "Barème primes CA progressif" (tableau éditable, sauvegardé dans `settings/primes_ca`)
-- **Barème global comportement/ponctualité** → `src/modules/planning/utils/primes.ts`, constante `BAREME` (`comp` = total comportement, chaque critère = `comp/2`)
-- **Prime hygiène** → même fichier, constante `HYGIENE_BONUS = 50`
-- **Montants custom par employé** → `/planning` → 👥 Employés → modifier → section "Primes personnalisées"
-- **Avenants contrat** → même UI → section "Avenants contrat" (date d'effet + heures)
-
----
-
-## ✅ PLANNING — Chantiers réalisés (session 2026-04-11)
-
-| # | Chantier | Fichiers clés |
-|---|----------|---------------|
-| 8 | Employé suspendu — champ `suspended`, filtre dans `subscribeEmployees`/`fetchEmployees`, bouton ⏸/▶ dans EmployeeManager, badge "Suspendu", invisible partout ailleurs | `types.ts`, `firebase/employees.ts`, `EmployeeManager.tsx` |
-| 9 | Barème CA modifiable depuis l'app — `CaPalier` interface, `DEFAULT_CA_PALIERS`, `calcCaPrime` accepte paliers en param, UI dans `/admin/settings`, Firestore `settings/primes_ca` | `primes.ts`, `PrimesTab.tsx`, `AdminSettings.tsx` |
-
-## ✅ DASHBOARDS — Restauration depuis stash (session 2026-04-11)
-
-| Élément | Fichier |
-|---------|---------|
-| Météo semaine (Open-Meteo, 7 jours) | `corner/Dashboard.tsx`, `cuisine/Dashboard.tsx` |
-| Ruptures corner actives temps réel (consolidées, dédupliquées, bouton "✓ On s'en occupe") | `cuisine/Dashboard.tsx` |
-| Commandes clients de la semaine | `cuisine/Dashboard.tsx` |
-| Bouton ← retour dans header mobile (sous-pages) | `Layout.tsx` |
-
----
-
-## ✅ BUGS & FONCTIONNALITÉS — Session 2026-04-13 (audit complet)
-
-| # | Fix | Fichiers |
-|---|-----|----------|
-| B1 | **Bug géoloc** — clé localStorage `pointageGateDate` désormais par UID (`pointageGateDate_${uid}`). Sans ça un user pouvait bypasser la gate si quelqu'un d'autre l'avait dismissée sur l'appareil | `DailyPointageGate.tsx`, `Layout.tsx` |
-| B2 | **Corner Températures** — bouton ± restauré pour saisir des températures négatives | `corner/Temperatures.tsx` |
-| B3 | **Corner Dashboard** — suppression bandeau TooGoodToGo (bouton vert) ; bannière commandes pleine largeur si commandes du jour/semaine | `corner/Dashboard.tsx` |
-| B4 | **Bannière ruptures cuisine vide** — `Ruptures.tsx` n'écrivait que dans `messages`, jamais dans `ruptures_actives`. Fix : double write + règles Firestore + filtre fenêtre 13h J-1 dans Dashboard cuisine | `corner/Ruptures.tsx`, `cuisine/Dashboard.tsx`, `firestore.rules` |
-| B5 | **Pertes rapport crash** — accès à `item.categorie`/`item.prixUnitaire`/`item.unite` inexistants. Fix : `defaultCategory`, `prix`, guards null | `corner/Pertes.tsx` |
-| B6 | **Hygiène onglet Historique** — crash TypeScript (`ITEMS['historique']` undefined) + grille 7 jours avec statuts ✅/🟡/❌ implémentée | `corner/Hygiene.tsx` |
-
-### Collection `ruptures_actives` — structure (créée session 2026-04-13)
-```
-{ ruptures: string[], presqueRuptures: string[], personne: string, createdAt: Timestamp, viewed: boolean }
-```
-- Écrite par `corner/Ruptures.tsx` à chaque envoi
-- Lue par `cuisine/Dashboard.tsx` (filtre `viewed==false` + `createdAt >= hier 13h`)
-- Règles : corner create, cuisine/patron/admin/manager update (`viewed=true`)
-
-## ✅ PLANNING — Chantiers réalisés (session 2026-04-13)
-
-| # | Chantier | Fichiers clés |
-|---|----------|---------------|
-| 10 | Heures dimanche + jours fériés dans Stats mensuel — colonne 🎆 Férié, calcul via algorithme Pâques de Gauss, 11 fériés légaux français, `getFrenchHolidays(year)` exportée depuis `usePlanning.ts` | `types.ts`, `hooks/usePlanning.ts`, `components/Monthly/MonthlyView.tsx`, `utils/exports.ts` |
-
-### Comment fonctionne le calcul fériés
-- `computeWeekCounters` accepte un 4e param `monday?: Date`
-- Si fourni, les ISO dates des 7 jours sont calculées et vérifiées contre `getFrenchHolidays(year)`
-- Les heures travaillées un jour férié incrémentent `heuresFerie` (indépendamment de `heuresDimanche`)
-- Un dimanche férié (ex. 1er janvier 2023 = dimanche) incrémente **les deux**
-- Export Excel inclut les colonnes H. Dimanche et H. Fériés
-
----
-
-## ✅ CUISINE & TWILIO — Chantiers réalisés (session 2026-04-13 suite)
-
-| # | Chantier | Fichiers clés |
-|---|----------|---------------|
-| 11 | **Réception scanner code-barres** — onglets "Nouvelle réception" / "Historique" dans `Reception.tsx` ; bouton 📷 sur champ N° lot → modal `html5-qrcode` (lazy load) | `Reception.tsx`, `BarcodeScanner.tsx`, `package.json` |
-| 12 | **Réception Historique intégré** — liste avec photo miniature cliquable, badge HACCP, température, N° lot, bouton actualiser | `Reception.tsx` |
-| 13 | **Fabrication traçabilité** — mode "📦 Réception" (3e onglet formulaire) : sélectionner réception source → pré-remplit `productName` + `fournisseur`, stocke `receptionId` dans le lot | `Fabrication.tsx` |
-| 14 | **iPad Corner `devices/{uid}`** — `registerDeviceAsIPad()` appelée après login `ipad@yorgios.fr`, écrit `{ type, fcmToken, label, updatedAt }` | `Login.tsx`, `messaging.ts` |
-| 15 | **Règle Firestore `devices`** — lecture isAnyRole(), écriture uid==propre doc ou patron/admin | `firestore.rules` |
-| 16 | **Page `/livraisons`** — `onSnapshot` sur `deliveries` where `status=='in_progress'`, ETA proéminent, bouton tracking, bouton "Terminée", WakeLock, son ding.mp3 | `src/pages/Livraisons.tsx` |
-| 17 | **Route + ModuleGridPanel** — `/livraisons` accessible à tous ; entrée "Coursier" dans grilles Corner ET Cuisine | `router/index.tsx`, `ModuleGridPanel.tsx` |
-
-### Collections ajoutées / modifiées
-- `devices/{uid}` : `{ type: 'ipad_corner'|'mobile', fcmToken, label, updatedAt }` — règle Firestore déployée
-- `lots_cuisine` : nouveaux champs optionnels `receptionId`, `fournisseur` pour traçabilité
-
-## ✅ AUDIT & CORRECTIONS — Session 2026-04-14 (COMPLET — mergé + déployé)
-
-Branche `fix/audit-corrections` mergée dans `main` — deployed https://cuisine-yorgios.web.app
-
-### Corrections appliquées (T1→T8)
-
-| # | Fix | Fichier |
-|---|-----|---------|
-| T1 | **Corner Dashboard** — TooGoodToGo supprimé | `corner/Dashboard.tsx` |
-| T2 | **Cuisine Dashboard** — fenêtre ruptures 13h/10h + commandes du mois | `cuisine/Dashboard.tsx` |
-| T3 | **Fabrication** — anti-doublon lotCode | `cuisine/Fabrication.tsx` |
-| T4 | **Pertes rapport** — label + KPI total combiné | `corner/Pertes.tsx` |
-| T5 | **Vitrine** — doublons bloqués (hard error) | `corner/Vitrine.tsx` |
-| T6 | **Corner Livraison** — tri avec-temp en premier · checkbox sans departTempC · boutons "↩ Retour cuisine" (tous) + "🗑 Supprimer" (patron/admin/manager) · email patron si REFUSE via CF `onLivraisonReception` | `corner/Livraison.tsx`, `functions/src/index.ts` |
-| T7 | **Corner Ruptures** — grille 2 colonnes par catégorie · 3 états null→🔴→🟠 · panel "Sélection" en tête · produit sélectionné disparaît de la liste | `corner/Ruptures.tsx` |
-| T8 | **Frigo ↔ Vitrine** — onglet "🧊 Frigo" dans formulaire vitrine · sélection d'articles `stockage_frigo` → `addDoc` corner_stock + `deleteDoc` stockage_frigo automatique | `corner/Vitrine.tsx` |
-
-### CF déployées
-- `onLivraisonReception` — email à `a.cozzika@gmail.com` si résultat REFUSE
-
-### Comportements clés à connaître (session 2026-04-14)
-
-**Corner Livraison (`corner/Livraison.tsx`)**
-- `LivrDoc` a un champ `returned?: boolean` — les livraisons retournées sont filtrées du pending/done
-- Items sans `departTempC` → checkbox (écrit `receptionTempC: null, result: 'ACCEPTE'`)
-- `pending` filter : `receptionTempC == null && !receptionAt && !returned` (les deux conditions pour exclure les checkbox-validés)
-- `done` filter : `(receptionTempC != null || receptionAt != null) && !returned`
-- Bouton "Supprimer" visible uniquement pour patron/administrateur/manager
-
-**Corner Ruptures (`corner/Ruptures.tsx`)**
-- `stockChecks: Record<string, 'urgent' | 'moins-urgent' | null>` — plus de boolean
-- Catalogue chargé depuis collection `produits` (active==true), trié `defaultCategory` puis `name`
-- `toggleStockCheck(name)` cycle : null → 'urgent' → 'moins-urgent' → null
-- ✕ dans le panel Sélection = `setStockChecks(prev => ({ ...prev, [name]: null }))` (déselection directe, pas cycle)
-- `ruptures_actives` : fusionne sélections catalogue + saisies manuelles CmdRow[]
-
-**Corner Vitrine (`corner/Vitrine.tsx`)**
-- `formMode: 'manuel' | 'lot' | 'frigo'` — 3 modes
-- Mode 'frigo' : charge `stockage_frigo` (limit 100), sélection multiple → `addDoc` corner_stock + `deleteDoc` stockage_frigo
-- Champ `sourceFromFrigo: true` + `frigoId` dans les docs corner_stock créés depuis le frigo
-
-## ✅ CATALOGUE & FIXES — Session 2026-04-14 (suite, déployé)
-
-| # | Fix | Fichier |
-|---|-----|---------|
-| C1 | **AdminProduits → Catalogue** — gère collection `catalogue`, `defaultCategory` select fixe (Mezze/Plats/Bowl/Tiropitas/Salades/Desserts/Boissons/Autre), `gepCategory` HACCP séparé, 3 flags toggleables (inFabrication/inReception/inVitrine), barre de recherche + filtre catégorie | `src/pages/AdminProduits.tsx` |
-| C2 | **Script bulk catalogue** — 104 produits catégorisés, 2 doublons supprimés (Pikles, SALADE RIZ NOIR PASTEQUE FETA), 4 non-alimentaires désactivés, noms normalisés | `scripts/categorize-catalogue.cjs` |
-| C3 | **Règle Firestore `catalogue`** — lecture isAnyRole(), écriture isPatronOrManager() | `firestore.rules` |
-| C4 | **Vitrine loadLots anti-doublon** — `getDocsFromServer` (cache éliminé) + triple filtre : lotCode / productName actif / productName+dateFab actif | `corner/Vitrine.tsx` |
-| C5 | **Vitrine collection** — revenu sur `catalogue` (régressé par erreur en session précédente) | `corner/Vitrine.tsx` |
-| C6 | **Layout bannière messages** — slideDown in-app quand nouveau message reçu (son + 5s auto-dismiss + FCM global au login) | `src/components/Layout.tsx` |
-
-### Catalogue Firestore — structure actuelle
-- Collection `catalogue` (104 produits) — remplace `produits` pour Fabrication, Vitrine, Ruptures, Pertes, Commandes
-- Champs clés : `name`, `abrv`, `defaultCategory` (display), `gepCategory` (HACCP), `dlcDays`, `active`, `inReception`, `inFabrication`, `inVitrine`, `allergenes[]`
-- Catégories fixes : `Mezze` · `Plats` · `Bowl` · `Tiropitas` · `Salades` · `Desserts` · `Boissons` · `Autre`
-- `defaultCategory` = groupement dans Ruptures & Commandes (trié alphabétiquement par catégorie)
-- `gepCategory` = seuil température GEP réception livraison (VIANDE, POISSON, PLAT_CUISINE, etc.)
-- `inFabrication` : affiché dans Fabrication cuisine — **true par défaut si absent** (filtre `!== false`)
-- `inReception` : affiché dans Réception cuisine (fournisseur)
-- `inVitrine` : affiché dans formulaire Vitrine corner (saisie manuelle)
-
-### Comportement clé — inFabrication
-- Jus de Citron = `inFabrication: true` UNIQUEMENT (pas inReception, pas inVitrine) : cuisine le fabrique et l'envoie au corner pour assaisonnement, non vendu
+- **CA progressif** → `/admin/settings` → `settings/primes_ca`
+- **Comportement/ponctualité** → `src/modules/planning/utils/primes.ts`, constante `BAREME`
+- **Prime hygiène** → même fichier, `HYGIENE_BONUS = 50`
+- **Montants custom par employé** → `/planning` → 👥 Employés
+- **Avenants contrat** → même UI
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
@@ -854,8 +644,6 @@ If the index previously included embeddings, preserve them by adding `--embeddin
 npx gitnexus analyze --embeddings
 ```
 
-To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.embeddings` field shows the count (0 means no embeddings). **Running analyze without `--embeddings` will delete any previously generated embeddings.**
-
 > Claude Code users: A PostToolUse hook handles this automatically after `git commit` and `git merge`.
 
 ## CLI
@@ -870,90 +658,3 @@ To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
-
-## ✅ CORRECTIONS & AMÉLIORATIONS — Session 2026-04-15 (déployé)
-
-| # | Fix | Fichier |
-|---|-----|---------|
-| S1 | **Vitrine loadLots** — exclut les lots dont le produit a `inVitrine: false` dans le catalogue (légumes rôtis, pastèque/riz noir/feta, etc.) | `corner/Vitrine.tsx` |
-| S2 | **Corner Livraison** — produits sans temp groupés en une seule carte avec checkboxes individuelles + bouton "Valider réception (X/N)" global. Retour cuisine + Supprimer conservés par ligne | `corner/Livraison.tsx` |
-| S3 | **Corner Ruptures** — refonte complète : best-sellers (configurables dans settings) en haut 2 col · panel "À COMMANDER" entre best-sellers et catalogue · catalogue complet depuis `catalogue` (pas `produits`) trié Mezze→Salades→Tiropitas→Plats→Bowl→Desserts→Autre→Boissons · produit cliqué disparaît de la grille → panel · clic dans panel = 🔴↔🟠 · ✕ = retire | `corner/Ruptures.tsx` |
-| S4 | **PWA mise à jour automatique** — `skipWaiting: true` + `clientsClaim: true` dans workbox · `no-cache` sur `index.html`, `sw.js`, `workbox-*.js` dans firebase.json · bannière bleue "Nouvelle version disponible 🆕 Actualiser ↺" via `onNeedRefresh` dans main.tsx | `vite.config.ts`, `firebase.json`, `src/main.tsx` |
-| S5 | **Pertes rapport** — requête Firestore avait double `orderBy(date)+orderBy(addedAt)` → index composite absent → crash silencieux. Fix : orderBy retirés de la query, tri côté client. Catalogue chargé depuis `catalogue` (pas `produits`) | `corner/Pertes.tsx` |
-| S6 | **Dashboard corner commandes semaine** — bannière toujours visible (plus de condition `else if`) · style orange ⚠️ proéminent · liste les prochaines commandes avec date + nom client | `corner/Dashboard.tsx` |
-
-### Comportements clés Corner Ruptures (session 2026-04-15)
-
-- **Best-sellers** : liste depuis `settings/ruptures.produits[]` (configurable dans `/admin/settings`). Clic = null↔urgent. Disparaît de la grille quand sélectionné.
-- **Catalogue** : collection `catalogue`, trié par `defaultCategory` avec ordre fixe `CAT_ORDER`. Clic = urgent direct (disparaît de la grille). Les produits réapparaissent dans la grille si retirés du panel.
-- **Panel "À COMMANDER"** : s'affiche entre best-sellers et catalogue. Clic sur item = 🔴↔🟠. ✕ = null (réapparaît dans sa grille source).
-- `ruptures_actives` : `ruptures[]` = urgent, `presqueRuptures[]` = moins-urgent.
-
-### Comportements clés Corner Livraison (session 2026-04-15)
-
-- **Produits avec temp** : cartes individuelles inchangées (saisie temp + photo + "Valider réception").
-- **Produits sans temp** : regroupés dans une carte unique. En-tête avec "Tout cocher". Bouton global "Valider réception (X/N produits)" — `submitAllNoTemp()` batch updateDoc. Retour cuisine + Supprimer par ligne conservés.
-
-### PWA update flow (session 2026-04-15)
-1. Deploy → nouveau `sw.js` détecté par le navigateur à la prochaine navigation
-2. Nouveau SW s'installe → `skipWaiting` active immédiatement → `clientsClaim` prend contrôle
-3. `onNeedRefresh` → bannière bleue en haut de l'écran → bouton "Actualiser ↺" → `window.location.reload()`
-4. Plus besoin de vider le cache ou de navigation privée
-
-## ✅ CORRECTIONS & AMÉLIORATIONS — Session 2026-04-15 (suite, déployé)
-
-| # | Fix | Fichier |
-|---|-----|---------|
-| S7 | **Emails rappels commandes** — `notifCommandesJ7` (CF schedulée 8h) : email HTML à `a.cozzika@gmail.com` avec toutes les commandes des 7 prochains jours groupées par date. Pas d'envoi si aucune commande. | `functions/src/index.ts` |
-| S8 | **Email rappel J-2** — `notifCommandesJ2` enrichie : envoie en plus un email HTML récap des commandes du surlendemain (en plus des FCM existants). Pas d'envoi si aucune commande. | `functions/src/index.ts` |
-| S9 | **Index Firestore ruptures_actives** — index composite `viewed ASC + createdAt DESC` ajouté → bandeau rouge cuisine fonctionnel (query rejetée silencieusement sans cet index) | `firestore.indexes.json` |
-| S10 | ~~**Ruptures archivage avant envoi**~~ — **ANNULÉ en session 2026-04-16** : ce comportement effaçait les signaux précédents au lieu de les cumuler. Voir session 2026-04-16. | `corner/Ruptures.tsx` |
-
-### Règles bandeau ruptures cuisine (définitives — mises à jour 2026-04-16)
-
-**Apparition** : dès qu'un doc `ruptures_actives` avec `viewed==false` existe dans la fenêtre :
-- Avant 10h → depuis hier 13h
-- Après 10h → depuis minuit du jour J
-
-**Accumulation** : chaque envoi corner crée un **nouveau doc** sans archiver les précédents. `flatMap` + `Set` sur tous les docs non vus → doublons dédupliqués par nom produit, listes fusionnées. Les deux envois jour (matin + soir) s'additionnent.
-
-**Disparition — 1 seul déclencheur** :
-1. Bouton **"✓ On s'en occupe"** (cuisine) → `batch.update viewed:true` sur tous les docs visibles
-
-> ⚠️ NE JAMAIS archiver les anciens docs `ruptures_actives` lors d'un nouvel envoi corner. C'est le bug original : la 2e commande effaçait la 1ère.
-
-### Emails commandes automatiques (définitifs)
-
-| Heure | Fonction | Contenu |
-|-------|----------|---------|
-| 8h00 | `notifCommandesJ7` | Email HTML — toutes commandes J+0 à J+7, groupées par date |
-| 14h00 | `notifCommandesJ2` | FCM patron/manager/cuisine + Email HTML — commandes dans exactement 2 jours |
-
-Les deux : pas d'envoi si aucune commande dans la fenêtre.
-
----
-
-## ✅ CORRECTIONS — Session 2026-04-16
-
-| # | Fix | Fichier |
-|---|-----|---------|
-| A1 | **Ruptures — accumulation restaurée** — suppression du bloc qui archivait (`viewed:true`) les anciens docs avant d'en créer un nouveau. Chaque envoi corner crée désormais un doc indépendant. Les deux envois du jour (matin + soir) s'additionnent. | `corner/Ruptures.tsx` |
-| A2 | **Commande annulée visible cuisine** — ajout filtre `STATUTS_ACTIFS` (`['en cours', 'devis envoyé', 'accepté']`) sur les commandes du dashboard cuisine. Sans ce filtre, les commandes annulées s'affichaient. | `cuisine/Dashboard.tsx` |
-| A3 | **Livraisons en attente fantômes** — alignement du filtre dashboard corner avec celui de `Livraison.tsx` : ajout de `!l.receptionAt && !l.returned`. Une livraison marquée reçue (même sans temp) n'apparaît plus comme "en attente". | `corner/Dashboard.tsx` |
-| A4 | **Card températures frigos supprimée** — encart "Frigos / Températures" retiré du dashboard cuisine (inutile, données déjà accessibles via l'onglet Températures). | `cuisine/Dashboard.tsx` |
-| A5 | **UI températures mobile** — saisie frigos : padding réduit (`14px 16px` → `12px 10px`), gap grille réduit, `minWidth:0` sur flex/grid children, `fontSize` input réduit (`16px` → `14px`), bouton ± réduit (`32px` → `28px`), label session raccourci. Soir ne déborde plus sur iPhone SE (320px). | `corner/Temperatures.tsx` |
-
-### Règles filtres commandes — STATUTS_ACTIFS (identiques corner et cuisine)
-
-```ts
-const STATUTS_ACTIFS = ['en cours', 'devis envoyé', 'accepté']
-// .filter(c => STATUTS_ACTIFS.includes((c.statut ?? '').toLowerCase()))
-```
-Statuts exclus : `annulée`, `livrée`, `refusée`, et tout statut inconnu.
-
-### Règle filtre livraisons pending (identique dashboard et page Livraison)
-
-```ts
-l.receptionTempC == null && !l.receptionAt && !l.returned && l.departAt?.toDate && l.departAt.toDate().getTime() >= t0
-```
-> ⚠️ Ces deux filtres (dashboard + page) doivent TOUJOURS être synchronisés. Toute modification du filtre dans `Livraison.tsx` doit être reportée dans `corner/Dashboard.tsx` et vice versa.

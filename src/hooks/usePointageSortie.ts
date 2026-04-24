@@ -7,20 +7,20 @@ import { useAuth } from '../auth/useAuth'
 type Status = 'idle' | 'loading' | 'success' | 'error'
 
 function todayStr() {
-  return new Date().toISOString().slice(0, 10)
+  return new Date().toLocaleDateString('fr-CA')
 }
 
 export function usePointageSortie() {
   const { user } = useAuth()
-  const [canPointer, setCanPointer] = useState(false)  // arrivée ok, départ manquant
+  const [canPointer, setCanPointer] = useState(false)
   const [status, setStatus] = useState<Status>('idle')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [blockedUntil, setBlockedUntil] = useState<Date | null>(null)  // null = pas bloqué
 
-  // Vérifie le statut de pointage du jour
   useEffect(() => {
     if (!user?.uid) return
     const isManager = ['manager', 'patron', 'administrateur'].includes(user.role)
-    if (isManager) return  // managers ne pointent pas
+    if (isManager) return
 
     const q = query(
       collection(db, 'pointages'),
@@ -29,9 +29,25 @@ export function usePointageSortie() {
     )
     getDocs(q).then(snap => {
       const docs = snap.docs.map(d => d.data() as any)
-      const hasArrivee = docs.some(d => d.typePointage === 'arrivée' && d.statut === 'validé')
-      const hasDepart  = docs.some(d => d.typePointage === 'départ'  && d.statut === 'validé')
-      setCanPointer(hasArrivee && !hasDepart)
+      const arrivee = docs.find(d => d.typePointage === 'arrivée' && d.statut === 'validé')
+      const hasDepart = docs.some(d => d.typePointage === 'départ' && d.statut === 'validé' && d.autoCheckout !== true)
+
+      if (arrivee && !hasDepart) {
+        setCanPointer(true)
+        // Calculer le blocage 1h
+        const arriveeMs = arrivee.timestamp?.toMillis?.() ?? (arrivee.timestamp?.seconds != null ? arrivee.timestamp.seconds * 1000 : 0)
+        if (arriveeMs) {
+          const unlockMs = arriveeMs + 60 * 60000
+          if (Date.now() < unlockMs) {
+            setBlockedUntil(new Date(unlockMs))
+            // Rafraîchir quand le blocage expire
+            const timeout = setTimeout(() => setBlockedUntil(null), unlockMs - Date.now())
+            return () => clearTimeout(timeout)
+          }
+        }
+      } else {
+        setCanPointer(false)
+      }
     }).catch(() => {})
   }, [user?.uid, user?.role])
 
@@ -54,9 +70,18 @@ export function usePointageSortie() {
             await createPointage({ latitude, longitude, accuracy, typePointage: 'départ' })
             setStatus('success')
             setCanPointer(false)
+            setBlockedUntil(null)
             resolve('success')
           } catch (e: any) {
-            setErrorMsg(e?.message || 'Erreur enregistrement.')
+            const msg: string = e?.message || 'Erreur enregistrement.'
+            // Extraire l'heure de déblocage si message BLOCKED_1H
+            if (msg.includes('BLOCKED_1H:')) {
+              const parts = msg.split(':')
+              const timeStr = parts[1] + ':' + parts[2]  // ex: "09:30"
+              setErrorMsg(`Sortie disponible à ${timeStr}`)
+            } else {
+              setErrorMsg(msg)
+            }
             setStatus('error')
             resolve('error')
           }
@@ -65,7 +90,7 @@ export function usePointageSortie() {
           if (err.code === err.PERMISSION_DENIED) {
             setErrorMsg('Permission GPS refusée. Activez-la dans les réglages.')
           } else {
-            setErrorMsg('Impossible d\'obtenir votre position.')
+            setErrorMsg("Impossible d'obtenir votre position.")
           }
           setStatus('error')
           resolve('error')
@@ -75,5 +100,5 @@ export function usePointageSortie() {
     })
   }
 
-  return { canPointer, status, errorMsg, doPointageSortie, setStatus }
+  return { canPointer, status, errorMsg, doPointageSortie, setStatus, blockedUntil }
 }

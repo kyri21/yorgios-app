@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { signInWithEmailAndPassword } from 'firebase/auth';
+import { signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
 import { useNavigate } from 'react-router-dom';
 import { auth } from '../firebase/config';
 import { useAuth } from '../auth/useAuth';
@@ -8,6 +8,8 @@ import { registerDeviceAsIPad } from '../firebase/messaging';
 
 const IPAD_CORNER_EMAIL  = 'ipad@yorgios.fr'
 const IPAD_CUISINE_EMAIL = 'ipad.cuisine@yorgios.fr'
+const PLANNING_EMAIL     = 'planning@yorgios.fr'
+const PLANNING_PASSWORD  = 'planning2026'
 
 export default function Login() {
   const [email, setEmail]       = useState('');
@@ -15,6 +17,9 @@ export default function Login() {
   const [error, setError]       = useState('');
   const [loading, setLoading]   = useState(false);
   const [quickMode, setQuickMode] = useState<'corner' | 'cuisine' | null>(null);
+  const [planningLoading, setPlanningLoading] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
   const navigate = useNavigate();
   const { user } = useAuth();
 
@@ -41,11 +46,40 @@ export default function Login() {
     }
   }
 
+  async function loginPlanning() {
+    setPlanningLoading(true)
+    try {
+      await signInWithEmailAndPassword(auth, PLANNING_EMAIL, PLANNING_PASSWORD)
+      navigate('/planning', { replace: true })
+    } catch {
+      setError('Connexion planning impossible. Contactez un responsable.')
+    } finally {
+      setPlanningLoading(false)
+    }
+  }
+
   function activateQuick(mode: 'corner' | 'cuisine') {
     setQuickMode(mode);
     setEmail('');
     setPassword('');
     setError('');
+  }
+
+  async function handleForgotPassword() {
+    if (!email.trim()) {
+      setError('Entrez votre email puis cliquez sur "Mot de passe oublié".');
+      return;
+    }
+    setResetLoading(true);
+    try {
+      await sendPasswordResetEmail(auth, email.trim());
+      setResetSent(true);
+      setError('');
+    } catch {
+      setError("Impossible d'envoyer l'email. Vérifiez l'adresse.");
+    } finally {
+      setResetLoading(false);
+    }
   }
 
   function cancelQuick() {
@@ -129,6 +163,42 @@ export default function Login() {
         }}>
           Espace de travail
         </p>
+
+        {/* Bouton Planning corner — accès direct sans mot de passe */}
+        {!quickMode && (
+          <button
+            type="button"
+            onClick={loginPlanning}
+            disabled={planningLoading}
+            style={{
+              width: '100%', marginBottom: 12,
+              padding: '16px 18px',
+              background: planningLoading ? 'rgba(0,66,117,0.5)' : 'linear-gradient(135deg, #004275 0%, #005a9c 100%)',
+              border: 'none',
+              borderRadius: 18, cursor: planningLoading ? 'not-allowed' : 'pointer',
+              display: 'flex', alignItems: 'center', gap: 14,
+              fontFamily: 'Manrope, sans-serif',
+              boxShadow: '0 4px 24px rgba(0,66,117,0.22)',
+            }}
+          >
+            <div style={{
+              width: 48, height: 48, borderRadius: 14,
+              background: 'rgba(255,255,255,0.15)',
+              flexShrink: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 24,
+            }}>
+              📅
+            </div>
+            <div style={{ textAlign: 'left', flex: 1 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#fff' }}>
+                {planningLoading ? 'Connexion…' : 'Mon planning'}
+              </div>
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.7)', marginTop: 2 }}>Accès lecture seule</div>
+            </div>
+            {!planningLoading && <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 18, fontWeight: 300 }}>›</div>}
+          </button>
+        )}
 
         {/* Boutons iPad — visibles uniquement si aucun mode quick actif */}
         {!quickMode && (
@@ -307,6 +377,32 @@ export default function Login() {
             ) : 'Se connecter'}
           </button>
         </form>
+
+        {/* Mot de passe oublié — uniquement mode normal */}
+        {!quickMode && (
+          <div style={{ marginTop: 14, textAlign: 'center' }}>
+            {resetSent ? (
+              <p style={{ fontFamily: 'Manrope, sans-serif', fontSize: 13, color: 'var(--success)' }}>
+                Email envoyé ! Vérifiez votre boîte.
+              </p>
+            ) : (
+              <button
+                type="button"
+                onClick={handleForgotPassword}
+                disabled={resetLoading}
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  fontFamily: 'Manrope, sans-serif', fontSize: 13,
+                  color: 'var(--primary)', textDecoration: 'underline',
+                  opacity: resetLoading ? 0.5 : 1,
+                  padding: 0,
+                }}
+              >
+                {resetLoading ? 'Envoi…' : 'Mot de passe oublié ?'}
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Lien RGPD */}
         <p style={{

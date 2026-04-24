@@ -8,7 +8,7 @@ import { useAuth } from '../../../auth/useAuth'
 // ─── Types ────────────────────────────────────────────────────────
 type StockRow    = { id: number; produit: string; contenant: string; niveau: string }
 type PhotoSlot   = { label: string; required: boolean; file: File | null; preview: string | null; url?: string }
-type CatalogueProduit = { id: string; name: string; defaultCategory: string }
+type CatalogueProduit = { id: string; name: string; defaultCategory: string; inFabrication?: boolean }
 
 const CONTENANTS = ['Sceau', 'Plaque inox', 'Plat inox', 'Plat en fer blanc et bleu', 'Grand sceau', 'Bac gastro', 'Bac blanc']
 const NIVEAUX    = ['Plein', 'Trois-quarts', 'Moitié', 'Un quart']
@@ -58,8 +58,8 @@ export default function Ruptures() {
   const [catalogueProduits, setCatalogueProduits] = useState<CatalogueProduit[]>([])
   const [stockProduits, setStockProduits]         = useState<string[]>(BESTSELLERS)
   const [personne, setPersonne]                   = useState('')
-  // null = j'ai du stock  |  'urgent' = 🔴 rupture  |  'moins-urgent' = 🟠 presque rupture
-  const [stockChecks, setStockChecks]             = useState<Record<string, 'urgent' | 'moins-urgent' | null>>({})
+  // null = neutre  |  'oui' = ✓ j'ai du stock  |  'urgent' = 🔴 rupture  |  'moins-urgent' = 🟠 presque rupture
+  const [stockChecks, setStockChecks]             = useState<Record<string, 'urgent' | 'moins-urgent' | 'oui' | null>>({})
   const [catalogueSearch, setCatalogueSearch]     = useState('')
   const [stock, setStock]                         = useState<StockRow[]>([emptyStock()])
   const [photos, setPhotos]                       = useState<PhotoSlot[]>(PHOTO_SLOTS_INIT)
@@ -98,8 +98,9 @@ export default function Ruptures() {
             id: d.id,
             name: (d.data() as any).name as string,
             defaultCategory: ((d.data() as any).defaultCategory as string) || 'Autre',
+            inFabrication: (d.data() as any).inFabrication,
           }))
-          .filter(p => p.name)
+          .filter(p => p.name && p.inFabrication !== false)
         items.sort((a, b) => {
           const c = a.defaultCategory.localeCompare(b.defaultCategory, 'fr')
           return c !== 0 ? c : a.name.localeCompare(b.name, 'fr')
@@ -110,9 +111,13 @@ export default function Ruptures() {
   }, [])
 
   // ── Helpers ──────────────────────────────────────────────────────
-  // Best-sellers grid : null ↔ urgent (simple toggle)
+  // Best-sellers grid : null → 'oui' → 'urgent' → null
   function toggleBestSeller(name: string) {
-    setStockChecks(prev => ({ ...prev, [name]: prev[name] ? null : 'urgent' }))
+    setStockChecks(prev => {
+      const cur = prev[name]
+      const next = !cur ? 'oui' : cur === 'oui' ? 'urgent' : null
+      return { ...prev, [name]: next }
+    })
   }
   // Catalogue grid : null → urgent (item disparaît de la grille)
   function addFromCatalogue(name: string) {
@@ -286,9 +291,6 @@ export default function Ruptures() {
   // Articles sélectionnés (urgent ou moins-urgent) — panel entre best-sellers et catalogue
   const selectedEntries = Object.entries(stockChecks).filter(([, v]) => v === 'urgent' || v === 'moins-urgent')
 
-  // Best-sellers visibles dans la grille (non sélectionnés)
-  const bestsellersVisible = stockProduits.filter(name => !stockChecks[name])
-
   // Catalogue : exclut les sélectionnés (ils disparaissent de la grille) + filtre recherche
   const selectedSet = new Set(selectedEntries.map(([name]) => name))
   const catalogueFiltered = catalogueProduits
@@ -353,30 +355,42 @@ export default function Ruptures() {
         {/* ── Best-sellers ── */}
         <p className="section-label" style={{ margin: '0 0 6px' }}>PRODUITS PHARES</p>
         <p style={{ fontSize: 11, color: 'var(--on-surface-3)', margin: '0 0 10px', fontFamily: 'Manrope, sans-serif' }}>
-          Appuyez si rupture → apparaît dans la liste ci-dessous
+          1 clic = ✓ OUI j'ai du stock · 2 clics = 🔴 NON → rupture · 3 clics = annuler
         </p>
-        {bestsellersVisible.length > 0 ? (
+        {stockProduits.length > 0 ? (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 4 }}>
-            {bestsellersVisible.map(name => (
-              <button
-                key={name}
-                onClick={() => toggleBestSeller(name)}
-                style={{
-                  background: 'var(--surface-low)', borderRadius: 10, padding: '11px 10px',
-                  border: '1.5px solid var(--border-soft)', cursor: 'pointer',
-                  textAlign: 'left', minHeight: 44, display: 'flex', alignItems: 'center',
-                  transition: 'background 0.12s',
-                }}
-              >
-                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--on-surface)', fontFamily: 'Manrope, sans-serif', lineHeight: 1.3 }}>
-                  {name}
-                </span>
-              </button>
-            ))}
+            {stockProduits.map(name => {
+              const state = stockChecks[name]
+              const isOui    = state === 'oui'
+              const isUrgent = state === 'urgent'
+              return (
+                <button
+                  key={name}
+                  onClick={() => toggleBestSeller(name)}
+                  style={{
+                    background: isOui ? 'rgba(45,122,79,0.09)' : isUrgent ? 'rgba(192,57,43,0.09)' : 'var(--surface-low)',
+                    borderRadius: 10, padding: '11px 10px',
+                    border: isOui ? '1.5px solid rgba(45,122,79,0.30)' : isUrgent ? '1.5px solid rgba(192,57,43,0.28)' : '1.5px solid var(--border-soft)',
+                    cursor: 'pointer', textAlign: 'left', minHeight: 44,
+                    display: 'flex', alignItems: 'center', gap: 6,
+                    transition: 'background 0.12s, border-color 0.12s',
+                  }}
+                >
+                  {isOui    && <span style={{ fontSize: 14, flexShrink: 0, color: 'var(--success)', fontWeight: 800 }}>✓</span>}
+                  {isUrgent && <span style={{ fontSize: 14, flexShrink: 0 }}>🔴</span>}
+                  <span style={{
+                    fontSize: 13, fontWeight: 600, lineHeight: 1.3, fontFamily: 'Manrope, sans-serif',
+                    color: isOui ? 'var(--success)' : isUrgent ? 'var(--danger)' : 'var(--on-surface)',
+                  }}>
+                    {name}
+                  </span>
+                </button>
+              )
+            })}
           </div>
         ) : (
-          <p style={{ fontSize: 12, color: 'var(--success)', fontFamily: 'Manrope, sans-serif', margin: '0 0 4px', fontWeight: 600 }}>
-            Tous les produits phares sont signalés ✓
+          <p style={{ fontSize: 12, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', margin: '0 0 4px' }}>
+            Aucun produit phare configuré.
           </p>
         )}
 

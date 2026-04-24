@@ -260,9 +260,19 @@ export default function Livraison() {
     finally { setBulkLoading(false); setStatus('') }
   }
 
-  async function retourCuisine(id: string) {
+  async function retourCuisine(id: string, lotCode?: string) {
     try {
       await updateDoc(doc(db, 'livraisons', id), { returned: true, returnedAt: Timestamp.now() })
+      if (lotCode) {
+        const lotsSnap = await getDocs(query(
+          collection(db, 'lots_cuisine'),
+          where('lotCode', '==', lotCode),
+          limit(1),
+        ))
+        if (!lotsSnap.empty) {
+          await updateDoc(lotsSnap.docs[0].ref, { sent: false, sentToCornerAt: null })
+        }
+      }
       await load()
     } catch (e: any) { setError(e?.message) }
   }
@@ -455,7 +465,7 @@ export default function Livraison() {
                   </button>
 
                   <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                    <button onClick={() => retourCuisine(l.id)} style={{
+                    <button onClick={() => retourCuisine(l.id, l.lotCode)} style={{
                       fontSize: 12, padding: '6px 12px', borderRadius: 8, border: 'none', cursor: 'pointer',
                       background: 'rgba(0,66,117,0.08)', color: 'var(--primary)', fontWeight: 600,
                       fontFamily: 'Manrope, sans-serif',
@@ -544,7 +554,7 @@ export default function Livraison() {
 
                     {/* Boutons retour/suppr */}
                     <div style={{ display: 'flex', gap: 8, padding: '0 16px 10px', paddingTop: 0 }}>
-                      <button onClick={() => retourCuisine(l.id)} style={{
+                      <button onClick={() => retourCuisine(l.id, l.lotCode)} style={{
                         fontSize: 11, padding: '5px 10px', borderRadius: 7, border: 'none', cursor: 'pointer',
                         background: 'rgba(0,66,117,0.08)', color: 'var(--primary)', fontWeight: 600,
                         fontFamily: 'Manrope, sans-serif',
@@ -596,46 +606,61 @@ export default function Livraison() {
                   const isRefuse = l.result === 'REFUSE'
                   return (
                     <div key={l.id} style={{
-                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                       background: isRefuse ? 'rgba(192,57,43,0.04)' : 'var(--surface-low)',
                       borderRadius: 12, padding: '12px 14px',
                       border: isRefuse ? '1px solid rgba(192,57,43,0.15)' : '1px solid var(--border)',
                     }}>
-                      <div>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--on-surface)' }}>
-                          {l.productName}
+                      {/* Ligne principale : infos + chip */}
+                      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--on-surface)' }}>
+                            {l.productName}
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2 }}>
+                            {l.receptionTempC != null
+                              ? `Réception ${l.receptionTempC}°C à ${recAt}`
+                              : `Réceptionné à ${recAt}`}
+                          </div>
+                          <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                            {l.departPhotoUrl && (
+                              <button
+                                onClick={() => setPhotoModal({ url: l.departPhotoUrl!, label: 'Photo départ' })}
+                                style={{
+                                  fontSize: 11, color: 'var(--primary)', background: 'none', border: 'none',
+                                  cursor: 'pointer', padding: 0, fontWeight: 600, fontFamily: 'Manrope, sans-serif',
+                                }}
+                              >
+                                Photo départ
+                              </button>
+                            )}
+                            {l.receptionPhotoUrl && (
+                              <button
+                                onClick={() => setPhotoModal({ url: l.receptionPhotoUrl!, label: 'Photo réception' })}
+                                style={{
+                                  fontSize: 11, color: 'var(--primary)', background: 'none', border: 'none',
+                                  cursor: 'pointer', padding: 0, fontWeight: 600, fontFamily: 'Manrope, sans-serif',
+                                }}
+                              >
+                                Photo réception
+                              </button>
+                            )}
+                          </div>
                         </div>
-                        <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2 }}>
-                          {l.receptionTempC != null
-                            ? `Réception ${l.receptionTempC}°C à ${recAt}`
-                            : `Réceptionné à ${recAt}`}
-                        </div>
-                        <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-                          {l.departPhotoUrl && (
-                            <button
-                              onClick={() => setPhotoModal({ url: l.departPhotoUrl!, label: 'Photo départ' })}
-                              style={{
-                                fontSize: 11, color: 'var(--primary)', background: 'none', border: 'none',
-                                cursor: 'pointer', padding: 0, fontWeight: 600, fontFamily: 'Manrope, sans-serif',
-                              }}
-                            >
-                              Photo départ
-                            </button>
-                          )}
-                          {l.receptionPhotoUrl && (
-                            <button
-                              onClick={() => setPhotoModal({ url: l.receptionPhotoUrl!, label: 'Photo réception' })}
-                              style={{
-                                fontSize: 11, color: 'var(--primary)', background: 'none', border: 'none',
-                                cursor: 'pointer', padding: 0, fontWeight: 600, fontFamily: 'Manrope, sans-serif',
-                              }}
-                            >
-                              Photo réception
-                            </button>
-                          )}
-                        </div>
+                        {resultChip(l.result)}
                       </div>
-                      {resultChip(l.result)}
+                      {/* Bouton retour cuisine */}
+                      <div style={{ marginTop: 8 }}>
+                        <button
+                          onClick={() => retourCuisine(l.id, l.lotCode)}
+                          style={{
+                            fontSize: 11, padding: '5px 10px', borderRadius: 7, border: 'none', cursor: 'pointer',
+                            background: 'rgba(0,66,117,0.08)', color: 'var(--primary)', fontWeight: 600,
+                            fontFamily: 'Manrope, sans-serif',
+                          }}
+                        >
+                          ↩ Retour cuisine
+                        </button>
+                      </div>
                     </div>
                   )
                 })}

@@ -40,3 +40,4 @@ reference/
 storage
 .gitnexus
 .worktrees/
+.gstack/

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { collection, deleteDoc, doc, getDocs, setDoc, Timestamp, updateDoc } from 'firebase/firestore'
+import { collection, deleteDoc, doc, getDocs, getDoc, setDoc, Timestamp, updateDoc } from 'firebase/firestore'
 import { db } from '../firebase/config'
+import { DEFAULT_PRIORITY_LEVELS, type PriorityLevel } from './AdminSettings'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -11,14 +12,15 @@ type Produit = {
   id: string
   name: string
   abrv: string
-  defaultCategory: DisplayCategory  // catégorie d'affichage — utilisée pour grouper dans Ruptures & Commandes
-  gepCategory: GepCategory          // catégorie HACCP pour seuils température livraison
+  defaultCategory: DisplayCategory
+  gepCategory: GepCategory
   dlcDays: number
   active: boolean
-  inReception: boolean      // affiché dans Réception cuisine (reçu d'un fournisseur)
-  inFabrication: boolean    // affiché dans Fabrication cuisine (fabriqué en interne)
-  inVitrine: boolean        // affiché dans Vitrine corner
+  inReception: boolean
+  inFabrication: boolean
+  inVitrine: boolean
   allergenes: string[]
+  priority: number | null
 }
 
 const DISPLAY_CATEGORIES: DisplayCategory[] = [
@@ -50,6 +52,7 @@ const EMPTY_FORM = {
   inReception: false,
   inFabrication: true,
   inVitrine: false,
+  priority: null as number | null,
 }
 
 function gepLabel(c: GepCategory)  { return GEP_CATEGORIES.find(x => x.value === c)?.label ?? c }
@@ -73,7 +76,10 @@ export default function AdminProduits() {
 
   const [showInactive, setShowInactive] = useState(false)
   const [filterCat, setFilterCat]       = useState<string>('all')
+  const [filterPriority, setFilterPriority] = useState<string>('all')
   const [search, setSearch]             = useState('')
+  const [sortByPriority, setSortByPriority] = useState(false)
+  const [priorityLevels, setPriorityLevels] = useState<PriorityLevel[]>(DEFAULT_PRIORITY_LEVELS)
 
   // Catégories d'affichage existantes (pour datalist)
   const displayCategories = [...new Set(
@@ -96,9 +102,10 @@ export default function AdminProduits() {
             dlcDays:         data.dlcDays         ?? 3,
             active:          data.active          !== false,
             inReception:     data.inReception     === true,
-            inFabrication:   data.inFabrication   !== false, // true par défaut si absent
+            inFabrication:   data.inFabrication   !== false,
             inVitrine:       data.inVitrine        === true,
             allergenes:      data.allergenes       ?? [],
+            priority:        data.priority        ?? null,
           }
         })
         .sort((a, b) => a.name.localeCompare(b.name, 'fr'))
@@ -110,7 +117,15 @@ export default function AdminProduits() {
     }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    getDoc(doc(db, 'settings', 'priority_levels')).then(snap => {
+      if (snap.exists()) {
+        const lvls = (snap.data() as any).levels
+        if (Array.isArray(lvls) && lvls.length > 0) setPriorityLevels(lvls)
+      }
+    }).catch(() => {})
+  }, [])
 
   async function create() {
     if (!form.name.trim())          return setError('Nom obligatoire')
@@ -131,6 +146,7 @@ export default function AdminProduits() {
         inReception:     form.inReception,
         inFabrication:   form.inFabrication,
         inVitrine:       form.inVitrine,
+        priority:        form.priority ?? null,
         createdAt:       Timestamp.now(),
       })
       setForm(EMPTY_FORM)
@@ -153,6 +169,7 @@ export default function AdminProduits() {
         gepCategory:     editForm.gepCategory,
         dlcDays:         Number(editForm.dlcDays),
         allergenes:      editForm.allergenes,
+        priority:        editForm.priority ?? null,
         updatedAt:       Timestamp.now(),
       })
       setEditId(null)
@@ -187,6 +204,7 @@ export default function AdminProduits() {
       inReception: p.inReception,
       inFabrication: p.inFabrication,
       inVitrine: p.inVitrine,
+      priority: p.priority,
     })
     setError(null)
   }
@@ -194,7 +212,15 @@ export default function AdminProduits() {
   const filtered = produits
     .filter(p => showInactive ? p.active === false : p.active !== false)
     .filter(p => filterCat === 'all' || p.defaultCategory === filterCat)
+    .filter(p => filterPriority === 'all' || (filterPriority === 'null' ? p.priority == null : p.priority === Number(filterPriority)))
     .filter(p => !search.trim() || p.name.toLowerCase().includes(search.toLowerCase()))
+    .sort((a, b) => {
+      if (!sortByPriority) return a.name.localeCompare(b.name, 'fr')
+      if (a.priority === b.priority) return a.name.localeCompare(b.name, 'fr')
+      if (a.priority === null) return 1
+      if (b.priority === null) return -1
+      return a.priority - b.priority
+    })
 
   return (
     <div className="page">
@@ -249,6 +275,7 @@ export default function AdminProduits() {
           <ProductForm
             form={form} setForm={setForm}
             displayCategories={displayCategories}
+            priorityLevels={priorityLevels}
           />
           <button className="btn-primary" style={{ marginTop: 14, width: '100%' }} onClick={create} disabled={creating}>
             {creating ? 'Création…' : 'Créer le produit'}
@@ -285,6 +312,24 @@ export default function AdminProduits() {
             {displayCategories.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
         )}
+        <select
+          value={filterPriority}
+          onChange={e => setFilterPriority(e.target.value)}
+          className="input-filled"
+          style={{ fontSize: 12, padding: '5px 10px', width: 'auto' }}
+        >
+          <option value="all">Toutes priorités</option>
+          {priorityLevels.map(l => (
+            <option key={l.level} value={String(l.level)}>{l.name}</option>
+          ))}
+          <option value="null">Sans priorité</option>
+        </select>
+        <button
+          onClick={() => setSortByPriority(v => !v)}
+          className={sortByPriority ? 'btn-primary' : 'btn-secondary'}
+          style={{ fontSize: 12, padding: '5px 12px' }}
+          title="Trier par priorité de vente"
+        >{sortByPriority ? '★ Priorité' : '↕ Priorité'}</button>
         <button onClick={() => setShowInactive(v => !v)} className="btn-secondary" style={{ fontSize: 12, padding: '5px 12px' }}>
           {showInactive ? '← Actifs' : 'Désactivés'}
         </button>
@@ -319,8 +364,20 @@ export default function AdminProduits() {
                         {p.abrv || '?'}
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 15, fontWeight: 700, color: p.active === false ? 'var(--on-surface-3)' : 'var(--on-surface)' }}>
-                          {p.name}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{ fontSize: 15, fontWeight: 700, color: p.active === false ? 'var(--on-surface-3)' : 'var(--on-surface)' }}>
+                            {p.name}
+                          </span>
+                          {p.priority != null && (() => {
+                            const lvl = priorityLevels.find(l => l.level === p.priority)
+                            return lvl ? (
+                              <span style={{
+                                fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 99,
+                                background: lvl.color + '22', color: lvl.color,
+                                border: `1px solid ${lvl.color}44`, flexShrink: 0,
+                              }}>{lvl.name}</span>
+                            ) : null
+                          })()}
                         </div>
                         <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2 }}>
                           <span style={{ fontWeight: 600, color: 'var(--on-surface-2)' }}>{p.defaultCategory || '—'}</span>
@@ -376,6 +433,7 @@ export default function AdminProduits() {
                     <ProductForm
                       form={editForm} setForm={setEditForm}
                       displayCategories={displayCategories}
+                      priorityLevels={priorityLevels}
                     />
                     <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
                       <button className="btn-primary" style={{ flex: 1, fontSize: 13 }} onClick={() => saveEdit(p.id)} disabled={editSaving}>
@@ -428,11 +486,12 @@ function ToggleBtn({ active, onClick, label, title }: { active: boolean; onClick
 }
 
 function ProductForm({
-  form, setForm, displayCategories,
+  form, setForm, displayCategories, priorityLevels,
 }: {
   form: typeof EMPTY_FORM
   setForm: React.Dispatch<React.SetStateAction<typeof EMPTY_FORM>>
   displayCategories: string[]
+  priorityLevels: PriorityLevel[]
 }) {
   const uid = Math.random().toString(36).slice(2)
   return (
@@ -484,6 +543,23 @@ function ProductForm({
             onChange={e => setForm(f => ({ ...f, dlcDays: parseInt(e.target.value) || 1 }))}
             style={{ width: 72, textAlign: 'center' }} />
         </div>
+      </div>
+
+      {/* Priorité de vente */}
+      <div>
+        <label className="section-label" style={{ display: 'block', marginBottom: 4 }}>
+          Priorité de vente <span style={{ fontWeight: 400, color: 'var(--on-surface-3)' }}>(tri Ruptures → Dashboard cuisine)</span>
+        </label>
+        <select
+          className="input-filled"
+          value={form.priority ?? ''}
+          onChange={e => setForm(f => ({ ...f, priority: e.target.value ? Number(e.target.value) : null }))}
+        >
+          <option value="">— Aucune priorité —</option>
+          {[...priorityLevels].sort((a, b) => a.level - b.level).map(l => (
+            <option key={l.level} value={l.level}>{l.level} — {l.name}</option>
+          ))}
+        </select>
       </div>
 
       {/* Flags présence */}

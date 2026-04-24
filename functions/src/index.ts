@@ -1085,8 +1085,50 @@ export const notifPlatsJour = onSchedule(
 )
 
 // ─────────────────────────────────────────────────────────────────
-// POINTAGE — Email au patron si retard > 10 min (a.cozzika@gmail.com)
-// Prérequis : GMAIL_USER + GMAIL_APP_PASSWORD dans functions/.env
+// UTILITAIRE — Timestamp Paris pour une heure donnée d'un jour donné
+// ─────────────────────────────────────────────────────────────────
+
+function buildParisTimestamp(dateISO: string, hour: number, minute = 0): FirebaseFirestore.Timestamp {
+  // noonUTC sert à détecter l'offset DST Paris (été/hiver) pour ce jour
+  const noonUTC = new Date(`${dateISO}T12:00:00Z`)
+  const parisNoonH = parseInt(noonUTC.toLocaleString('en-US', {
+    timeZone: 'Europe/Paris', hour: 'numeric', hour12: false,
+  }))
+  const offsetH = parisNoonH - 12 // +2 été, +1 hiver
+  const utcHour = hour - offsetH
+  const d = new Date(`${dateISO}T00:00:00Z`)
+  d.setUTCHours(utcHour, minute, 0, 0)
+  return Timestamp.fromDate(d)
+}
+
+// ─────────────────────────────────────────────────────────────────
+// UTILITAIRE — Chargement du shift d'un employé depuis le planning
+// ─────────────────────────────────────────────────────────────────
+
+async function getEmployeeShift(dateISO: string, employeeId: string) {
+  const dateObj = new Date(dateISO + 'T12:00:00Z')
+  const jsDay = dateObj.getUTCDay()
+  const dayIndex = jsDay === 0 ? 6 : jsDay - 1
+  const monday = new Date(dateObj)
+  monday.setUTCDate(monday.getUTCDate() - dayIndex)
+  const weekId = monday.toISOString().slice(0, 10)
+
+  const daySnap = await db.doc(`planningWeeks/${weekId}/days/${dayIndex}`).get()
+  if (!daySnap.exists) return null
+  const hoursMap = daySnap.data()?.hours as Record<string, string[]> | undefined
+  if (!hoursMap) return null
+
+  const workedHours = Object.entries(hoursMap)
+    .filter(([, emps]) => (emps as string[]).includes(employeeId))
+    .map(([h]) => parseInt(h))
+    .sort((a, b) => a - b)
+  if (!workedHours.length) return null
+
+  return { weekId, dayIndex, firstHour: workedHours[0], lastHour: workedHours[workedHours.length - 1] }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// POINTAGE — Retard → email HTML tous responsables + event planning
 // ─────────────────────────────────────────────────────────────────
 
 export const onPointageLate = onDocumentCreated(
@@ -1096,7 +1138,6 @@ export const onPointageLate = onDocumentCreated(
     if (!data) return
     if (data.typePointage !== 'arrivée' || data.statut !== 'validé') return
 
-    // Récupérer l'employeeId lié au compte
     const userSnap = await db.collection('users').doc(data.userId).get()
     const employeeId = userSnap.data()?.employeeId as string | undefined
     if (!employeeId) {
@@ -1104,72 +1145,151 @@ export const onPointageLate = onDocumentCreated(
       return
     }
 
-    // Calculer le weekId et le dayIndex depuis la date du pointage
-    const dateObj = new Date(data.date + 'T12:00:00Z')
-    const jsDay = dateObj.getUTCDay() // 0=Sun
-    const dayIndex = jsDay === 0 ? 6 : jsDay - 1 // 0=Mon, 6=Sun
-    const monday = new Date(dateObj)
-    monday.setUTCDate(monday.getUTCDate() - dayIndex)
-    const weekId = monday.toISOString().slice(0, 10)
+    const shift = await getEmployeeShift(data.date as string, employeeId)
+    if (!shift) return
 
-    // Charger le planning du jour
-    const daySnap = await db.doc(`planningWeeks/${weekId}/days/${dayIndex}`).get()
-    if (!daySnap.exists) return
-    const hoursMap = daySnap.data()?.hours as Record<string, string[]> | undefined
-    if (!hoursMap) return
-
-    // Trouver la première heure prévue pour cet employé
-    const workedHours = Object.entries(hoursMap)
-      .filter(([, emps]) => (emps as string[]).includes(employeeId))
-      .map(([h]) => parseInt(h))
-      .sort((a, b) => a - b)
-    if (workedHours.length === 0) return
-
-    const firstHour = workedHours[0]
-
-    // Comparer l'heure réelle (Paris) à l'heure prévue
     const pointageTime = (data.timestamp as FirebaseFirestore.Timestamp).toDate()
     const parisLocale = pointageTime.toLocaleString('fr-FR', {
       timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit', hour12: false,
     })
     const [hStr, mStr] = parisLocale.split(':')
     const actualMinutes = parseInt(hStr) * 60 + parseInt(mStr)
-    const lateMinutes = actualMinutes - firstHour * 60
+    const lateMinutes = actualMinutes - shift.firstHour * 60
+
+    // Stocker les minutes de retard sur le doc pointage (no-loop : onDocumentCreated ne refire pas sur update)
+    await event.data!.ref.update({
+      lateMinutes: lateMinutes > 0 ? lateMinutes : 0,
+      plannedStartHour: shift.firstHour,
+      plannedEndHour: shift.lastHour + 1,
+    })
 
     if (lateMinutes <= 10) {
       console.log(`[retard] ${data.userName} à l'heure (${lateMinutes} min).`)
       return
     }
 
-    // Envoyer email au patron
+    // Créer / mettre à jour l'event retard dans le planning
+    const eventsRef = db.doc(`planningWeeks/${shift.weekId}/events/${data.date}`)
+    const eventsSnap = await eventsRef.get()
+    const existingEvents: any[] = eventsSnap.exists ? (eventsSnap.data()?.events ?? []) : []
+    const filtered = existingEvents.filter((e: any) => !(e.empId === employeeId && e.type === 'retard'))
+    filtered.push({ empId: employeeId, type: 'retard', minutes: lateMinutes })
+    await eventsRef.set(
+      { date: data.date, events: filtered, updatedAt: Timestamp.now(), updatedBy: 'system' },
+      { merge: true },
+    )
+
+    // Push FCM aux responsables
+    await notifyRoles(
+      `⏰ Retard — ${data.userName}`,
+      `Prévu ${shift.firstHour}h00, pointé ${parisLocale} (+${lateMinutes} min)`,
+      '/admin/pointages',
+      ['patron', 'administrateur', 'manager'],
+    )
+
+    // Email HTML à tous les responsables
     const gmailUser = process.env.GMAIL_USER
     const gmailPass = process.env.GMAIL_APP_PASSWORD
-    if (!gmailUser || !gmailPass) {
-      console.error('[retard] GMAIL_USER / GMAIL_APP_PASSWORD manquants dans functions/.env')
-      return
-    }
+    if (!gmailUser || !gmailPass) return
 
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: { user: gmailUser, pass: gmailPass },
-    })
+    const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } })
+    const dayLabel = new Date(data.date + 'T12:00:00Z').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' })
+
+    const html = `
+      <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto">
+        <div style="background:#b45309;padding:18px 22px;border-radius:10px 10px 0 0">
+          <h2 style="color:#fff;margin:0;font-size:18px">⏰ Retard — ${data.userName}</h2>
+          <p style="color:rgba(255,255,255,0.8);margin:4px 0 0;font-size:13px">Yorgios · ${dayLabel}</p>
+        </div>
+        <div style="background:#fff;border:1px solid #e5e5e5;border-top:none;padding:22px;border-radius:0 0 10px 10px">
+          <table style="width:100%;border-collapse:collapse;margin-bottom:18px">
+            <tr><td style="padding:7px 0;color:#666;font-size:13px;width:140px">Employé</td><td style="font-weight:700;color:#1a1a1a">${data.userName}</td></tr>
+            <tr style="background:#fafafa"><td style="padding:7px 0;color:#666;font-size:13px">Heure prévue</td><td style="font-weight:600;color:#1a1a1a">${shift.firstHour}h00</td></tr>
+            <tr><td style="padding:7px 0;color:#666;font-size:13px">Heure pointée</td><td style="font-weight:700;color:#b45309">${parisLocale}</td></tr>
+            <tr style="background:#fafafa"><td style="padding:7px 0;color:#666;font-size:13px">Retard</td><td style="font-weight:700;color:#c0392b;font-size:16px">+${lateMinutes} minutes</td></tr>
+            <tr><td style="padding:7px 0;color:#666;font-size:13px">Zone</td><td style="color:#1a1a1a">${data.zoneLabel}</td></tr>
+          </table>
+          <p style="margin:0;font-size:12px;color:#999">Ce retard a été automatiquement enregistré dans le récapitulatif mensuel.</p>
+        </div>
+      </div>`
 
     await transporter.sendMail({
       from: `"Matias" <${gmailUser}>`,
-      to: 'a.cozzika@gmail.com',
-      subject: `⏰ Retard — ${data.userName} (+${lateMinutes} min)`,
-      text: [
-        `Bonjour Alexandre,`,
-        ``,
-        `${data.userName} était prévu(e) à ${firstHour}h00 mais a pointé à ${parisLocale}.`,
-        `Retard : ${lateMinutes} minutes.`,
-        `Zone : ${data.zoneLabel}`,
-        ``,
-        `Cordialement,`,
-        `Matias`,
-      ].join('\n'),
+      to: RESPONSABLES_EMAILS,
+      subject: `⏰ Retard ${data.userName} — ${lateMinutes} min (${dayLabel})`,
+      html,
+    }).catch((e: any) => console.error('[retard] Email error:', e))
+    console.log(`[retard] Email + event planning créés pour ${data.userName} (${lateMinutes} min).`)
+  }
+)
+
+// ─────────────────────────────────────────────────────────────────
+// AUTO-CHECKOUT — Toutes les 30 min : crée pointage sortie automatique
+// si l'employé n'a pas pointé sa sortie 1h après la fin de shift prévue
+// ─────────────────────────────────────────────────────────────────
+
+export const autoCheckoutSortie = onSchedule(
+  { schedule: '*/30 7-23 * * *', timeZone: 'Europe/Paris', region: 'europe-west1' },
+  async () => {
+    const today = new Date().toLocaleDateString('fr-CA', { timeZone: 'Europe/Paris' })
+    const parisNow = new Date().toLocaleString('fr-FR', {
+      timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit', hour12: false,
     })
-    console.log(`[retard] Email envoyé pour ${data.userName} (${lateMinutes} min de retard).`)
+    const [nowH, nowM] = parisNow.split(':').map(Number)
+    const nowTotalMin = nowH * 60 + nowM
+
+    // Tous les arrivées validées d'aujourd'hui
+    const arrivees = await db.collection('pointages')
+      .where('date', '==', today)
+      .where('typePointage', '==', 'arrivée')
+      .where('statut', '==', 'validé')
+      .get()
+    if (arrivees.empty) return
+
+    for (const arriveeDoc of arrivees.docs) {
+      const d = arriveeDoc.data()
+      const userId = d.userId as string
+
+      // Vérifier si un départ existe déjà (validé ou auto)
+      const departSnap = await db.collection('pointages')
+        .where('userId', '==', userId)
+        .where('date', '==', today)
+        .where('typePointage', '==', 'départ')
+        .limit(1)
+        .get()
+      if (!departSnap.empty) continue
+
+      // Récupérer le shift depuis le planning
+      const userSnap = await db.collection('users').doc(userId).get()
+      const employeeId = userSnap.data()?.employeeId as string | undefined
+      if (!employeeId) continue
+
+      const shift = await getEmployeeShift(today, employeeId)
+      if (!shift) continue
+
+      const shiftEndMin = (shift.lastHour + 1) * 60  // ex: lastHour=14 → fin 15h = 900 min
+      if (nowTotalMin < shiftEndMin + 60) continue    // pas encore 1h après la fin
+
+      // Créer le pointage sortie automatique à l'heure de fin prévue
+      const userName = userSnap.data()?.displayName || userSnap.data()?.email?.split('@')[0] || 'Inconnu'
+      const plannedEndTimestamp = buildParisTimestamp(today, shift.lastHour + 1)
+
+      await db.collection('pointages').add({
+        userId,
+        userName,
+        date: today,
+        typePointage: 'départ',
+        zoneId: 'auto',
+        zoneLabel: 'Automatique (fin de shift)',
+        timestamp: plannedEndTimestamp,
+        latitude: 0, longitude: 0, accuracy: 0, distanceToZone: 0,
+        statut: 'validé',
+        autoCheckout: true,
+        plannedEndHour: shift.lastHour + 1,
+        _serverValidated: true,
+      })
+      console.log(`[auto-checkout] Sortie créée pour ${userName} — shift fin ${shift.lastHour + 1}h`)
+    }
   }
 )
 
@@ -1202,10 +1322,12 @@ export const onLivraisonTemperature = onDocumentCreated(
 )
 
 // ─────────────────────────────────────────────────────────────────
-// LIVRAISON — Réception corner → notif patron + admin + manager
+// LIVRAISON — Réception corner → notif + email patron + admin + manager
 // Se déclenche à la mise à jour d'un doc livraisons/ quand
-// receptionTempC passe de null à une valeur saisie
+// receptionAt passe de null à une valeur saisie
 // ─────────────────────────────────────────────────────────────────
+
+const RESPONSABLES_EMAILS = ['a.cozzika@gmail.com', 'kyriazis@outlook.fr', 'sebastien.coenca@gmail.com']
 
 export const onLivraisonReception = onDocumentUpdated(
   { document: 'livraisons/{livId}', region: 'europe-west1', database: 'test' },
@@ -1221,6 +1343,7 @@ export const onLivraisonReception = onDocumentUpdated(
     const produit = (after.productName as string) || 'produit inconnu'
     const lot = (after.lotCode as string) || event.params.livId
     const tempC = after.receptionTempC as number | null
+    const maxTol = after.ruleMaxTol as number | null
     const result = (after.result as string) || 'A_VERIFIER'
     const emoji = result === 'ACCEPTE' ? '✅' : result === 'REFUSE' ? '❌' : '⚠️'
 
@@ -1236,22 +1359,107 @@ export const onLivraisonReception = onDocumentUpdated(
     if (result === 'REFUSE') {
       const gmailUser = process.env.GMAIL_USER
       const gmailPass = process.env.GMAIL_APP_PASSWORD
-      if (gmailUser && gmailPass) {
-        const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } })
-        await transporter.sendMail({
-          from: `"Matias" <${gmailUser}>`,
-          to: 'a.cozzika@gmail.com',
-          subject: `❌ Non-conformité température — ${produit}`,
-          text: [
-            `Non-conformité détectée au corner Yorgios.`,
-            `Produit : ${produit}`,
-            `Lot : ${lot}`,
-            `Température réception : ${tempC}°C`,
-            `Résultat : REFUSÉ (hors tolérance GEP)`,
-          ].join('\n'),
-        }).catch((e: any) => console.error('[livraison-reception] Email error:', e))
-      }
+      if (!gmailUser || !gmailPass) return
+      const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } })
+      const now = new Date().toLocaleString('fr-FR', { timeZone: 'Europe/Paris' })
+      const html = `
+        <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto">
+          <div style="background:#c0392b;padding:20px 24px;border-radius:10px 10px 0 0">
+            <h2 style="color:#fff;margin:0;font-size:20px">❌ ALERTE — Produit refusé à la réception</h2>
+            <p style="color:rgba(255,255,255,0.85);margin:6px 0 0;font-size:13px">Action immédiate requise — Yorgios Corner</p>
+          </div>
+          <div style="background:#fff;border:1px solid #e5e5e5;border-top:none;padding:24px;border-radius:0 0 10px 10px">
+            <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
+              <tr><td style="padding:8px 0;color:#666;font-size:13px;width:140px">Produit</td><td style="padding:8px 0;font-weight:700;font-size:15px;color:#1a1a1a">${produit}</td></tr>
+              <tr style="background:#fafafa"><td style="padding:8px 0;color:#666;font-size:13px">N° lot</td><td style="padding:8px 0;font-weight:600;color:#1a1a1a">${lot}</td></tr>
+              <tr><td style="padding:8px 0;color:#666;font-size:13px">Température mesurée</td><td style="padding:8px 0;font-weight:700;color:#c0392b;font-size:16px">${tempC != null ? `${tempC}°C` : '—'}</td></tr>
+              <tr style="background:#fafafa"><td style="padding:8px 0;color:#666;font-size:13px">Tolérance max GEP</td><td style="padding:8px 0;font-weight:600;color:#1a1a1a">${maxTol != null ? `${maxTol}°C` : '—'}</td></tr>
+              <tr><td style="padding:8px 0;color:#666;font-size:13px">Date / heure</td><td style="padding:8px 0;color:#1a1a1a">${now}</td></tr>
+              <tr style="background:#fafafa"><td style="padding:8px 0;color:#666;font-size:13px">Statut</td><td style="padding:8px 0;font-weight:700;color:#c0392b">⛔ REFUSÉ — EN ATTENTE D'ACTION</td></tr>
+            </table>
+            <div style="background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:16px;margin-bottom:20px">
+              <p style="margin:0;font-weight:700;color:#856404;font-size:14px">Action requise :</p>
+              <ul style="margin:8px 0 0;padding-left:20px;color:#856404;font-size:13px">
+                <li>Consulter la décision prise par le corner (retour / quarantaine / destruction)</li>
+                <li>Valider ou modifier la décision dans l'application</li>
+                <li>Informer le fournisseur si nécessaire</li>
+                <li>Archiver le bon de non-conformité</li>
+              </ul>
+            </div>
+            <a href="https://cuisine-yorgios.web.app/corner/livraison" style="display:inline-block;background:#004275;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px">Voir dans l'application →</a>
+            <p style="margin:20px 0 0;font-size:11px;color:#999">Un email de confirmation avec la décision du corner sera envoyé dès qu'elle sera enregistrée.</p>
+          </div>
+        </div>`
+      await transporter.sendMail({
+        from: `"Matias" <${gmailUser}>`,
+        to: RESPONSABLES_EMAILS,
+        subject: `❌ ALERTE réception — ${produit} refusé (${tempC != null ? `${tempC}°C` : '?'})`,
+        html,
+      }).catch((e: any) => console.error('[livraison-reception] Email error:', e))
+      console.log(`[livraison-reception] Email REFUSE envoyé pour lot ${lot}`)
     }
+  }
+)
+
+// ─────────────────────────────────────────────────────────────────
+// NON-CONFORMITÉ — Email décision corner → patron + admin + manager
+// Se déclenche à la création d'un doc non_conformites/
+// ─────────────────────────────────────────────────────────────────
+
+export const onNonConformiteCreated = onDocumentCreated(
+  { document: 'non_conformites/{ncId}', region: 'europe-west1', database: 'test' },
+  async (event) => {
+    const data = event.data?.data()
+    if (!data) return
+
+    const produit = (data.productName as string) || 'produit inconnu'
+    const lot = (data.lotCode as string) || event.params.ncId
+    const tempC = data.tempC as number | null
+    const decision = (data.decision as string) || '—'
+    const now = new Date().toLocaleString('fr-FR', { timeZone: 'Europe/Paris' })
+
+    const gmailUser = process.env.GMAIL_USER
+    const gmailPass = process.env.GMAIL_APP_PASSWORD
+    if (!gmailUser || !gmailPass) return
+    const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } })
+
+    const decisionColor = decision.toLowerCase().includes('destruct') ? '#c0392b'
+      : decision.toLowerCase().includes('quarant') ? '#e67e22'
+      : '#2980b9'
+
+    const html = `
+      <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto">
+        <div style="background:#856404;padding:20px 24px;border-radius:10px 10px 0 0">
+          <h2 style="color:#fff;margin:0;font-size:20px">📋 Décision non-conformité enregistrée</h2>
+          <p style="color:rgba(255,255,255,0.85);margin:6px 0 0;font-size:13px">Le corner a enregistré une décision — Yorgios Corner</p>
+        </div>
+        <div style="background:#fff;border:1px solid #e5e5e5;border-top:none;padding:24px;border-radius:0 0 10px 10px">
+          <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
+            <tr><td style="padding:8px 0;color:#666;font-size:13px;width:140px">Produit</td><td style="padding:8px 0;font-weight:700;font-size:15px;color:#1a1a1a">${produit}</td></tr>
+            <tr style="background:#fafafa"><td style="padding:8px 0;color:#666;font-size:13px">N° lot</td><td style="padding:8px 0;font-weight:600;color:#1a1a1a">${lot}</td></tr>
+            <tr><td style="padding:8px 0;color:#666;font-size:13px">Température mesurée</td><td style="padding:8px 0;font-weight:700;color:#c0392b">${tempC != null ? `${tempC}°C` : '—'}</td></tr>
+            <tr style="background:#fafafa"><td style="padding:8px 0;color:#666;font-size:13px">Date / heure</td><td style="padding:8px 0;color:#1a1a1a">${now}</td></tr>
+            <tr><td style="padding:8px 0;color:#666;font-size:13px">Décision corner</td><td style="padding:8px 0;font-weight:700;color:${decisionColor};font-size:15px">${decision}</td></tr>
+          </table>
+          <div style="background:#f8f9fa;border:1px solid #dee2e6;border-radius:8px;padding:16px;margin-bottom:20px">
+            <p style="margin:0;font-weight:700;color:#495057;font-size:14px">À valider de votre côté :</p>
+            <ul style="margin:8px 0 0;padding-left:20px;color:#495057;font-size:13px">
+              <li>Confirmer la décision prise par le corner</li>
+              <li>Remplir le bon de non-conformité papier si nécessaire</li>
+              <li>Notifier le fournisseur / faire un avoir</li>
+            </ul>
+          </div>
+          <a href="https://cuisine-yorgios.web.app/corner/livraison" style="display:inline-block;background:#004275;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px">Voir dans l'application →</a>
+        </div>
+      </div>`
+
+    await transporter.sendMail({
+      from: `"Matias" <${gmailUser}>`,
+      to: RESPONSABLES_EMAILS,
+      subject: `📋 NC — ${produit} : ${decision}`,
+      html,
+    }).catch((e: any) => console.error('[nc-created] Email error:', e))
+    console.log(`[nc-created] Email décision envoyé pour lot ${lot} — ${decision}`)
   }
 )
 
@@ -1500,6 +1708,7 @@ export const sendGmaoEmail = onCall({ region: 'europe-west1' }, async (request) 
   await transporter.sendMail({
     from: `"Matias App" <${gmailUser}>`,
     to,
+    cc: 'jlemperiere@la-grande-epicerie.fr',
     subject: `[GMAO] ${d.departement} — ${String(d.motif ?? '').substring(0, 60)} — YORGIOS`,
     html: bodyHtml,
   })
@@ -1546,17 +1755,26 @@ export const gmaoWeeklyReminder = onSchedule({
 // RUPTURES + COMMANDES — Email Timour 21h30 chaque soir
 // ─────────────────────────────────────────────────────────────────
 
-async function buildRupturesCommandesEmail(): Promise<{ subject: string; html: string; hasContent: boolean }> {
+interface RuptureDataItem { name: string; type: 'urgent' | 'moins-urgent'; priority: number | null }
+interface NightlyRupturesData {
+  items: RuptureDataItem[]
+  commandes: any[]
+  priorityLevels: Array<{ level: number; name: string; color: string }>
+  hasContent: boolean
+}
+
+async function buildRupturesData(): Promise<NightlyRupturesData> {
   const now = new Date()
   const midnight = new Date(now)
   midnight.setHours(0, 0, 0, 0)
 
-  // 1. Ruptures actives depuis minuit
-  const ruptSnap = await db.collection('ruptures_actives')
-    .where('createdAt', '>=', Timestamp.fromDate(midnight))
-    .get()
+  const [ruptSnap, catSnap, cmdSnap, plSnap] = await Promise.all([
+    db.collection('ruptures_actives').where('createdAt', '>=', Timestamp.fromDate(midnight)).get(),
+    db.collection('catalogue').get(),
+    db.collection('commandes_externes').where('statut', 'in', ['en cours', 'devis envoyé', 'accepté']).get(),
+    db.doc('settings/priority_levels').get(),
+  ])
 
-  // 2. FlatMap + déduplication case-insensitive
   const urgentMap = new Map<string, string>()
   const moinsMap  = new Map<string, string>()
   for (const d of ruptSnap.docs) {
@@ -1571,49 +1789,80 @@ async function buildRupturesCommandesEmail(): Promise<{ subject: string; html: s
     }
   }
 
-  // 3. Priorités depuis catalogue
-  const catSnap = await db.collection('catalogue').get()
-  const prio = new Map<string, number>()
+  const prio = new Map<string, number | null>()
   for (const d of catSnap.docs) {
     const data = d.data()
-    if (data.name) prio.set(String(data.name).toLowerCase().trim(), data.priority ?? 9999)
+    if (data.name) prio.set(String(data.name).toLowerCase().trim(), data.priority ?? null)
   }
 
-  const byPrio = (a: string, b: string) =>
-    (prio.get(a.toLowerCase().trim()) ?? 9999) - (prio.get(b.toLowerCase().trim()) ?? 9999)
+  const items: RuptureDataItem[] = [
+    ...[...urgentMap.values()].map(name => ({ name, type: 'urgent' as const, priority: prio.get(name.toLowerCase().trim()) ?? null })),
+    ...[...moinsMap.values()].map(name => ({ name, type: 'moins-urgent' as const, priority: prio.get(name.toLowerCase().trim()) ?? null })),
+  ]
+  items.sort((a, b) => {
+    if (a.priority === b.priority) return a.name.localeCompare(b.name, 'fr')
+    if (a.priority === null) return 1
+    if (b.priority === null) return -1
+    return a.priority - b.priority
+  })
 
-  const urgentList   = [...urgentMap.values()].sort(byPrio)
-  const moinsUrgList = [...moinsMap.values()].sort(byPrio)
+  const commandes = cmdSnap.docs.map(d => d.data())
+  const rawLevels = (plSnap.data() as any)?.levels
+  const priorityLevels: Array<{ level: number; name: string; color: string }> = Array.isArray(rawLevels) ? rawLevels : [
+    { level: 1, name: 'Best Seller',      color: '#c0392b' },
+    { level: 2, name: 'Grande priorité',  color: '#e67e22' },
+    { level: 3, name: 'Priorité moyenne', color: '#b45309' },
+    { level: 4, name: 'Faible priorité',  color: '#2d7a4f' },
+  ]
 
-  // 4. Commandes actives
-  const cmdSnap = await db.collection('commandes_externes')
-    .where('statut', 'in', ['en cours', 'devis envoyé', 'accepté'])
-    .get()
-  const commandes = cmdSnap.docs.map(d => d.data() as any)
+  return { items, commandes, priorityLevels, hasContent: items.length > 0 || commandes.length > 0 }
+}
 
-  const hasContent = urgentList.length > 0 || moinsUrgList.length > 0 || commandes.length > 0
+async function buildRupturesCommandesEmail(): Promise<{ subject: string; html: string; hasContent: boolean }> {
+  const now = new Date()
+  const { items, commandes, priorityLevels, hasContent } = await buildRupturesData()
 
   const dateStr = now.toLocaleDateString('fr-FR', { weekday: 'long', day: '2-digit', month: 'long' })
 
-  const ruptHtml = (urgentList.length === 0 && moinsUrgList.length === 0)
-    ? '<p style="color:#666">Aucune rupture aujourd\'hui ✓</p>'
-    : `
-      ${urgentList.length > 0 ? `
-        <p style="font-weight:700;color:#c0392b;margin:12px 0 6px">🔴 Urgent</p>
-        <ul style="margin:0;padding-left:20px;color:#c0392b">
-          ${urgentList.map(n => `<li style="margin-bottom:4px;font-weight:600">${n}</li>`).join('')}
-        </ul>` : ''}
-      ${moinsUrgList.length > 0 ? `
-        <p style="font-weight:700;color:#e67500;margin:12px 0 6px">🟠 Moins urgent</p>
-        <ul style="margin:0;padding-left:20px;color:#e67500">
-          ${moinsUrgList.map(n => `<li style="margin-bottom:4px">${n}</li>`).join('')}
-        </ul>` : ''}
-    `
+  // Grouper les items par priorité
+  const grouped = new Map<number | null, RuptureDataItem[]>()
+  for (const item of items) {
+    const k = item.priority
+    if (!grouped.has(k)) grouped.set(k, [])
+    grouped.get(k)!.push(item)
+  }
+  const sortedKeys = [...grouped.keys()].sort((a, b) => {
+    if (a === null) return 1
+    if (b === null) return -1
+    return a - b
+  })
+
+  const ruptHtml = items.length === 0
+    ? '<p style="color:#666;margin:0">Aucune rupture aujourd\'hui ✓</p>'
+    : sortedKeys.map(key => {
+        const lvl = key != null ? priorityLevels.find(l => l.level === key) : null
+        const color = lvl?.color ?? (key != null ? '#b45309' : '#ca8a04')
+        const groupName = lvl?.name ?? (key != null ? `Priorité ${key}` : 'Sans priorité')
+        const groupItems = grouped.get(key)!
+        return `
+          <div style="margin-bottom:14px">
+            <p style="margin:0 0 6px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:${color}">${groupName}</p>
+            <div style="display:flex;flex-wrap:wrap;gap:6px">
+              ${groupItems.map(item => {
+                const badgeColor = item.type === 'urgent' ? '#c0392b' : '#e67500'
+                const bgColor    = item.type === 'urgent' ? 'rgba(192,57,43,0.10)' : 'rgba(230,117,0,0.10)'
+                const border     = item.type === 'urgent' ? 'rgba(192,57,43,0.30)' : 'rgba(230,117,0,0.30)'
+                const emoji      = item.type === 'urgent' ? '🔴' : '🟠'
+                return `<span style="display:inline-block;padding:3px 9px;border-radius:6px;font-size:13px;font-weight:600;color:${badgeColor};background:${bgColor};border:1px solid ${border}">${emoji} ${item.name}</span>`
+              }).join('')}
+            </div>
+          </div>`
+      }).join('')
 
   const cmdHtml = commandes.length === 0
-    ? '<p style="color:#666">Aucune commande active</p>'
+    ? '<p style="color:#666;margin:0">Aucune commande active</p>'
     : `<ul style="margin:0;padding-left:20px">
-        ${commandes.map(c => `<li style="margin-bottom:6px">
+        ${commandes.map((c: any) => `<li style="margin-bottom:6px">
           <strong>${c.prenom ?? ''} ${c.nom ?? ''}</strong>
           ${c.dateLivraison ? ` — livraison le <strong>${c.dateLivraison}</strong>` : ''}
           ${c.statut ? ` — <em>${c.statut}</em>` : ''}
@@ -1622,14 +1871,14 @@ async function buildRupturesCommandesEmail(): Promise<{ subject: string; html: s
 
   const html = `
     <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-      <h2 style="color:#004275;border-bottom:2px solid #004275;padding-bottom:8px">
+      <h2 style="color:#004275;border-bottom:2px solid #004275;padding-bottom:8px;margin-top:0">
         Récap soir — ${dateStr}
       </h2>
 
-      <h3 style="color:#c0392b;margin-top:24px">Ruptures</h3>
+      <h3 style="color:#c0392b;margin-top:24px;margin-bottom:12px">🧾 Ruptures (${items.length})</h3>
       ${ruptHtml}
 
-      <h3 style="color:#004275;margin-top:24px">Commandes actives (${commandes.length})</h3>
+      <h3 style="color:#004275;margin-top:24px;margin-bottom:12px">📦 Commandes actives (${commandes.length})</h3>
       ${cmdHtml}
 
       <p style="color:#999;font-size:12px;margin-top:32px;border-top:1px solid #eee;padding-top:12px">
@@ -1647,6 +1896,21 @@ export const notifNightlyRuptures = onSchedule({
   timeZone: 'Europe/Paris',
   region: 'europe-west1',
 }, async () => {
+  // Vérification paramètre on/off + vacances
+  const cfgSnap = await db.doc('settings/nightly_ruptures').get()
+  const cfg = cfgSnap.data() ?? {}
+  if (cfg.enabled === false) {
+    console.log('[21h30] notifNightlyRuptures désactivé dans les paramètres.')
+    return
+  }
+  if (cfg.pauseFrom && cfg.pauseTo) {
+    const today = new Date().toLocaleDateString('fr-CA') // YYYY-MM-DD
+    if (today >= cfg.pauseFrom && today <= cfg.pauseTo) {
+      console.log(`[21h30] notifNightlyRuptures en pause vacances (${cfg.pauseFrom} → ${cfg.pauseTo}).`)
+      return
+    }
+  }
+
   const { subject, html } = await buildRupturesCommandesEmail()
   const gmailUser = process.env.GMAIL_USER
   const gmailPass = process.env.GMAIL_APP_PASSWORD
@@ -1668,6 +1932,18 @@ export const sendNightlyRupturesNow = onCall({ region: 'europe-west1' }, async (
   const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } })
   await transporter.sendMail({ from: `"Matias" <${gmailUser}>`, to: 'ytimour86@gmail.com', cc: 'yorgios.system@gmail.com', subject, html })
   return { success: true }
+})
+
+/** Callable — aperçu sans envoi (patron/admin uniquement) */
+export const previewNightlyRuptures = onCall({ region: 'europe-west1' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Auth required')
+  const userDoc = await db.collection('users').doc(request.auth.uid).get()
+  const role = userDoc.data()?.role
+  if (!['patron', 'administrateur'].includes(role)) throw new HttpsError('permission-denied', 'Patron/admin uniquement')
+
+  const { items, commandes, hasContent } = await buildRupturesData()
+  const { html } = await buildRupturesCommandesEmail()
+  return { items, commandes, hasContent, emailHtml: html }
 })
 
 // ─────────────────────────────────────────────────────────────────
@@ -1788,18 +2064,79 @@ export const createPointage = onCall(
       throw new HttpsError('failed-precondition', `Signal GPS trop imprécis (±${Math.round(accuracy)} m)`)
     }
 
-    // Anti-doublon : pas deux pointages de même type valides le même jour
-    const today = new Date().toISOString().slice(0, 10)
-    const existingSnap = await db.collection('pointages')
-      .where('userId', '==', uid)
-      .where('date', '==', today)
-      .where('typePointage', '==', typePointage)
-      .where('statut', '==', 'validé')
-      .limit(1)
-      .get()
-    if (!existingSnap.empty) {
-      const existing = existingSnap.docs[0].data()
-      throw new HttpsError('already-exists', `Pointage ${typePointage} déjà enregistré aujourd'hui à ${existing.timestamp?.toDate?.().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) ?? '—'}`)
+    const today = new Date().toLocaleDateString('fr-CA', { timeZone: 'Europe/Paris' })
+
+    // ── CAS ARRIVÉE ─────────────────────────────────────────────
+    if (typePointage === 'arrivée') {
+      // Vérifier si un pointage arrivée existe déjà
+      const existingArrivee = await db.collection('pointages')
+        .where('userId', '==', uid)
+        .where('date', '==', today)
+        .where('typePointage', '==', 'arrivée')
+        .where('statut', '==', 'validé')
+        .limit(1)
+        .get()
+
+      if (!existingArrivee.empty) {
+        // Auto-checkout existe ? → mode heures sup : on le supprime et on laisse passer
+        const autoDepart = await db.collection('pointages')
+          .where('userId', '==', uid)
+          .where('date', '==', today)
+          .where('typePointage', '==', 'départ')
+          .where('autoCheckout', '==', true)
+          .limit(1)
+          .get()
+
+        if (!autoDepart.empty) {
+          await autoDepart.docs[0].ref.delete()
+          console.log(`[createPointage] Auto-checkout supprimé pour ${userName} → mode heures sup`)
+          // Continue : on crée la nouvelle arrivée (overtime)
+        } else {
+          const existing = existingArrivee.docs[0].data()
+          throw new HttpsError('already-exists',
+            `Pointage arrivée déjà enregistré aujourd'hui à ${existing.timestamp?.toDate?.().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) ?? '—'}`)
+        }
+      }
+    }
+
+    // ── CAS DÉPART ──────────────────────────────────────────────
+    if (typePointage === 'départ') {
+      // Vérifier doublon départ
+      const existingDepart = await db.collection('pointages')
+        .where('userId', '==', uid)
+        .where('date', '==', today)
+        .where('typePointage', '==', 'départ')
+        .where('statut', '==', 'validé')
+        .limit(1)
+        .get()
+      if (!existingDepart.empty) {
+        const existing = existingDepart.docs[0].data()
+        throw new HttpsError('already-exists',
+          `Pointage départ déjà enregistré aujourd'hui à ${existing.timestamp?.toDate?.().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) ?? '—'}`)
+      }
+
+      // Bloquer le départ si arrivée < 1h
+      const arriveeSnap = await db.collection('pointages')
+        .where('userId', '==', uid)
+        .where('date', '==', today)
+        .where('typePointage', '==', 'arrivée')
+        .where('statut', '==', 'validé')
+        .limit(1)
+        .get()
+      if (!arriveeSnap.empty) {
+        const arriveeData = arriveeSnap.docs[0].data()
+        const arriveeMs = (arriveeData.timestamp as FirebaseFirestore.Timestamp).toMillis()
+        const elapsedMin = (Date.now() - arriveeMs) / 60000
+        if (elapsedMin < 60) {
+          const remainMin = Math.ceil(60 - elapsedMin)
+          const unlockTime = new Date(arriveeMs + 60 * 60000)
+          const unlockStr = unlockTime.toLocaleTimeString('fr-FR', {
+            timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit', hour12: false,
+          })
+          throw new HttpsError('failed-precondition',
+            `BLOCKED_1H:${unlockStr}:Départ bloqué encore ${remainMin} min (disponible à ${unlockStr})`)
+        }
+      }
     }
 
     // Calcul zone côté serveur

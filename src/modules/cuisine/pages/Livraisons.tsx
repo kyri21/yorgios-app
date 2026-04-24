@@ -20,17 +20,18 @@ import { deleteObject, getDownloadURL, ref, uploadBytes } from "firebase/storage
 
 import { db, storage, ensureAnonAuth } from "../firebase/firebase";
 
-type Rule = { min: number; max: number; maxTol: number };
+// Règles GEP — seuils de tolérance max en °C (nomenclature GEP officielle)
+type Rule = { maxTol: number };
 
 const RULES: Record<string, Rule> = {
-  PLAT_CUISINE: { min: 0, max: 3, maxTol: 5 },
-  LAIT: { min: 0, max: 4, maxTol: 6 },
-  PATISSERIE: { min: 0, max: 3, maxTol: 5 },
-  LEGUME: { min: 0, max: 8, maxTol: 10 },
-  VIANDE: { min: 0, max: 3, maxTol: 5 },
-  VIANDE_HACHEE: { min: 0, max: 2, maxTol: 3 },
-  POISSON: { min: 0, max: 2, maxTol: 3 },
-  AUTRE: { min: 0, max: 8, maxTol: 10 },
+  VIANDE_HACHEE: { maxTol: 3 },
+  VIANDE:        { maxTol: 5 },
+  POISSON:       { maxTol: 3 },
+  LAIT:          { maxTol: 6 },
+  PLAT_CUISINE:  { maxTol: 5 },
+  PATISSERIE:    { maxTol: 5 },
+  LEGUME:        { maxTol: 10 },
+  AUTRE:         { maxTol: 10 },
 };
 
 function canon(s: string) {
@@ -44,9 +45,11 @@ function canon(s: string) {
 }
 
 const CATEGORY_ALIASES: Record<string, string> = {
-  plats_cuisines: "PLAT_CUISINE",
   plat_cuisine: "PLAT_CUISINE",
+  plats_cuisines: "PLAT_CUISINE",
   plat_cuisines: "PLAT_CUISINE",
+  plat_cuisine_frais: "PLAT_CUISINE",
+  plats_cuisines_frais: "PLAT_CUISINE",
 
   lait: "LAIT",
   laitier: "LAIT",
@@ -54,6 +57,8 @@ const CATEGORY_ALIASES: Record<string, string> = {
 
   patisserie: "PATISSERIE",
   patisseries: "PATISSERIE",
+  patisserie_fraiche: "PATISSERIE",
+  patisseries_fraiches: "PATISSERIE",
 
   legume: "LEGUME",
   legumes: "LEGUME",
@@ -63,9 +68,12 @@ const CATEGORY_ALIASES: Record<string, string> = {
 
   viande_hachee: "VIANDE_HACHEE",
   viandes_hachees: "VIANDE_HACHEE",
+  viande_hachee_fraiche: "VIANDE_HACHEE",
 
   poisson: "POISSON",
   poissons: "POISSON",
+  poisson_frais: "POISSON",
+  poissons_frais: "POISSON",
 };
 
 function normalizeCategoryKey(cat: string) {
@@ -1072,7 +1080,7 @@ function CornerReceptionForm({
     const key = normalizeCategoryKey(category || "AUTRE");
     const rule = RULES[key];
     if (!rule) return `Catégorie ${key} — pas de seuil connu → A_VERIFIER`;
-    return `Seuil ${key} : cible ${rule.min}–${rule.max}°C, tolérance max ${rule.maxTol}°C`;
+    return `Seuil GEP ${key} : tolérance max ${rule.maxTol}°C`;
   }, [category]);
 
   return (

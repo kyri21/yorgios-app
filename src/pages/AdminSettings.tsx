@@ -38,6 +38,11 @@ interface TemperaturesSettings {
 interface RupturesSettings {
   produits: string[]
 }
+interface NightlyRupturesConfig {
+  enabled: boolean
+  pauseFrom: string
+  pauseTo: string
+}
 export interface PriorityLevel {
   level: number
   name: string
@@ -150,21 +155,96 @@ function NavRow({ label, sub, onClick, last }: { label: string; sub: string; onC
 }
 
 /* ─── Page principale ─────────────────────────────────── */
-function TestRupturesButton() {
-  const [status, setStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle')
+function NightlyRupturesPanel({ cfg, onChange }: { cfg: NightlyRupturesConfig; onChange: (c: NightlyRupturesConfig) => void }) {
+  const [sendStatus, setSendStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle')
+  const [preview, setPreview] = useState<{ emailHtml: string } | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+
   async function send() {
-    setStatus('loading')
+    setSendStatus('loading')
     try {
       await httpsCallable(functions, 'sendNightlyRupturesNow')({})
-      setStatus('ok')
-      setTimeout(() => setStatus('idle'), 4000)
-    } catch { setStatus('error'); setTimeout(() => setStatus('idle'), 4000) }
+      setSendStatus('ok')
+      setTimeout(() => setSendStatus('idle'), 4000)
+    } catch { setSendStatus('error'); setTimeout(() => setSendStatus('idle'), 4000) }
   }
+
+  async function openPreview() {
+    setPreviewLoading(true)
+    try {
+      const res = await httpsCallable<object, { emailHtml: string }>(functions, 'previewNightlyRuptures')({})
+      setPreview({ emailHtml: res.data.emailHtml })
+    } catch { /* ignore */ } finally { setPreviewLoading(false) }
+  }
+
   return (
-    <button onClick={send} disabled={status === 'loading'} className="btn-secondary"
-      style={{ width: 'auto', padding: '10px 18px', fontSize: 13 }}>
-      {status === 'loading' ? '⏳ Envoi…' : status === 'ok' ? '✓ Email envoyé à Timour' : status === 'error' ? '✗ Erreur' : '📧 Tester l\'envoi maintenant'}
-    </button>
+    <>
+      {/* Modal preview */}
+      {preview && (
+        <div onClick={() => setPreview(null)} style={{
+          position: 'fixed', inset: 0, background: 'rgba(28,28,24,0.55)', zIndex: 1000,
+          display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto',
+        }}>
+          <div onClick={e => e.stopPropagation()} style={{
+            background: '#fff', borderRadius: 14, width: '100%', maxWidth: 620, boxShadow: '0 8px 40px rgba(0,0,0,0.18)',
+            overflow: 'hidden',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderBottom: '1px solid #eee' }}>
+              <span style={{ fontSize: 14, fontWeight: 700, color: '#1c1c18' }}>Aperçu de l'email — Timour</span>
+              <button onClick={() => setPreview(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: '#9a9a94', lineHeight: 1 }}>✕</button>
+            </div>
+            <div style={{ padding: 16 }} dangerouslySetInnerHTML={{ __html: preview.emailHtml }} />
+          </div>
+        </div>
+      )}
+
+      {/* Toggle activé/désactivé */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--on-surface)' }}>Envoi automatique 21h30</div>
+          <div style={{ fontSize: 12, color: 'var(--on-surface-3)' }}>ytimour86@gmail.com · trié par priorité catalogue</div>
+        </div>
+        <Toggle value={cfg.enabled} onChange={v => onChange({ ...cfg, enabled: v })} />
+      </div>
+
+      {/* Pause vacances */}
+      <div style={{ marginBottom: 14, padding: '10px 12px', background: 'var(--surface-low)', borderRadius: 10, border: '1px solid var(--border-soft)' }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--on-surface-2)', marginBottom: 8 }}>Pause vacances</div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 12, color: 'var(--on-surface-3)' }}>Du</span>
+            <input type="date" value={cfg.pauseFrom} onChange={e => onChange({ ...cfg, pauseFrom: e.target.value })}
+              className="input" style={{ padding: '6px 10px', fontSize: 13, width: 'auto' }} />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 12, color: 'var(--on-surface-3)' }}>Au</span>
+            <input type="date" value={cfg.pauseTo} onChange={e => onChange({ ...cfg, pauseTo: e.target.value })}
+              className="input" style={{ padding: '6px 10px', fontSize: 13, width: 'auto' }} />
+          </div>
+          {(cfg.pauseFrom || cfg.pauseTo) && (
+            <button onClick={() => onChange({ ...cfg, pauseFrom: '', pauseTo: '' })}
+              style={{ fontSize: 12, color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px' }}>
+              Effacer
+            </button>
+          )}
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 6 }}>
+          L'envoi automatique sera suspendu pendant cette période.
+        </div>
+      </div>
+
+      {/* Boutons aperçu + envoyer */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button onClick={openPreview} disabled={previewLoading} className="btn-secondary"
+          style={{ width: 'auto', padding: '9px 16px', fontSize: 13 }}>
+          {previewLoading ? '⏳ Chargement…' : '👁 Aperçu'}
+        </button>
+        <button onClick={send} disabled={sendStatus === 'loading'} className="btn-secondary"
+          style={{ width: 'auto', padding: '9px 16px', fontSize: 13 }}>
+          {sendStatus === 'loading' ? '⏳ Envoi…' : sendStatus === 'ok' ? '✓ Envoyé à Timour' : sendStatus === 'error' ? '✗ Erreur' : '📧 Envoyer maintenant'}
+        </button>
+      </div>
+    </>
   )
 }
 
@@ -181,6 +261,7 @@ export default function AdminSettings() {
   const [ruptureCatalogueSearch, setRuptureCatalogueSearch] = useState('')
   const [catalogueProduits, setCatalogueProduits] = useState<{ id: string; name: string; priority: number | null }[]>([])
   const [priorityLevels, setPriorityLevels] = useState<PriorityLevel[]>(DEFAULT_PRIORITY_LEVELS)
+  const [nightlyCfg, setNightlyCfg] = useState<NightlyRupturesConfig>({ enabled: true, pauseFrom: '', pauseTo: '' })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -188,7 +269,7 @@ export default function AdminSettings() {
   useEffect(() => {
     async function load() {
       try {
-        const [nSnap, eSnap, xSnap, rSnap, tSnap, rupSnap, plSnap, catSnap] = await Promise.all([
+        const [nSnap, eSnap, xSnap, rSnap, tSnap, rupSnap, plSnap, catSnap, nrSnap] = await Promise.all([
           getDoc(doc(db, 'settings', 'notifications')),
           getDoc(doc(db, 'settings', 'emails')),
           getDoc(doc(db, 'settings', 'exports')),
@@ -197,6 +278,7 @@ export default function AdminSettings() {
           getDoc(doc(db, 'settings', 'ruptures')),
           getDoc(doc(db, 'settings', 'priority_levels')),
           getDocs(query(collection(db, 'catalogue'), where('active', '==', true))),
+          getDoc(doc(db, 'settings', 'nightly_ruptures')),
         ])
         if (nSnap.exists()) setNotifs({ ...DEFAULT_NOTIFS, ...nSnap.data() } as NotificationsSettings)
         if (eSnap.exists()) setEmails({ ...DEFAULT_EMAILS, ...eSnap.data() } as EmailsSettings)
@@ -204,6 +286,7 @@ export default function AdminSettings() {
         if (rSnap.exists()) setReception({ ...DEFAULT_RECEPTION, ...rSnap.data() } as ReceptionSettings)
         if (tSnap.exists()) setTemperatures({ ...DEFAULT_TEMPERATURES, ...tSnap.data() } as TemperaturesSettings)
         if (rupSnap.exists()) setRuptures({ ...DEFAULT_RUPTURES, ...rupSnap.data() } as RupturesSettings)
+        if (nrSnap.exists()) setNightlyCfg(d => ({ ...d, ...nrSnap.data() } as NightlyRupturesConfig))
         if (plSnap.exists()) {
           const lvls = (plSnap.data() as any).levels
           if (Array.isArray(lvls) && lvls.length > 0) setPriorityLevels(lvls)
@@ -231,6 +314,7 @@ export default function AdminSettings() {
         setDoc(doc(db, 'settings', 'temperatures'), temperatures),
         setDoc(doc(db, 'settings', 'ruptures'), ruptures),
         setDoc(doc(db, 'settings', 'priority_levels'), { levels: priorityLevels }),
+        setDoc(doc(db, 'settings', 'nightly_ruptures'), nightlyCfg),
       ])
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
@@ -591,13 +675,7 @@ export default function AdminSettings() {
       <div>
         <p className="section-label" style={{ marginBottom: 8 }}>Email récap nuit — Timour</p>
         <div className="card" style={{ padding: '14px 16px' }}>
-          <div style={{ fontSize: 14, color: 'var(--on-surface)', fontWeight: 500, marginBottom: 4 }}>
-            Ruptures + Commandes — envoi automatique à 21h30
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginBottom: 14 }}>
-            Destinataire : ytimour86@gmail.com · Trié par priorité catalogue, sans doublons
-          </div>
-          <TestRupturesButton />
+          <NightlyRupturesPanel cfg={nightlyCfg} onChange={setNightlyCfg} />
         </div>
       </div>
 
