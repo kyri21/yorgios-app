@@ -156,6 +156,7 @@ type LotCuisine = {
   productName: string;
   category?: string;
   sent?: boolean;
+  isTransformation?: boolean;
 };
 
 type ManualLine = { id: number; productId: string; category: string; temp: string };
@@ -322,7 +323,7 @@ export default function Livraisons() {
   useEffect(() => {
     setLotSelections(prev => {
       const next: Record<string, { selected: boolean; temp: string }> = {}
-      lots.filter(l => !l.sent).forEach(l => {
+      lots.filter(l => !l.sent && !l.isTransformation).forEach(l => {
         next[l.id] = prev[l.id] || { selected: false, temp: '' }
       })
       return next
@@ -345,7 +346,7 @@ export default function Livraisons() {
     e.preventDefault()
     setError(null)
 
-    const availableLots = lots.filter(l => !l.sent)
+    const availableLots = lots.filter(l => !l.sent && !l.isTransformation)
     const selectedLots = availableLots.filter(l => lotSelections[l.id]?.selected)
     const validManualLines = manualLines.filter(m => m.productId.trim() !== '')
 
@@ -745,7 +746,7 @@ export default function Livraisons() {
           </h2>
 
           {(() => {
-            const availableLots = lots.filter(l => !l.sent)
+            const availableLots = lots.filter(l => !l.sent && !l.isTransformation)
             const selectedLots = availableLots.filter(l => lotSelections[l.id]?.selected)
             const validManualLines = manualLines.filter(m => m.productId.trim() !== '')
             const totalItems = selectedLots.length + validManualLines.length
