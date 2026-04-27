@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { SkeletonList } from '../../../components/Skeleton'
 import { EmptyState } from '../../../components/EmptyState'
 import {
-  Timestamp, collection, deleteDoc, doc, getDocs, getDocsFromServer,
+  Timestamp, collection, deleteDoc, doc, getDoc, getDocs, getDocsFromServer,
   limit, orderBy, query, runTransaction, setDoc, updateDoc, where,
 } from 'firebase/firestore'
 import { db, auth } from '../../../firebase/config'
@@ -54,6 +54,12 @@ type Lot = {
   dlcAt: any
   archived?: boolean
   archivedAt?: any
+  // Traçabilité
+  isTransformation?: boolean
+  transformationType?: 'hachage' | 'decoupe' | 'marinade' | 'autre'
+  receptionId?: string | null
+  fournisseur?: string | null
+  ingredientLotCodes?: string[]
 }
 
 function pad2(n: number) { return String(n).padStart(2, '0') }
@@ -76,6 +82,10 @@ async function nextLotSequence(date: Date, abrv: string): Promise<number> {
   })
 }
 
+const TRANSFO_DLC: Record<string, number> = { hachage: 2, decoupe: 3, marinade: 5, autre: 3 }
+const TRANSFO_CATEGORY: Record<string, string> = { hachage: 'VIANDE_HACHEE', decoupe: 'VIANDE', marinade: 'VIANDE', autre: 'PLAT_CUISINE' }
+const TRANSFO_LABEL: Record<string, string> = { hachage: 'Hachage', decoupe: 'Découpe', marinade: 'Marinade', autre: 'Autre transformation' }
+
 const labelStyle: React.CSSProperties = {
   fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)',
   display: 'block', marginBottom: 6,
@@ -92,13 +102,33 @@ export default function Fabrication() {
   const [produitsLoaded, setProduitsLoaded] = useState(false)
 
   // Mode formulaire
-  const [formMode, setFormMode] = useState<'catalogue' | 'manuel' | 'reception'>('catalogue')
+  const [formMode, setFormMode] = useState<'catalogue' | 'manuel' | 'reception' | 'transformation'>('catalogue')
 
   // Mode "depuis réception"
   const [receptions, setReceptions] = useState<ReceptionSource[]>([])
   const [receptionsLoaded, setReceptionsLoaded] = useState(false)
   const [selectedReceptionId, setSelectedReceptionId] = useState('')
   const [showExpiredReceptions, setShowExpiredReceptions] = useState(false)
+
+  // Mode "transformation"
+  const [transfoType, setTransfoType] = useState<'hachage' | 'decoupe' | 'marinade' | 'autre'>('hachage')
+  const [transfoReceptionId, setTransfoReceptionId] = useState('')
+  const [transfoReceptions, setTransfoReceptions] = useState<ReceptionSource[]>([])
+  const [transfoReceptionsLoaded, setTransfoReceptionsLoaded] = useState(false)
+
+  // Sélecteur lots sources (ingrédients)
+  const [transfoLots, setTransfoLots] = useState<Lot[]>([])
+  const [transfoLotsLoaded, setTransfoLotsLoaded] = useState(false)
+  const [selectedIngredientLotIds, setSelectedIngredientLotIds] = useState<string[]>([])
+  const [showIngredientPicker, setShowIngredientPicker] = useState(false)
+
+  // Modal traçabilité
+  const [traceLot, setTraceLot] = useState<Lot | null>(null)
+  const [traceData, setTraceData] = useState<{
+    ingredientLots: Array<{ lot: Lot; reception: ReceptionSource | null }>
+    directReception: ReceptionSource | null
+  } | null>(null)
+  const [traceLoading, setTraceLoading] = useState(false)
 
   // Formulaire
   const [producedDate, setProducedDate] = useState(nowLocalDateValue())
@@ -169,6 +199,35 @@ export default function Fabrication() {
     }
   }
 
+  async function loadTransfoReceptions() {
+    setTransfoReceptionsLoaded(false)
+    try {
+      const snap = await getDocs(query(
+        collection(db, 'receptions'),
+        orderBy('receivedAt', 'desc'),
+        limit(50),
+      ))
+      setTransfoReceptions(snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as ReceptionSource[])
+    } catch { }
+    finally { setTransfoReceptionsLoaded(true) }
+  }
+
+  async function loadTransfoLots() {
+    setTransfoLotsLoaded(false)
+    try {
+      const since = new Date()
+      since.setDate(since.getDate() - 14)
+      const snap = await getDocs(query(
+        collection(db, 'lots_cuisine'),
+        where('isTransformation', '==', true),
+        where('createdAt', '>=', Timestamp.fromDate(since)),
+        orderBy('createdAt', 'desc'),
+      ))
+      setTransfoLots(snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }) as Lot))
+    } catch { }
+    finally { setTransfoLotsLoaded(true) }
+  }
+
   async function loadHistorique() {
     setHistoLoading(true)
     try {
@@ -180,7 +239,11 @@ export default function Fabrication() {
   }
 
   async function loadLots() {
-    const q = query(collection(db, 'lots_cuisine'), orderBy('createdAt', 'desc'), limit(50))
+    const hlSnap = await getDoc(doc(db, 'settings', 'history_limits'))
+    const jours = (hlSnap.data() as any)?.lotsJours ?? 30
+    const since = new Date()
+    since.setDate(since.getDate() - jours)
+    const q = query(collection(db, 'lots_cuisine'), where('createdAt', '>=', Timestamp.fromDate(since)), orderBy('createdAt', 'desc'))
     const snap = await getDocs(q)
     setLots(snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }) as Lot))
   }
@@ -208,28 +271,41 @@ export default function Fabrication() {
 
     const isManuel = formMode === 'manuel'
     const isReception = formMode === 'reception'
+    const isTransformation = formMode === 'transformation'
     const selectedReception = receptions.find(r => r.id === selectedReceptionId) || null
+    const selectedTransfoReception = transfoReceptions.find(r => r.id === transfoReceptionId) || null
 
-    if (!isManuel && !isReception && !selectedProduit) return setError('Produit obligatoire.')
+    if (!isManuel && !isReception && !isTransformation && !selectedProduit) return setError('Produit obligatoire.')
     if (isManuel && !manualName.trim()) return setError('Nom du produit obligatoire.')
     if (isReception && !selectedReception) return setError('Sélectionner une réception source.')
+    if (isTransformation && !transfoReceptionId) return setError('Sélectionner une réception source.')
 
     const productName = isManuel
       ? manualName.trim()
       : isReception
         ? selectedReception!.productName
-        : selectedProduit!.name
+        : isTransformation
+          ? `${selectedTransfoReception!.productName} — ${TRANSFO_LABEL[transfoType]}`
+          : selectedProduit!.name
     const abrv = isManuel
       ? manualName.trim().slice(0, 4).toUpperCase().replace(/\s+/g, '')
       : isReception
         ? productName.slice(0, 4).toUpperCase().replace(/\s+/g, '')
-        : (selectedProduit!.abrv || selectedProduit!.name.slice(0, 3)).trim().toUpperCase()
-    const dlcDays = isManuel ? Number(manualDlcDays) || 3 : Number(selectedProduit?.dlcDays ?? 3)
+        : isTransformation
+          ? transfoType.slice(0, 4).toUpperCase()
+          : (selectedProduit!.abrv || selectedProduit!.name.slice(0, 3)).trim().toUpperCase()
+    const dlcDays = isManuel
+      ? Number(manualDlcDays) || 3
+      : isReception ? 7
+      : isTransformation ? TRANSFO_DLC[transfoType]
+      : Number(selectedProduit?.dlcDays ?? 3)
     const category = isManuel
       ? manualCategory
       : isReception
         ? (selectedReception!.category || 'PLAT_CUISINE')
-        : (selectedProduit!.gepCategory ?? selectedProduit!.defaultCategory ?? 'AUTRE')
+        : isTransformation
+          ? TRANSFO_CATEGORY[transfoType]
+          : (selectedProduit!.gepCategory ?? selectedProduit!.defaultCategory ?? 'AUTRE')
 
     setLoading(true)
     try {
@@ -255,7 +331,7 @@ export default function Fabrication() {
       await setDoc(lotRef, {
         producedAt: Timestamp.fromDate(producedAtDate),
         dlcAt: Timestamp.fromDate(dlcAtDate),
-        productId: isManuel || isReception ? null : selectedProduit!.id,
+        productId: isManuel || isReception || isTransformation ? null : selectedProduit!.id,
         productName,
         abrv,
         category,
@@ -263,8 +339,11 @@ export default function Fabrication() {
         dlcDays,
         lotCode,
         archived: false,
-        receptionId: isReception ? selectedReceptionId : null,
-        fournisseur: isReception ? selectedReception!.fournisseur : null,
+        receptionId: isReception ? selectedReceptionId : isTransformation ? transfoReceptionId : null,
+        fournisseur: isReception ? selectedReception!.fournisseur : isTransformation ? selectedTransfoReception!.fournisseur : null,
+        isTransformation: isTransformation,
+        transformationType: isTransformation ? transfoType : null,
+        ingredientLotCodes: isTransformation ? [] : selectedIngredientLotIds,
         createdAt: Timestamp.now(),
         createdBy: uid,
       })
@@ -273,6 +352,10 @@ export default function Fabrication() {
       setManualName('')
       setManualDlcDays('3')
       setSelectedReceptionId('')
+      setTransfoReceptionId('')
+      setTransfoType('hachage')
+      setSelectedIngredientLotIds([])
+      setShowIngredientPicker(false)
       setProducedDate(nowLocalDateValue())
       setSavedOk(true)
       show('Lot créé')
@@ -283,6 +366,35 @@ export default function Fabrication() {
     } finally {
       setLoading(false)
     }
+  }
+
+  async function loadTraceData(lot: Lot) {
+    setTraceLoading(true)
+    setTraceData(null)
+    try {
+      let directReception: ReceptionSource | null = null
+      if (lot.receptionId) {
+        const snap = await getDoc(doc(db, 'receptions', lot.receptionId))
+        if (snap.exists()) directReception = { id: snap.id, ...(snap.data() as any) } as ReceptionSource
+      }
+      const ingredientLotCodes: string[] = lot.ingredientLotCodes ?? []
+      let ingredientLots: Array<{ lot: Lot; reception: ReceptionSource | null }> = []
+      if (ingredientLotCodes.length > 0) {
+        const snaps = await Promise.all(ingredientLotCodes.map(id => getDoc(doc(db, 'lots_cuisine', id))))
+        ingredientLots = (await Promise.all(snaps.map(async snap => {
+          if (!snap.exists()) return null
+          const ingLot = { id: snap.id, ...(snap.data() as any) } as Lot
+          let reception: ReceptionSource | null = null
+          if (ingLot.receptionId) {
+            const rSnap = await getDoc(doc(db, 'receptions', ingLot.receptionId))
+            if (rSnap.exists()) reception = { id: rSnap.id, ...(rSnap.data() as any) } as ReceptionSource
+          }
+          return { lot: ingLot, reception }
+        }))).filter(Boolean) as Array<{ lot: Lot; reception: ReceptionSource | null }>
+      }
+      setTraceData({ ingredientLots, directReception })
+    } catch { }
+    finally { setTraceLoading(false) }
   }
 
   async function archiveLot(lotId: string) {
@@ -420,13 +532,17 @@ export default function Fabrication() {
             { id: 'catalogue', label: '📋 Catalogue' },
             { id: 'reception', label: '📦 Réception' },
             { id: 'manuel', label: '✏️ Libre' },
+            { id: 'transformation', label: '🔄 Transformation' },
           ] as const).map(m => (
             <button key={m.id} type="button" onClick={() => {
               setFormMode(m.id)
               setProductId('')
               setManualName('')
               setSelectedReceptionId('')
+              setTransfoReceptionId('')
+              setTransfoType('hachage')
               if (m.id === 'reception' && !receptionsLoaded) loadReceptions()
+              if (m.id === 'transformation' && !transfoReceptionsLoaded) loadTransfoReceptions()
             }} style={{
               flex: 1, padding: '8px 0', borderRadius: 9, fontSize: 12, fontWeight: 700,
               border: 'none', cursor: 'pointer', fontFamily: 'Manrope, sans-serif',
@@ -452,7 +568,7 @@ export default function Fabrication() {
             </div>
           </div>
 
-          {formMode === 'catalogue' ? (
+          {formMode === 'catalogue' && (
             <>
               <label style={{ ...labelStyle, marginTop: 14 }}>Produit *</label>
               <select className="input" value={productId} onChange={e => setProductId(e.target.value)} disabled={!produitsLoaded}>
@@ -472,7 +588,9 @@ export default function Fabrication() {
                 </div>
               )}
             </>
-          ) : (
+          )}
+
+          {formMode === 'manuel' && (
             <>
               <label style={{ ...labelStyle, marginTop: 14 }}>Nom du produit *</label>
               <input
@@ -533,16 +651,16 @@ export default function Fabrication() {
                 <>
                   <div style={{ maxHeight: 260, overflowY: 'auto', borderRadius: 10, background: 'var(--surface-mid)' }}>
                     {(() => {
-                      const fourDaysAgo = new Date()
-                      fourDaysAgo.setDate(fourDaysAgo.getDate() - 4)
+                      const sevenDaysAgo = new Date()
+                      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
                       const filtered = receptions.filter(r => {
                         const d = r.receivedAt?.toDate?.() ?? new Date()
-                        return d >= fourDaysAgo
+                        return d >= sevenDaysAgo
                       })
                       if (filtered.length === 0) {
                         return (
                           <p style={{ fontSize: 13, color: 'var(--on-surface-3)', padding: '12px 14px', margin: 0 }}>
-                            Aucune réception viande récente (moins de 4j).
+                            Aucune réception viande récente (moins de 7j).
                           </p>
                         )
                       }
@@ -589,6 +707,114 @@ export default function Fabrication() {
             </>
           )}
 
+          {formMode === 'transformation' && (
+            <>
+              <label style={{ ...labelStyle, marginTop: 14 }}>Type de transformation *</label>
+              <select
+                className="input"
+                value={transfoType}
+                onChange={e => setTransfoType(e.target.value as typeof transfoType)}
+              >
+                <option value="hachage">🔪 Hachage (DLC J+2 · VIANDE_HACHÉE)</option>
+                <option value="decoupe">🔪 Découpe (DLC J+3 · VIANDE)</option>
+                <option value="marinade">🫙 Marinade (DLC J+5 · VIANDE)</option>
+                <option value="autre">⚙️ Autre (DLC J+3)</option>
+              </select>
+
+              <label style={{ ...labelStyle, marginTop: 14 }}>Réception source *</label>
+              {!transfoReceptionsLoaded ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {[1,2,3].map(i => <div key={i} className="skeleton" style={{ height: 52, borderRadius: 10 }} />)}
+                </div>
+              ) : transfoReceptions.length === 0 ? (
+                <p style={{ fontSize: 13, color: 'var(--on-surface-3)' }}>Aucune réception enregistrée.</p>
+              ) : (
+                <div style={{ maxHeight: 240, overflowY: 'auto', borderRadius: 10, background: 'var(--surface-mid)' }}>
+                  {transfoReceptions.map(r => {
+                    const _p = (n: number) => String(n).padStart(2, '0')
+                    const d = r.receivedAt?.toDate?.() ?? new Date()
+                    const dateStr = `${_p(d.getDate())}/${_p(d.getMonth()+1)} ${_p(d.getHours())}:${_p(d.getMinutes())}`
+                    const active = transfoReceptionId === r.id
+                    return (
+                      <div key={r.id} onClick={() => setTransfoReceptionId(active ? '' : r.id)} style={{
+                        padding: '10px 12px', cursor: 'pointer',
+                        borderLeft: active ? '3px solid var(--primary)' : '3px solid transparent',
+                        background: active ? 'rgba(0,66,117,0.07)' : 'transparent',
+                        transition: 'background 0.12s',
+                      }}>
+                        <div style={{ fontSize: 13, fontWeight: active ? 700 : 500, color: active ? 'var(--primary)' : 'var(--on-surface)' }}>
+                          {r.productName}
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2 }}>
+                          {r.fournisseur} · {dateStr}{r.supplierLot ? ` · Lot ${r.supplierLot}` : ''}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+              {transfoReceptionId && (() => {
+                const r = transfoReceptions.find(r => r.id === transfoReceptionId)
+                if (!r) return null
+                return (
+                  <div style={{ fontSize: 12, color: 'var(--on-surface-2)', marginTop: 8, padding: '8px 12px', borderRadius: 10, background: 'rgba(109,40,217,0.05)', border: '1px solid rgba(109,40,217,0.15)' }}>
+                    <b>{TRANSFO_LABEL[transfoType]}</b> de <b>{r.productName}</b> ({r.fournisseur}){r.supplierLot ? ` · lot ${r.supplierLot}` : ''} · DLC auto J+{TRANSFO_DLC[transfoType]}
+                  </div>
+                )
+              })()}
+            </>
+          )}
+
+          {(formMode === 'catalogue' || formMode === 'manuel') && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                <label style={labelStyle}>Lots sources (ingrédients) — optionnel</label>
+                <button type="button" onClick={() => { setShowIngredientPicker(v => !v); if (!transfoLotsLoaded) loadTransfoLots() }} style={{
+                  fontSize: 11, padding: '3px 10px', borderRadius: 7, border: '1px solid var(--border)',
+                  background: showIngredientPicker ? 'rgba(109,40,217,0.08)' : 'var(--surface-mid)',
+                  color: showIngredientPicker ? '#6d28d9' : 'var(--on-surface-3)',
+                  cursor: 'pointer', fontWeight: 600, fontFamily: 'Manrope, sans-serif',
+                }}>
+                  {showIngredientPicker ? '▲ Masquer' : '+ Ajouter'}
+                </button>
+              </div>
+              {selectedIngredientLotIds.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                  {selectedIngredientLotIds.map(id => {
+                    const lot = transfoLots.find(l => l.id === id)
+                    return (
+                      <span key={id} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, background: 'rgba(109,40,217,0.10)', color: '#6d28d9', border: '1px solid rgba(109,40,217,0.20)', display: 'flex', alignItems: 'center', gap: 5, fontFamily: 'Manrope, sans-serif', fontWeight: 600 }}>
+                        {lot?.productName ?? id}
+                        <button type="button" onClick={() => setSelectedIngredientLotIds(ids => ids.filter(i => i !== id))} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6d28d9', fontSize: 13, lineHeight: 1, padding: 0 }}>×</button>
+                      </span>
+                    )
+                  })}
+                </div>
+              )}
+              {showIngredientPicker && (
+                <div style={{ maxHeight: 220, overflowY: 'auto', borderRadius: 10, background: 'var(--surface-mid)', border: '1px solid var(--border-soft)' }}>
+                  {!transfoLotsLoaded ? (
+                    <div style={{ padding: '12px 14px', fontSize: 13, color: 'var(--on-surface-3)' }}>Chargement…</div>
+                  ) : transfoLots.length === 0 ? (
+                    <div style={{ padding: '12px 14px', fontSize: 13, color: 'var(--on-surface-3)' }}>Aucun lot de transformation disponible (14 derniers jours).</div>
+                  ) : transfoLots.map(l => {
+                    const isSelected = selectedIngredientLotIds.includes(l.id)
+                    const dlcDate = l.dlcAt?.toDate ? l.dlcAt.toDate() : null
+                    const prodDate = l.producedAt?.toDate ? l.producedAt.toDate() : null
+                    return (
+                      <div key={l.id} onClick={() => setSelectedIngredientLotIds(ids => isSelected ? ids.filter(i => i !== l.id) : [...ids, l.id])} style={{ padding: '10px 12px', cursor: 'pointer', borderLeft: isSelected ? '3px solid #6d28d9' : '3px solid transparent', background: isSelected ? 'rgba(109,40,217,0.07)' : 'transparent', transition: 'background 0.12s' }}>
+                        <div style={{ fontSize: 13, fontWeight: isSelected ? 700 : 500, color: isSelected ? '#6d28d9' : 'var(--on-surface)' }}>{l.productName}</div>
+                        <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2 }}>
+                          {l.lotCode} · {prodDate?.toLocaleDateString('fr-FR') ?? '—'}{dlcDate ? ` · DLC ${dlcDate.toLocaleDateString('fr-FR')}` : ''}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
           {error && (
             <div style={{
               padding: '12px 14px', borderRadius: 12, fontSize: 13,
@@ -605,6 +831,7 @@ export default function Fabrication() {
               disabled={loading || !computed.okQty || (
                 formMode === 'catalogue' ? !productId :
                 formMode === 'reception' ? !selectedReceptionId :
+                formMode === 'transformation' ? !transfoReceptionId :
                 !manualName.trim()
               )}
               style={{ flex: 1 }}>
@@ -670,6 +897,18 @@ export default function Fabrication() {
                       fontFamily: 'monospace', letterSpacing: '0.02em', marginBottom: 4,
                     }}>
                       {lot.lotCode}
+                      {lot.isTransformation && (
+                        <span style={{
+                          display: 'inline-block', fontSize: 9, fontWeight: 800,
+                          letterSpacing: '0.08em', color: '#6d28d9',
+                          background: 'rgba(109,40,217,0.10)',
+                          border: '1px solid rgba(109,40,217,0.20)',
+                          borderRadius: 5, padding: '1px 6px', marginLeft: 6,
+                          verticalAlign: 'middle', textTransform: 'uppercase',
+                        }}>
+                          TRANSFO
+                        </span>
+                      )}
                     </div>
                     {/* Produit + Quantité */}
                     <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--on-surface)', marginBottom: 4 }}>
@@ -753,6 +992,8 @@ export default function Fabrication() {
                           display: 'flex', alignItems: 'center', justifyContent: 'center',
                         }}
                       >⬛</button>
+                      {/* Traçabilité */}
+                      <button onClick={() => { setTraceLot(lot); loadTraceData(lot) }} title="Traçabilité" style={{ width: 34, height: 34, borderRadius: 10, border: '1.5px solid rgba(109,40,217,0.25)', background: 'rgba(109,40,217,0.06)', color: '#6d28d9', cursor: 'pointer', fontSize: 15, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🔍</button>
                     </div>
                   ) : (
                     <span className="chip-warn" style={{ flexShrink: 0 }}>Archivé</span>
@@ -797,6 +1038,44 @@ export default function Fabrication() {
       </div>
 
       </> )} {/* fin tab fabrication */}
+
+      {/* ========== MODAL TRAÇABILITÉ ========== */}
+      {traceLot && (
+        <div onClick={() => setTraceLot(null)} style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(28,28,24,0.5)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: 'var(--surface)', borderRadius: 20, padding: 24, maxWidth: 420, width: '100%', boxShadow: '0 8px 32px rgba(28,28,24,0.12)', maxHeight: '80vh', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+              <h2 style={{ fontFamily: 'Epilogue, sans-serif', fontSize: 17, fontWeight: 800, color: 'var(--on-surface)', margin: 0 }}>🔍 Traçabilité</h2>
+              <button onClick={() => setTraceLot(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 20, color: 'var(--on-surface-3)' }}>×</button>
+            </div>
+            <TraceNode icon="🍽" label={traceLot.productName} sub={`${traceLot.lotCode} · FAB ${traceLot.producedAt?.toDate?.().toLocaleDateString('fr-FR') ?? '—'} · DLC ${traceLot.dlcAt?.toDate?.().toLocaleDateString('fr-FR') ?? '—'}`} color="var(--primary)" />
+            {traceLoading && <div style={{ textAlign: 'center', padding: '20px 0' }}><div className="spinner" style={{ margin: '0 auto' }} /></div>}
+            {!traceLoading && traceData && (
+              <>
+                {traceData.directReception && (<>
+                  <TraceArrow />
+                  <TraceNode icon="📦" label={traceData.directReception.productName} sub={`${traceData.directReception.fournisseur} · reçu le ${traceData.directReception.receivedAt?.toDate?.().toLocaleDateString('fr-FR') ?? '—'}${traceData.directReception.supplierLot ? ` · lot ${traceData.directReception.supplierLot}` : ''}`} color="var(--success)" />
+                </>)}
+                {traceData.ingredientLots.length > 0 && (<>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', letterSpacing: '0.06em', textTransform: 'uppercase', margin: '16px 0 8px' }}>Ingrédients sources</div>
+                  {traceData.ingredientLots.map(({ lot: ingLot, reception }) => (
+                    <div key={ingLot.id} style={{ marginBottom: 12 }}>
+                      <TraceArrow />
+                      <TraceNode icon="🔄" label={ingLot.productName} sub={`${ingLot.lotCode} · ${ingLot.transformationType ? TRANSFO_LABEL[ingLot.transformationType] : 'Transformation'} le ${ingLot.producedAt?.toDate?.().toLocaleDateString('fr-FR') ?? '—'}`} color="#6d28d9" badge={ingLot.transformationType ? TRANSFO_LABEL[ingLot.transformationType] : undefined} />
+                      {reception && (<>
+                        <TraceArrow nested />
+                        <TraceNode icon="📦" label={reception.productName} sub={`${reception.fournisseur} · reçu le ${reception.receivedAt?.toDate?.().toLocaleDateString('fr-FR') ?? '—'}${reception.supplierLot ? ` · lot ${reception.supplierLot}` : ''}`} color="var(--success)" nested />
+                      </>)}
+                    </div>
+                  ))}
+                </>)}
+                {!traceData.directReception && traceData.ingredientLots.length === 0 && (
+                  <div style={{ fontSize: 13, color: 'var(--on-surface-3)', textAlign: 'center', padding: '20px 0' }}>Aucune traçabilité enregistrée pour ce lot.</div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ========== MODAL QR CODE ========== */}
       {qrLot && (() => {
@@ -876,6 +1155,33 @@ export default function Fabrication() {
         )
       })()}
 
+    </div>
+  )
+}
+
+// ─── Composants Traçabilité ──────────────────────────────────────
+function TraceArrow({ nested }: { nested?: boolean }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', paddingLeft: nested ? 24 : 0, margin: '4px 0' }}>
+      <div style={{ width: 1, height: 16, background: 'var(--border)', marginLeft: 10 }} />
+      <span style={{ fontSize: 10, color: 'var(--on-surface-3)', marginLeft: 4 }}>↓</span>
+    </div>
+  )
+}
+
+function TraceNode({ icon, label, sub, color, badge, nested }: {
+  icon: string; label: string; sub: string; color: string; badge?: string; nested?: boolean
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', borderRadius: 12, background: 'var(--surface-low)', border: `1px solid ${color}22`, marginLeft: nested ? 20 : 0 }}>
+      <span style={{ fontSize: 18, flexShrink: 0, lineHeight: 1.3 }}>{icon}</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--on-surface)' }}>{label}</span>
+          {badge && <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '0.08em', color, background: `${color}18`, border: `1px solid ${color}30`, borderRadius: 5, padding: '1px 6px', textTransform: 'uppercase' }}>{badge}</span>}
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2 }}>{sub}</div>
+      </div>
     </div>
   )
 }
