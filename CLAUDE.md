@@ -4,7 +4,7 @@
 
 ---
 
-# CLAUDE.md — Matias PWA (mis à jour 2026-05-01)
+# CLAUDE.md — Matias PWA (mis à jour 2026-05-03)
 
 ## Mentions légales & RGPD
 
@@ -31,8 +31,8 @@
 
 ---
 
-### Documents RH — seed initial à faire ⚠️
-Aller sur `/documents` en admin → onglet "✏️ Modifier charte" → cliquer **"Sauvegarder et publier"** pour créer le doc Firestore `settings/reglement_interieur` avec le contenu par défaut (DEFAULT_CHARTE v1.0). Sans ça, la bannière "Charte à signer" ne s'affiche pas et les employés ne peuvent pas signer.
+### Charte — active: false (intentionnel)
+`settings/reglement_interieur` existe (version 1.0, contenu complet). `active: false` = charte désactivée intentionnellement le temps de révision. Pour activer : `/documents` → onglet "✏️ Modifier charte" → switch ON. Les employés seront alors invités à signer.
 
 ---
 
