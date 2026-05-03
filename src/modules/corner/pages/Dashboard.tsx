@@ -87,7 +87,7 @@ function dlcStatus(dlcAt: any): 'expire' | 'today' | 'tomorrow' | 'ok' {
 
 type TempStatus = { fridgeId: string; name: string; tempC: number | null; status: string | null }
 type DlcItem = { id: string; productName: string; category: string; quantite: number; unite: string; dlcAt: any; fabricationAt: any; dlcStatus: 'expire' | 'today' | 'tomorrow' | 'ok' }
-type Livraison = { id: string; productName?: string; departAt: any; receptionTempC: number | null }
+type Livraison = { id: string; productName?: string; departAt: any; receptionTempC: number | null; receptionAt?: any; returned?: boolean }
 type CommandeClient = { id: string; statut: string; dateLivraison: string; nom?: string; prenom?: string }
 
 // ── Status colors (Aegean light mode) ──────────────────────────────
@@ -139,6 +139,7 @@ export default function Dashboard() {
   const [hygieneHebdoOk, setHygieneHebdoOk] = useState<boolean | null>(null)
   const [hygieneMensuelOk, setHygieneMensuelOk] = useState<boolean | null>(null)
   const [pendingLivraisons, setPendingLivraisons] = useState<Livraison[]>([])
+  const [overdueLivraisons, setOverdueLivraisons] = useState<Livraison[]>([])
   const [dlcItems, setDlcItems] = useState<DlcItem[]>([])
   const [commandesToday, setCommandesToday] = useState<CommandeClient[]>([])
   const [commandesWeek, setCommandesWeek] = useState<CommandeClient[]>([])
@@ -173,7 +174,7 @@ export default function Dashboard() {
         getDocFromServer(doc(db, 'hygiene_corner', `${today}_quotidien`)),
         getDocFromServer(doc(db, 'hygiene_corner', hygieneHebdoId())),
         getDocFromServer(doc(db, 'hygiene_corner', hygieneMensuelId())),
-        getDocsFromServer(query(collection(db, 'livraisons'), orderBy('departAt', 'desc'), limit(100))),
+        getDocsFromServer(query(collection(db, 'livraisons'), orderBy('departAt', 'desc'), limit(200))),
         getDocsFromServer(query(collection(db, 'corner_stock'), where('active', '==', true), limit(200))),
         // Pas de filtre 'statut' ici (évite l'index composite manquant) — filtrage côté client
         getDocsFromServer(query(collection(db, 'commandes_externes'),
@@ -198,16 +199,25 @@ export default function Dashboard() {
       setHygieneHebdoOk(hygieneHebdoSnap.exists())
       setHygieneMensuelOk(hygieneMensuelSnap.exists())
 
-      const pending = livrSnap.docs
-        .map(d => ({ id: d.id, ...(d.data() as any) }))
-        .filter((l: any) =>
-          l.receptionTempC == null &&
-          !l.receptionAt &&
-          !l.returned &&
-          l.departAt?.toDate &&
-          l.departAt.toDate().getTime() >= t0
-        )
+      const allLivr = livrSnap.docs.map(d => ({ id: d.id, ...(d.data() as any) }))
+      const pending = allLivr.filter((l: any) =>
+        l.receptionTempC == null &&
+        !l.receptionAt &&
+        !l.returned &&
+        l.departAt?.toDate
+      )
       setPendingLivraisons(pending)
+
+      const SIX_HOURS_MS = 6 * 60 * 60 * 1000
+      const nowMs = Date.now()
+      const overdue = allLivr.filter((l: any) =>
+        l.receptionTempC == null &&
+        !l.receptionAt &&
+        !l.returned &&
+        l.departAt?.toDate &&
+        l.departAt.toDate().getTime() + SIX_HOURS_MS < nowMs
+      )
+      setOverdueLivraisons(overdue)
 
       const items: DlcItem[] = stockSnap.docs
         .map(d => ({ id: d.id, ...(d.data() as any) } as any))
@@ -313,6 +323,35 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+
+      {/* ── Bandeau livraisons en retard (> 6h sans réception) ──── */}
+      {overdueLivraisons.length > 0 && (
+        <div
+          onClick={() => navigate('livraison')}
+          style={{
+            cursor: 'pointer',
+            padding: '12px 16px',
+            background: 'rgba(180,83,9,0.08)',
+            border: '1.5px solid rgba(180,83,9,0.30)',
+            borderLeft: '4px solid var(--warning)',
+            borderRadius: 14,
+            display: 'flex', alignItems: 'center', gap: 12,
+          }}
+        >
+          <span style={{ fontSize: 22, lineHeight: 1, flexShrink: 0 }}>⚠️</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--warning)', lineHeight: 1.3 }}>
+              {overdueLivraisons.length} lot{overdueLivraisons.length > 1 ? 's' : ''} non réceptionné{overdueLivraisons.length > 1 ? 's' : ''} depuis plus de 6h
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--on-surface-2)', marginTop: 3 }}>
+              À traiter avant la prochaine livraison cuisine →
+            </div>
+          </div>
+          <svg width="6" height="10" fill="none" viewBox="0 0 6 10">
+            <path d="M1 1l4 4-4 4" stroke="var(--warning)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </div>
+      )}
 
       {/* ── Météo de la semaine ─────────────────────────────────── */}
       {weather.length > 0 && (

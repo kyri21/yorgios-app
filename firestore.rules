@@ -129,6 +129,13 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // ─── Demandes de congés ─────────────────────────────────────
+    match /conges_demandes/{id} {
+      allow create: if isAnyRole();
+      allow read:   if isPatronOrManager() || (isAnyRole() && request.auth.uid == resource.data.uid);
+      allow update: if isPatronOrManager();
+    }
+
     // ─── Messagerie ─────────────────────────────────────────────
     match /messages/{doc} {
       allow read, write: if isAnyRole();
@@ -163,10 +170,32 @@ service cloud.firestore {
 
     // ─── Paramètres admin ────────────────────────────────────────
     // Lecture : tous les rôles (corner/cuisine lisent alertMinC, ruptures, etc.)
-    // Écriture : patron/administrateur uniquement
+    // Écriture : patron/administrateur uniquement (sauf primes_ca accessible manager)
+    match /settings/primes_ca {
+      allow read:  if isAnyRole();
+      allow write: if isPatronOrManager();
+    }
     match /settings/{doc} {
       allow read:  if isAnyRole();
       allow write: if isAuth() && role() in ['patron', 'administrateur'];
+    }
+
+    // ─── Annonces obligatoires ────────────────────────────────────
+    // Lecture : tous les employés (pour afficher le popup)
+    // Création/désactivation/suppression : patron/admin/manager
+    // Mise à jour readBy : tout employé authentifié (pour marquer comme lu)
+    match /annonces/{id} {
+      allow read:   if isAnyRole();
+      allow create, delete: if isPatronOrManager();
+      allow update: if isPatronOrManager() || isAnyRole();
+    }
+
+    // ─── Primes planning ─────────────────────────────────────────
+    match /primes_mois/{doc} {
+      allow read, write: if isPatronOrManager();
+    }
+    match /primes_employe/{doc} {
+      allow read, write: if isPatronOrManager();
     }
 
     // ─── CRM / Customers ─────────────────────────────────────────
@@ -194,6 +223,13 @@ service cloud.firestore {
     match /deliveries/{id} {
       allow read: if isAnyRole();
       allow write: if false;  // écriture uniquement via CF backend (Admin SDK)
+    }
+
+    // ─── Documents à signer ───────────────────────────────────────
+    match /documents_a_signer/{id} {
+      allow read: if isAnyRole();
+      allow create, delete: if isPatron();
+      allow update: if isPatron() || (isAnyRole() && request.auth.uid in resource.data.targetUids);
     }
 
     // ─── GMAO Demandes ────────────────────────────────────────────

@@ -2,13 +2,15 @@ import { useEffect, useRef, useState } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import ModuleGridPanel from './ModuleGridPanel'
 import { signOut } from 'firebase/auth'
-import { Timestamp, collection, doc, getDoc, onSnapshot, orderBy, query } from 'firebase/firestore'
+import { Timestamp, collection, doc, getDoc, onSnapshot, orderBy, query, where } from 'firebase/firestore'
 import { auth, db } from '../firebase/config'
 import { useAuth } from '../auth/useAuth'
 import type { Role } from '../types'
 import { useInbox } from '../hooks/useInbox'
 import type { InboxItem } from '../hooks/useInbox'
 import DailyPointageGate, { shouldShowGate, dismissGate } from './DailyPointageGate'
+import AnnonceGate from './AnnonceGate'
+import type { Annonce } from './AnnonceGate'
 import { useToastState } from '../hooks/useToast'
 import Toast from './Toast'
 import { usePointageSortie } from '../hooks/usePointageSortie'
@@ -166,6 +168,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate()
   const location = useLocation()
   const [unread, setUnread] = useState(0)
+  const [pendingConges, setPendingConges] = useState(0)
   const [showInbox, setShowInbox] = useState(false)
   const [showGate, setShowGate] = useState(false)
   const [moduleGrid, setModuleGrid] = useState<'corner' | 'cuisine' | null>(null)
@@ -175,6 +178,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const [showSortieModal, setShowSortieModal] = useState(false)
   const [sortieConfirmed, setSortieConfirmed] = useState(false)
   const [notifBanner, setNotifBanner] = useState<NotifBanner | null>(null)
+  const [pendingAnnonces, setPendingAnnonces] = useState<Annonce[]>([])
+  const [showAnnonceModal, setShowAnnonceModal] = useState(false)
+  const [charteNeedsSigning, setCharteNeedsSigning] = useState(false)
+  const [pendingDocsCount, setPendingDocsCount] = useState(0)
   const bannerTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const mountedAt = useRef(Date.now())
 
@@ -196,6 +203,27 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     if (user.email === 'planning@yorgios.fr') return
     if (shouldShowGate(user.role, user.uid)) setShowGate(true)
   }, [user?.uid, user?.role])
+
+  // ── Annonces obligatoires non lues ──
+  useEffect(() => {
+    if (!user?.uid) return
+    if (user.email === 'planning@yorgios.fr') return
+    const uid = user.uid
+    const q = query(collection(db, 'annonces'), where('actif', '==', true), orderBy('createdAt', 'asc'))
+    const unsub = onSnapshot(q, snap => {
+      const unread: Annonce[] = snap.docs
+        .map(d => ({ id: d.id, ...(d.data() as any) } as Annonce & { destIds?: string[]; readBy?: Record<string, any> }))
+        .filter(a => {
+          const dest: string[] = (a as any).destIds ?? []
+          const readBy: Record<string, any> = (a as any).readBy ?? {}
+          const isTargeted = dest.includes('*') || dest.includes(uid)
+          const hasRead = uid in readBy
+          return isTargeted && !hasRead
+        })
+      setPendingAnnonces(unread)
+    })
+    return unsub
+  }, [user?.uid])
 
   useEffect(() => {
     if (!user?.uid) return
@@ -230,6 +258,44 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       })
       return unsub
     })
+  }, [user?.uid])
+
+  // ── Badge congés en attente (patron/admin/manager uniquement) ──
+  useEffect(() => {
+    if (!user || !['patron', 'administrateur', 'manager'].includes(user.role)) return
+    const q = query(collection(db, 'conges_demandes'), where('statut', '==', 'En attente'))
+    return onSnapshot(q, snap => setPendingConges(snap.size))
+  }, [user?.uid, user?.role])
+
+  // ── Charte — vérifier si l'utilisateur doit signer ──
+  useEffect(() => {
+    if (!user?.uid || user.email === 'planning@yorgios.fr') return
+    async function checkCharte() {
+      try {
+        const [charteSnap, userSnap] = await Promise.all([
+          getDoc(doc(db, 'settings', 'reglement_interieur')),
+          getDoc(doc(db, 'users', user!.uid)),
+        ])
+        if (!charteSnap.exists()) return
+        const d = charteSnap.data()
+        if (d.active === false) { setCharteNeedsSigning(false) }
+        else {
+          const charteVersion = d.version || '1.0'
+          const signedVersion = userSnap.data()?.reglementSigned?.version
+          setCharteNeedsSigning(signedVersion !== charteVersion)
+        }
+        // Docs à signer ciblés sur cet utilisateur
+        const { getDocs: _getDocs, query: _query, collection: _col, where: _where } = await import('firebase/firestore')
+        const docsSnap = await _getDocs(_query(_col(db, 'documents_a_signer'), _where('targetUids', 'array-contains', user!.uid), _where('active', '==', true)))
+        let pending = 0
+        docsSnap.docs.forEach(ds => {
+          const sig = (ds.data() as any).signatures?.[user!.uid]
+          if (!sig || sig.version !== ((ds.data() as any).version || '1.0')) pending++
+        })
+        setPendingDocsCount(pending)
+      } catch {}
+    }
+    checkCharte()
   }, [user?.uid])
 
   // ── Enregistrement FCM global (dès le login, pas seulement sur /messages) ──
@@ -273,6 +339,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <>
+      {showAnnonceModal && pendingAnnonces.length > 0 && user?.uid && (
+        <AnnonceGate
+          annonces={pendingAnnonces}
+          uid={user.uid}
+          onAllRead={() => { setPendingAnnonces([]); setShowAnnonceModal(false) }}
+        />
+      )}
       {showGate && <DailyPointageGate onDismiss={() => setShowGate(false)} />}
 
       {/* ── Bandeau notification ── */}
@@ -394,6 +467,26 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
           {/* Liens secondaires */}
           <div style={{ padding: '0 8px 4px', borderTop: '1px solid var(--border-soft)', paddingTop: 8 }}>
+            {!isPlanningOnly && (
+              <NavLink to="/documents"
+                style={({ isActive }) => sidebarItemStyle(isActive)}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--surface-low)'; (e.currentTarget as HTMLElement).style.color = 'var(--on-surface)' }}
+                onMouseLeave={e => { const a = (e.currentTarget as HTMLElement).getAttribute('aria-current') === 'page'; (e.currentTarget as HTMLElement).style.background = a ? 'rgba(0,66,117,0.08)' : 'transparent'; (e.currentTarget as HTMLElement).style.color = a ? '#004275' : '#5a5a55' }}
+              >
+                <span style={{ position: 'relative', display: 'inline-flex', flexShrink: 0, fontSize: 18 }}>
+                  📋
+                  {(charteNeedsSigning || pendingDocsCount > 0) && (
+                    <span style={{ position: 'absolute', top: -3, right: -4, width: 8, height: 8, background: '#b45309', borderRadius: '50%', border: '1.5px solid #fff' }} />
+                  )}
+                </span>
+                <span>Documents</span>
+                {(charteNeedsSigning || pendingDocsCount > 0) && (
+                  <span style={{ marginLeft: 'auto', background: '#b45309', color: '#fff', borderRadius: 99, fontSize: 9, fontWeight: 700, padding: '2px 6px', fontFamily: 'Manrope, sans-serif' }}>
+                    À signer
+                  </span>
+                )}
+              </NavLink>
+            )}
             {isSuperUser && (
               <NavLink to="/admin/pointages"
                 style={({ isActive }) => sidebarItemStyle(isActive)}
@@ -414,14 +507,36 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <span>Allergènes</span>
               </NavLink>
             )}
-            {isAdmin && (
-              <NavLink to="/admin/documents"
+            {isSuperUser && (
+              <NavLink to="/admin/annonces"
                 style={({ isActive }) => sidebarItemStyle(isActive)}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--surface-low)'; (e.currentTarget as HTMLElement).style.color = 'var(--on-surface)' }}
                 onMouseLeave={e => { const a = (e.currentTarget as HTMLElement).getAttribute('aria-current') === 'page'; (e.currentTarget as HTMLElement).style.background = a ? 'rgba(0,66,117,0.08)' : 'transparent'; (e.currentTarget as HTMLElement).style.color = a ? '#004275' : '#5a5a55' }}
               >
-                <span style={{ fontSize: 18, flexShrink: 0 }}>📁</span>
-                <span>Documents</span>
+                <span style={{ fontSize: 18, flexShrink: 0 }}>📢</span>
+                <span>Annonces</span>
+              </NavLink>
+            )}
+            {isSuperUser && (
+              <NavLink to="/admin/conges"
+                style={({ isActive }) => sidebarItemStyle(isActive)}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--surface-low)'; (e.currentTarget as HTMLElement).style.color = 'var(--on-surface)' }}
+                onMouseLeave={e => { const a = (e.currentTarget as HTMLElement).getAttribute('aria-current') === 'page'; (e.currentTarget as HTMLElement).style.background = a ? 'rgba(0,66,117,0.08)' : 'transparent'; (e.currentTarget as HTMLElement).style.color = a ? '#004275' : '#5a5a55' }}
+              >
+                <span style={{ position: 'relative', display: 'inline-flex', flexShrink: 0, fontSize: 18 }}>
+                  🏖
+                  {pendingConges > 0 && (
+                    <span style={{ position: 'absolute', top: -4, right: -7, background: '#c0392b', color: '#fff', borderRadius: 99, minWidth: 14, height: 14, fontSize: 9, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px' }}>
+                      {pendingConges}
+                    </span>
+                  )}
+                </span>
+                <span>Congés</span>
+                {pendingConges > 0 && (
+                  <span style={{ marginLeft: 'auto', background: '#c0392b', color: '#fff', borderRadius: 99, minWidth: 18, height: 18, fontSize: 10, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 5px' }}>
+                    {pendingConges}
+                  </span>
+                )}
               </NavLink>
             )}
             {isAdmin && (
@@ -509,17 +624,34 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   <span style={{ fontFamily: 'Manrope, sans-serif', fontSize: 12, fontWeight: 700, color: '#fff' }}>Sortie</span>
                 </button>
               )}
-              {/* Documents + Paramètres — admin uniquement, mobile */}
-              {isAdmin && (
-                <button onClick={() => navigate('/admin/documents')} style={{
-                  background: location.pathname === '/admin/documents' ? 'rgba(0,66,117,0.1)' : 'var(--surface-low)',
+              {/* Annonces — patron/admin/manager, mobile */}
+              {isSuperUser && (
+                <button onClick={() => navigate('/admin/annonces')} style={{
+                  background: location.pathname === '/admin/annonces' ? 'rgba(0,66,117,0.1)' : 'var(--surface-low)',
                   border: 'none', borderRadius: 8, padding: '6px 8px', cursor: 'pointer',
-                  color: location.pathname === '/admin/documents' ? '#004275' : 'var(--on-surface-2)',
+                  color: location.pathname === '/admin/annonces' ? '#004275' : 'var(--on-surface-2)',
                   display: 'flex', alignItems: 'center', fontSize: 18,
                 }}>
-                  📁
+                  📢
                 </button>
               )}
+              {/* Congés — patron/admin/manager, mobile */}
+              {isSuperUser && (
+                <button onClick={() => navigate('/admin/conges')} style={{
+                  background: location.pathname === '/admin/conges' ? 'rgba(0,66,117,0.1)' : 'var(--surface-low)',
+                  border: 'none', borderRadius: 8, padding: '6px 8px', cursor: 'pointer',
+                  color: location.pathname === '/admin/conges' ? '#004275' : 'var(--on-surface-2)',
+                  display: 'flex', alignItems: 'center', fontSize: 18, position: 'relative',
+                }}>
+                  🏖
+                  {pendingConges > 0 && (
+                    <span style={{ position: 'absolute', top: 2, right: 2, background: '#c0392b', color: '#fff', borderRadius: 99, minWidth: 13, height: 13, fontSize: 8, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 2px' }}>
+                      {pendingConges}
+                    </span>
+                  )}
+                </button>
+              )}
+              {/* Paramètres — admin uniquement, mobile */}
               {isAdmin && (
                 <button onClick={() => navigate('/admin/settings')} style={{
                   background: location.pathname === '/admin/settings' ? 'rgba(0,66,117,0.1)' : 'var(--surface-low)',
@@ -528,6 +660,21 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   display: 'flex', alignItems: 'center',
                 }}>
                   <IconSettings />
+                </button>
+              )}
+              {/* Documents — tous les rôles */}
+              {!isPlanningOnly && (
+                <button onClick={() => navigate('/documents')} style={{
+                  background: location.pathname.startsWith('/documents') ? 'rgba(0,66,117,0.1)' : (charteNeedsSigning || pendingDocsCount > 0) ? 'rgba(180,83,9,0.08)' : 'var(--surface-low)',
+                  border: (charteNeedsSigning || pendingDocsCount > 0) ? '1.5px solid rgba(180,83,9,0.3)' : 'none',
+                  borderRadius: 8, padding: '6px 8px', cursor: 'pointer',
+                  color: location.pathname.startsWith('/documents') ? '#004275' : (charteNeedsSigning || pendingDocsCount > 0) ? '#b45309' : 'var(--on-surface-2)',
+                  display: 'flex', alignItems: 'center', fontSize: 18, position: 'relative',
+                }}>
+                  📋
+                  {(charteNeedsSigning || pendingDocsCount > 0) && (
+                    <span style={{ position: 'absolute', top: 2, right: 2, width: 7, height: 7, background: '#b45309', borderRadius: '50%', border: '1.5px solid #fff' }} />
+                  )}
                 </button>
               )}
               {/* Inbox */}
@@ -552,6 +699,56 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           {/* Page content */}
           <main style={{ flex: 1, overflowY: 'auto', paddingBottom: 'calc(var(--nav-h) + var(--safe-bottom))' }}
             className="md:pb-0">
+            {(charteNeedsSigning || pendingDocsCount > 0) && !location.pathname.startsWith('/documents') && (
+              <button
+                onClick={() => navigate('/documents')}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  width: '100%', padding: '11px 16px',
+                  background: '#b45309', border: 'none', cursor: 'pointer',
+                  textAlign: 'left',
+                }}
+              >
+                <span style={{ fontSize: 18, flexShrink: 0 }}>📋</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontFamily: 'Epilogue, sans-serif', fontSize: 13, fontWeight: 800, color: '#fff', letterSpacing: '-0.01em' }}>
+                    Charte à signer
+                  </div>
+                  <div style={{ fontFamily: 'Manrope, sans-serif', fontSize: 11, color: 'rgba(255,255,255,0.8)', marginTop: 1 }}>
+                    Touchez pour lire et signer la charte Yorgios
+                  </div>
+                </div>
+                <span style={{ fontFamily: 'Manrope, sans-serif', fontSize: 12, fontWeight: 700, color: '#fff', background: 'rgba(255,255,255,0.2)', borderRadius: 7, padding: '4px 10px', flexShrink: 0 }}>
+                  Signer →
+                </span>
+              </button>
+            )}
+            {pendingAnnonces.length > 0 && (
+              <button
+                onClick={() => setShowAnnonceModal(true)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  width: '100%', padding: '11px 16px',
+                  background: '#c0392b', border: 'none', cursor: 'pointer',
+                  animation: 'annonce-pulse 2s ease-in-out infinite',
+                  textAlign: 'left',
+                }}
+              >
+                <span style={{ fontSize: 18, flexShrink: 0 }}>📢</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontFamily: 'Epilogue, sans-serif', fontSize: 13, fontWeight: 800, color: '#fff', letterSpacing: '-0.01em' }}>
+                    Message important — {pendingAnnonces[0].titre}
+                    {pendingAnnonces.length > 1 && <span style={{ fontWeight: 400, opacity: 0.85 }}> (+{pendingAnnonces.length - 1} autre{pendingAnnonces.length > 2 ? 's' : ''})</span>}
+                  </div>
+                  <div style={{ fontFamily: 'Manrope, sans-serif', fontSize: 11, color: 'rgba(255,255,255,0.8)', marginTop: 1 }}>
+                    Touchez pour lire et confirmer la réception
+                  </div>
+                </div>
+                <span style={{ fontFamily: 'Manrope, sans-serif', fontSize: 12, fontWeight: 700, color: '#fff', background: 'rgba(255,255,255,0.2)', borderRadius: 7, padding: '4px 10px', flexShrink: 0 }}>
+                  Lire →
+                </span>
+              </button>
+            )}
             {children}
           </main>
         </div>

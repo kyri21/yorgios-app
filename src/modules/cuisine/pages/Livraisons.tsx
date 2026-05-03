@@ -921,7 +921,7 @@ export default function Livraisons() {
 
           <div style={{ display: "grid", gap: 10 }}>
             {todayDepartOnly.map((l) => {
-              const needsReception = l.receptionTempC == null;
+              const needsReception = l.departTempC != null ? l.receptionTempC == null : l.receptionAt == null;
               const depAt = l.departAt?.toDate ? l.departAt.toDate().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
               const isEditing = editId === l.id;
 
@@ -931,7 +931,7 @@ export default function Livraisons() {
                     {l.productName}{l.isManual ? " (manuel)" : ""} — {l.lotCode}
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginTop: 4 }}>
-                    Départ {l.departTempC != null ? `${l.departTempC}°C` : '—'} à {depAt} · Cat. {l.category} · Statut: <b style={{ color: needsReception ? 'var(--warning)' : 'var(--success)' }}>{needsReception ? "à compléter" : `réception OK (${l.result})`}</b>
+                    Départ {l.departTempC != null ? `${l.departTempC}°C` : '—'} à {depAt} · Cat. {l.category} · Statut: <b style={{ color: needsReception ? 'var(--warning)' : 'var(--success)' }}>{needsReception ? (l.departTempC != null ? "à compléter" : "en attente corner") : (l.receptionTempC != null ? `réception OK (${l.result})` : "reçu sans temp")}</b>
                   </div>
 
                   {l.departPhotoUrl && (
@@ -1007,7 +1007,7 @@ export default function Livraisons() {
           <div style={{ display: "grid", gap: 10 }}>
             {todayLivraisons.map((l) => {
               const depAt = l.departAt?.toDate ? l.departAt.toDate().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
-              const needsReception = l.receptionTempC == null;
+              const needsReception = l.departTempC != null ? l.receptionTempC == null : l.receptionAt == null;
 
               return (
                 <div key={l.id} style={{ background: 'var(--surface)', borderRadius: 12, padding: 12, border: '1px solid var(--border)', marginBottom: 8 }}>
@@ -1018,7 +1018,7 @@ export default function Livraisons() {
                     Lot <b style={{ color: 'var(--on-surface)' }}>{l.lotCode}</b> · Départ {l.departTempC != null ? `${l.departTempC}°C` : '—'} à {depAt} · Cat. {l.category}
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginTop: 4 }}>
-                    Statut : <b style={{ color: needsReception ? 'var(--warning)' : 'var(--success)' }}>{needsReception ? "À compléter (réception)" : `Réception OK (${l.result})`}</b>
+                    Statut : <b style={{ color: needsReception ? 'var(--warning)' : 'var(--success)' }}>{needsReception ? (l.departTempC != null ? "À compléter (réception)" : "En attente corner") : (l.receptionTempC != null ? `Réception OK (${l.result})` : "Reçu sans temp")}</b>
                   </div>
 
                   {(l.departPhotoUrl || l.receptionPhotoUrl) && (

@@ -9,6 +9,8 @@ export interface Avenant {
   label?: string
 }
 
+export type SubStatus = 'stagiaire' | 'alternant' | 'extra'
+
 export interface Employee {
   id: string
   name: string
@@ -17,6 +19,7 @@ export interface Employee {
   weeklyCapHours: number
   active: boolean
   suspended?: boolean
+  subStatus?: SubStatus
   restrictions?: RestrictionRule[]
   primeComportement?: number
   primePonctualite?: number

@@ -1,133 +1,231 @@
-# CLAUDE.md — Matias PWA
-
-## ✅ SESSION 2026-04-24 — Pointages, GEP, alertes réception
-
-### Déployé
-| Fonctionnalité | Fichier(s) | Notes |
-|----------------|-----------|-------|
-| Login — "Mot de passe oublié" avec `sendPasswordResetEmail` | `src/pages/Login.tsx` | Caché en mode iPad. Email vide → message d'erreur. |
-| `onLivraisonReception` — email REFUSE à tous responsables (HTML) | `functions/src/index.ts` | Destinataires : Alexandre + Arthur + Sébastien |
-| `onNonConformiteCreated` — email décision NC à tous responsables | `functions/src/index.ts` | Déclenché à la création d'un doc `non_conformites/` |
-| Règles GEP mises à jour — nomenclature officielle | `src/modules/cuisine/pages/Livraisons.tsx` | Voir tableau ci-dessous |
-| Aliases catégories GEP élargis | `src/modules/cuisine/pages/Livraisons.tsx` | `plat_cuisine_frais`, `patisserie_fraiche`, `poisson_frais`… |
-| Fix Firestore — Feuille de Vigne Farcie (24/04) → ACCEPTE | script node | `managerOverride: true`, validé par manager |
-| `onPointageLate` — email HTML + event planning + FCM | `functions/src/index.ts` | Email tous responsables, event `retard` dans `planningWeeks` |
-| `autoCheckoutSortie` — CF scheduler toutes les 30 min | `functions/src/index.ts` | Auto-checkout 1h après fin shift si pas de départ manuel |
-| `createPointage` — bloc départ < 1h après arrivée | `functions/src/index.ts` | Erreur `BLOCKED_1H:HH:MM:message` |
-| `createPointage` — overtime : re-arrivée après auto-checkout | `functions/src/index.ts` | Supprime auto-checkout, laisse passer nouvelle arrivée |
-| `usePointageSortie` — expose `blockedUntil` | `src/hooks/usePointageSortie.ts` | Date quand sortie devient disponible |
-| Layout modal sortie — double confirmation + message blocage | `src/components/Layout.tsx` | 2 étapes : "Pointer ma sortie" → "Oui, je quitte mon poste" |
-
-### Règles GEP officielles (seuils tolérance max)
-| Clé RULES | max_tol |
-|-----------|---------|
-| `VIANDE_HACHEE` | 3°C |
-| `VIANDE` | 5°C |
-| `POISSON` | 3°C |
-| `LAIT` | 6°C |
-| `PLAT_CUISINE` | 5°C |
-| `PATISSERIE` | 5°C |
-| `LEGUME` | 10°C |
-
-### Règles issues de cette session
-- **`RESPONSABLES_EMAILS`** → constante globale dans `functions/src/index.ts` : `['a.cozzika@gmail.com', 'kyriazis@outlook.fr', 'sebastien.coenca@gmail.com']`. Utiliser partout pour les emails d'alerte.
-- **Email REFUSE livraison** → 2 emails : (1) alerte immédiate à la réception (`onLivraisonReception`), (2) confirmation décision corner (`onNonConformiteCreated`).
-- **`managerOverride: true`** → champ sur doc `livraisons/` pour signaler une validation manuelle hors tolérance GEP.
-- **Retard planning** → `onPointageLate` écrit dans `planningWeeks/{weekId}/events/{dateISO}` : `{ empId, type: 'retard', minutes }`. Visible dans l'onglet "Mois".
-- **Champs ajoutés sur pointage arrivée** → `lateMinutes`, `plannedStartHour`, `plannedEndHour` (écrits par `onPointageLate` via `event.data.ref.update()`).
-- **`autoCheckoutSortie`** → schedule `*/30 7-23 * * *` Paris. Crée un départ `{ autoCheckout: true, plannedEndHour }` si aucun départ manuel 1h après fin shift. Timestamp = heure de fin prévue (pas l'heure courante).
-- **Overtime** → si employé re-pointe arrivée après auto-checkout : `createPointage` supprime l'auto-checkout et crée nouvelle arrivée (pas d'erreur doublon).
-- **Bloc sortie 1h** → `createPointage` (départ) vérifie que l'arrivée a > 60 min. Renvoie `failed-precondition` avec message `BLOCKED_1H:HH:MM:...`.
-- **Double confirmation sortie** → Layout.tsx : 1er clic = "Pointer ma sortie", 2ème clic = "Oui, je quitte mon poste". Le FAB affiche `blockedUntil` si < 1h.
+## Brain Obsidian — contexte projet
+> Note complète : `/home/demis/Documents/claude-brain/Projects/Matias — Yorgios Restaurant App.md`
+> Contient : carte des modules, toutes les routes, collections Firestore, règles absolues, équipe.
 
 ---
 
-## ✅ SESSION 2026-04-21 — Email Timour + Dashboard ruptures
+# CLAUDE.md — Matias PWA (mis à jour 2026-05-01)
 
-### Déployé
-| Fonctionnalité | Fichier(s) | Notes |
-|----------------|-----------|-------|
-| Email Timour redesigné — groupé par priorité catalogue | `functions/src/index.ts` | badges 🔴/🟠 par groupe de priorité |
-| CF `previewNightlyRuptures` — aperçu sans envoi | `functions/src/index.ts` | callable patron/admin |
-| CF `notifNightlyRuptures` — check enabled + pause vacances | `functions/src/index.ts` | lit `settings/nightly_ruptures` |
-| AdminSettings — toggle on/off + date pickers vacances | `src/pages/AdminSettings.tsx` | sauvegardé dans `settings/nightly_ruptures` |
-| AdminSettings — bouton "👁 Aperçu" + modal HTML | `src/pages/AdminSettings.tsx` | appelle `previewNightlyRuptures` |
-| Dashboard cuisine — pastilles jaunes pour priority=null | `src/modules/cuisine/pages/Dashboard.tsx` | couleur `#ca8a04` |
+## Mentions légales & RGPD
 
-### Règles issues de cette session
-- **`settings/nightly_ruptures`** → `{ enabled: boolean, pauseFrom: string, pauseTo: string }` (format YYYY-MM-DD). La CF 21h30 vérifie ce doc avant d'envoyer.
-- **Email ruptures** → groupé par niveau de priorité (comme le dashboard), puis trié alpha dans chaque groupe. Items `priority=null` → groupe "Sans priorité" en dernier.
-- **Dashboard cuisine — pastilles** → `priority === null` = jaune `#ca8a04`. Priorité définie = rouge (rupture) ou orange (presque rupture).
-- **`previewNightlyRuptures`** → callable (patron/admin) → retourne `{ items, commandes, hasContent, emailHtml }` sans envoyer.
+- **Responsable du traitement** : Arthur Kyriazis — 17 rue de Paradis, 75010 Paris — kyriazis@outlook.fr
+- **Page légale** : `/rgpd` (publique, sans auth) — `src/pages/Rgpd.tsx`
+  - Onglet 1 : CGU (conditions d'utilisation)
+  - Onglet 2 : Politique de confidentialité complète RGPD
+- **Lien** affiché dans Login.tsx : "CGU et politique de confidentialité"
+- Pas de société — application personnelle non commercialisée, mise à disposition des employés Yorgios
+- **Ne jamais mettre** de nom de société fictif ou de SIRET dans les documents légaux
+- Si besoin de modifier le contenu légal : éditer uniquement `src/pages/Rgpd.tsx`, constante `LAST_UPDATE` à mettre à jour
 
----
+## À VÉRIFIER — bugs connus
 
-## ✅ SESSION 2026-04-20 — Chantier multi-features (13 tâches toutes terminées)
+### PrimesTab — modifié, potentiellement cassé
+`PrimesTab.tsx` charge `settings/contrats` + `settings/primes_ca`. Si `settings/contrats` absent — fallback `DEFAULT_CONTRACTS`. Les cards utilisent `getContractForHours()` au lieu de `getBareme()`. **Non testé**.
 
-| # | Tâche | Commit |
-|---|-------|--------|
-| 1 | Vitrine pastilles AUJ.=orange DEMAIN=violet + colonnes header +12px | 44e010f |
-| 2 | Vitrine bug retour cuisine sans lotCode → `lots_cuisine.sent=false` | 44e010f |
-| 3 | Dashboard cuisine ruptures : Sam+Dim cumulés jusqu'à lundi 12h | 7a9c9a7 |
-| 4 | Fabrication — filtre viande (VIANDE/VIANDE_HACHEE) + badge >4j | b02fd7b |
-| 5 | Fabrication — lots `sent=true` visibles + delete/modify tous rôles | b02fd7b |
-| 6 | Notifications — retirer cuisine de `notifPlatsJour` + `notifCartonsChambrefroide` | f589cc6 |
-| 7 | WhatsApp wa.me lien vers Timour (+33781468107) après envoi ruptures | 1010fe4 |
-| 8 | Commandes clients — route `/commandes` tous rôles + filtre semaine/mois | 415e222 |
-| 9 | Firestore rules — `gmao_demandes` + `creta_gel_docs` | 933e28a |
-| 10 | Page `AdminDocuments.tsx` — GMAO (form + photo + email Christelle) + CRETA GEL (upload/view) | 598697f |
-| 11 | Router + sidebar — route `/admin/documents` patron/admin | 598697f |
-| 12 | CFs `sendGmaoEmail` (callable) + `gmaoWeeklyReminder` (scheduler lundi 9h) | f589cc6 |
-| 13 | Build + deploy hosting | — |
-
-### Règles issues de ce chantier
-- **Documents GMAO** → collection `gmao_demandes` : `{ motif, departement, date, numeroIntervention, statut, photoUrl?, createdAt }`. Statuts : `en cours` / `en attente` / `terminé`.
-- **CRETA GEL** → collection `creta_gel_docs` : `{ label, fileUrl, fileType, date, createdAt }`. Fichiers dans Storage `creta_gel/`.
-- **Photos GMAO** → Storage `gmao/`.
-- **Route `/commandes`** → accessible à TOUS les rôles. La page `Commandes.tsx` est réutilisée depuis `modules/corner/pages/`.
-- **CF `sendGmaoEmail`** → callable (patron/admin) → envoie email à Christelle `cvandaele@la-grande-epicerie.fr`. Objet éditable avec template pré-rempli, champ `customBody` supporté.
-- **CF `gmaoWeeklyReminder`** → scheduler lundi 9h → email à Alexandre + Sébastien si demandes "en cours".
-- **`notifPlatsJour` + `notifCartonsChambrefroide`** → cuisine retirée des destinataires.
+**Si les primes sont cassées** : vérifier que `calcPrime` reçoit `compMax/2` pour comp et ponct, et que `derived.caMaxPrimes` est calculé depuis les contrats au moment du save.
 
 ---
 
-## ⚠️ RÈGLES ABSOLUES — lire avant toute action
+### Fix heures malade/absent — déployé, non testé
+`usePlanning.ts` — `computeWeekCounters` : `absenceDaySet` skippe les jours avec `malade`/`conge`/`absence`/`sans_solde`/`jour_off`. À vérifier sur Mellina ou un autre exemple concret.
+
+---
+
+### Documents RH — seed initial à faire ⚠️
+Aller sur `/documents` en admin → onglet "✏️ Modifier charte" → cliquer **"Sauvegarder et publier"** pour créer le doc Firestore `settings/reglement_interieur` avec le contenu par défaut (DEFAULT_CHARTE v1.0). Sans ça, la bannière "Charte à signer" ne s'affiche pas et les employés ne peuvent pas signer.
+
+---
+
+## Fonctionnalités déployées session 2026-05-03
+
+### Annonces obligatoires — lecture forcée avant accès app
+- **Collection `annonces`** : `{ titre, corps, destIds: string[] ('*'=tous), destAll: boolean, actif: boolean, createdAt, createdByName, readBy: {[uid]: Timestamp} }`.
+- **`AnnonceGate.tsx`** : modal fullscreen lecture obligatoire — bouton "J'ai lu" activé uniquement après scroll complet. Met à jour `readBy.{uid}` à la confirmation.
+- **`AdminAnnonces.tsx`** — route `/admin/annonces` (patron/admin/manager) : rédiger annonce, cibler tous ou UIDs individuels, activer/désactiver, suivi de lecture par employé avec barre de progression.
+- **`Layout.tsx`** : query `annonces where actif==true` + filtre client-side `destIds.includes(uid||'*') && uid not in readBy`. Bannière orange cliquable si annonces en attente. Exclu pour `planning@yorgios.fr`.
+- **Firestore rules** : read=isAnyRole(), create/delete=isPatronOrManager(), update=isAnyRole() (pour marquer lu).
+- **Index** : `actif ASC + createdAt ASC` — déployé en prod.
+- **Comptes système exclus** (sélection AdminAnnonces) : `planning@yorgios.fr`, `ipad@yorgios.fr`, `ipad.cuisine@yorgios.fr`.
+
+---
+
+## Fonctionnalités déployées session 2026-05-01
+
+### Charte — toggle ON/OFF (patron/admin)
+- **`settings/reglement_interieur.active: boolean`** — nouveau champ. `true` par défaut (absent = actif).
+- **`Documents.tsx` — onglet "✏️ Modifier charte"** : switch bleu/gris en haut de la section. ON = charte soumise à signature (comportement actuel). OFF = aucune notification, aucune demande de signature, onglet Charte affiche juste le texte en lecture avec bandeau gris "en cours de révision".
+- **`Layout.tsx`** : si `active === false` → `setCharteNeedsSigning(false)` immédiatement, bannière et badge supprimés.
+- Usage : mettre OFF pendant révision, remettre ON pour soumettre à signature.
+
+### Ruptures corner — blocage produits déjà signalés dans la journée
+- **`Ruptures.tsx`** : au mount, query `ruptures_actives where createdAt >= minuit` → collecte tous les noms envoyés aujourd'hui dans `alreadySentToday: Set<string>`.
+- **Best-sellers** : produits déjà envoyés grisés (opacité 0.45), badge ✓ gris, `disabled`.
+- **Catalogue** : produits déjà envoyés filtrés de la grille (disparaissent comme les produits sélectionnés).
+- **Après chaque envoi** : `alreadySentToday` mis à jour localement sans nouveau round-trip Firestore.
+
+### Documents à signer — module générique
+- **Collection `documents_a_signer`** : `{ title, type: 'text'|'pdf', content?, fileUrl?, version, targetUids: string[], active, createdAt, signatures: {[uid]: {signedAt, version}} }`.
+- **Firestore rules** : `read` = isAnyRole() ; `create/delete` = isPatron() ; `update` = isPatron() OU uid dans `targetUids`.
+- **`Documents.tsx` — onglet "📄 Gérer docs"** (patron/admin) : créer un doc (PDF upload ou texte collé), sélectionner destinataires triés par groupe Corner/Cuisine/Manager avec "Tout cocher/décocher", toggle actif/inactif par doc, compteur signatures, suppression.
+- **`Documents.tsx` — onglet "📝 À signer"** (tout utilisateur ciblé) : visible uniquement si `targetUids` contient l'UID. Badge orange avec nombre en attente. Clic → lecture (PDF iframe ou texte rendu) + checkbox "J'ai lu et j'accepte" + bouton Signer. Liste séparée docs signés / en attente.
+- **`Layout.tsx`** : `pendingDocsCount` chargé au login via query `array-contains uid + active==true`. Bannière et badge Documents couvrent désormais charte ET docs à signer `(charteNeedsSigning || pendingDocsCount > 0)`.
+
+---
+
+## Fonctionnalités déployées session 2026-04-29
+
+### Documents — page `/documents` unifiée (ex-Documents RH + ex-AdminDocuments)
+- **Page `/documents`** — accessible à tous les rôles. Hub avec **7 onglets** (2 publics + 5 admin) :
+  - **"📋 Charte"** : lecture scroll-obligatoire + signature électronique (prénom+nom). Sauvegarde dans `users/{uid}.reglementSigned: { version, signedAt, signedName }`.
+  - **"📖 Livret"** : PDF du livret d'accueil affiché en iframe depuis Firebase Storage. Bouton "Ouvrir dans un nouvel onglet".
+  - **"✏️ Modifier charte"** (patron/admin uniquement) : textarea éditable + versionnage. Sauvegarde dans `settings/reglement_interieur: { content, version, updatedAt }`. Quand version change → tous les employés doivent re-signer.
+  - **"⬆️ Livret PDF"** (patron/admin uniquement) : upload PDF → Firebase Storage → URL dans `settings/documents_rh.livretUrl`. **Aucun code à modifier pour mettre à jour le livret.**
+  - **"✅ Signatures"** (patron/admin uniquement) : liste de tous les users ayant `reglementSigned` avec nom, version signée et date.
+  - **"🔧 GMAO"** (patron/admin uniquement) : demandes de réparation — formulaire (motif, département, date, N° intervention, photo), filtres statut+dates, changement statut, email Christelle (`cvandaele@la-grande-epicerie.fr`) via CF `sendGmaoEmail`.
+  - **"🧊 CRETA GEL"** (patron/admin uniquement) : bons de livraison — upload PDF/image, libellé, date, filtres dates, lien "Voir".
+- **Fichier** : `src/pages/Documents.tsx` — seul fichier, route `/documents`. `AdminDocuments.tsx` est orphelin (non bundlé, peut être supprimé).
+- **Onglets admin** : `isAdmin = ['patron', 'administrateur'].includes(user.role)` — les managers ne voient que Charte + Livret.
+- **Chargement lazy** : GMAO et CRETA GEL se chargent uniquement au premier clic sur l'onglet (flags `gmaoLoaded` / `cretaLoaded`).
+- **Firestore** : `settings/reglement_interieur` + `settings/documents_rh` + `gmao_demandes` + `creta_gel_docs` — règles inchangées.
+
+### Documents RH — Layout + Profile
+- **`Layout.tsx`** — lien "📋 Documents" dans sidebar (tous les rôles sauf planning@). Top bar mobile : bouton 📋 avec fond orangé si charte à signer. Bannière orange "Charte à signer → Signer" dans le contenu principal si `reglementSigned.version !== reglement_interieur.version`, masquée quand déjà sur `/documents`. Le `useEffect` compare les deux docs Firestore au chargement.
+- **`Profile.tsx`** — ligne "📋 Documents RH" en haut de la section "Accès rapide" avec statut : "⚠ Charte à signer" ou "✓ Charte signée".
+
+### Planning — congés sans restriction pour admin/manager/patron
+- **`EventModal.tsx`** — nouvelle prop `userRole?`. Si `patron`, `administrateur` ou `manager` : `congeBlocked = false` quelle que soit la date. Permet de saisir des congés à posteriori sans blocage.
+- **`planning/index.tsx`** — passe `userRole={user.role}` au modal.
+- Les employés classiques (corner/cuisine) gardent la validation 1 mois.
+
+### Dashboard cuisine — jours de fermeture corner
+- **Fonctions** dans `Dashboard.tsx` : `isCornerClosed(d)` (dimanche + 1er jan, 1er mai, 15 août, 25 déc), `getLastOpenDay(from)`, `getCommandesEffectiveStart()`.
+- **Ruptures** : si avant midi et hier fermé → cutoff = dernier jour ouvert à 13h. Remplace et généralise la logique "lundi spécial" (lundi matin = hier dimanche → samedi 13h, identique à avant).
+- **Commandes** : requête Firestore part du dernier jour ouvert si en fenêtre de récupération. `commandesToday` inclut les commandes du dernier jour ouvert jusqu'à aujourd'hui. Exemple : 1er mai fermé → commandes du 30 avril visibles le 2 mai avant midi.
+
+### Documents RH — rendu charte mis en forme
+- **`renderCharteContent(text)`** dans `Documents.tsx` — parser texte → React nodes. Rendu document moderne : bloc méta (Version/Responsables) dans encadré gris, sections numérotées avec badge cercle bleu + titre Epilogue bold, sous-sections (7.1…) avec bordure gauche bleue, bullets avec `·` primaire, labels inline en gras ("Prise de poste :", "Tolérance :" etc. détectés par regex `^([^:]{2,45})\s*:\s*(.+)$`), séparateurs `---` en ligne fine. L'admin continue d'éditer en texte brut — seul l'affichage change.
+
+---
+
+## Fonctionnalités déployées session 2026-04-28 (suite)
+
+- **Congés — suivi employé** : section "Mes demandes de congés" dans `Profile.tsx` — liste temps réel (`onSnapshot`) des propres demandes avec badges statut colorés (⏳ En attente / ✓ Acceptée / ✗ Refusée). Commentaire manager affiché si présent.
+
+- **Congés — gestion managers** : nouvelle page `/admin/conges` (`AdminConges.tsx`) accessible à patron/admin/manager. Liste temps réel avec tabs "En attente / Traitées". Clic → bottom sheet avec résumé + textarea commentaire + boutons Accepter (vert) / Refuser (rouge). Champs ajoutés sur update : `statut`, `commentaire`, `traitePar`, `traiteAt`.
+
+- **Congés — badge sidebar** : icône 🏖 dans sidebar et top bar mobile (patron/admin/manager) avec badge rouge comptant les demandes en attente (`onSnapshot` live).
+
+- **Congés — synchro planning** : CF `onCongesStatutChange` — trigger sur update `conges_demandes/{id}`. Si statut → "Acceptée" : lookup `users/{uid}.employeeId` → écrit `{ empId, type:'conge' }` dans `planningWeeks/{weekId}/events/{dateISO}` pour chaque jour de la plage. Si statut revient depuis "Acceptée" : supprime les events. Synchro automatique semaine + stats mois (computeWeekCounters lit déjà les events conge).
+
+- **Congés — email retour employé** : même CF envoie email à l'employé avec statut + commentaire manager quand statut passe à "Acceptée" ou "Refusée".
+
+- **Firestore rules** : `conges_demandes` — `allow read` étendu à `request.auth.uid == resource.data.uid` (employees lisent leurs propres demandes).
+
+- **Prérequis synchro planning** : l'employé doit avoir `employeeId` lié dans `users/{uid}` (Admin → Utilisateurs). Si absent, la CF log un warning et la demande reste gérée mais le planning n'est pas mis à jour.
+
+## Fonctionnalités déployées session 2026-04-28
+
+- **Planning — Extra rapide** : bouton "⚡ Extra" violet dans la toolbar planning. `QuickExtraModal` : formulaire minimal (prénom, heures/semaine optionnel, couleur). Crée un employé avec `subStatus:'extra'` — apparaît immédiatement dans les EmpCards, placeable dans les shifts normalement.
+
+- **Planning — Congés : validation 1 mois** : dans `EventModal`, si type `conge` et date de début < 1 mois : message rouge "Demande trop proche" + bouton désactivé. Si dates valides → popup intermédiaire avant sauvegarde.
+
+- **Ruptures corner — photos obligatoires** : les 3 photos vitrine (gauche, centre, droite) passent à `required: true`. Bouton "Envoyer" désactivé + message orange tant que les 3 ne sont pas prises. Frigo corner reste optionnel.
+
+- **AdminSettings — Comptes iPad** : input pleine largeur + bouton compact aligné à droite en dessous (plus de flex row qui compresse l'input).
+
+- **AdminSettings — Demandes de congés destinataires** : section "Autres destinataires email" remplacée par checkboxes (même pattern que Alertes email — responsables). Stocké en `string[]` dans `settings/emails.congesDestinataires`. Compat ascendante : ancien format CSV string auto-converti au chargement.
+
+- **Profil — Demandes de congés** : validation "moins d'un mois" avec blocage + message d'erreur rouge. Post-envoi : popup "Demande envoyée ✓ — Pour rappel, toute demande peut être déclinée. Merci d'attendre la validation de votre manager." Destinataires chargés depuis `settings/emails`.
+
+- **CF `onCongesDemande`** : trigger Firestore create `conges_demandes/{id}` — envoie email depuis `GMAIL_USER` aux destinataires configurés dans `settings/emails.congesDestinataires`. Email contient : nom, email, dates (du → au), motif. Fallback : `a.cozzika@gmail.com` + `kyriazis@outlook.fr`.
+
+- **Firestore rules** : ajout collection `conges_demandes` — `allow create: if isAnyRole()` + `allow read, update: if isPatronOrManager()`.
+
+## Fonctionnalités déployées session 2026-04-27
+
+- **Traçabilité transformation** : mode "🔄 Transformation" dans Fabrication (hachage/découpe/marinade), sélecteur réception source, DLC auto, badge TRANSFO violet. Sélecteur lots sources (ingrédients) sur modes catalogue/manuel. Modal 🔍 traçabilité — chaîne complète Réception → Transformation → Production. Lots `isTransformation` exclus de la liste d'envoi corner dans Livraisons.
+
+- **Fabrication — filtre liste principale** : l'onglet principal n'affiche que les lots du jour (tous) + lots d'anciens jours non encore envoyés (`!sent`). Les lots `sent=true` d'anciens jours disparaissent. Badge **ENVOYÉ** vert sur les lots du jour déjà expédiés. Bouton "✓ Livré" supprimé — archivage uniquement via le flux Livraisons → Vitrine/Frigo.
+
+- **Fabrication — créateur du lot** : `creatorName` (prénom) stocké à la création. Affiché sous la DLC, uniquement pour `patron` et `administrateur`. Backfill automatique au chargement pour les lots existants sans `creatorName`.
+
+- **Livraison corner — section "À confirmer — sans temp"** : les lots envoyés sans température de départ ont leur propre section séparée. "À compléter (N)" ne compte plus que les lots nécessitant une saisie de température réelle.
+
+- **Livraisons cuisine — statuts corrigés** : `needsReception` basé sur `receptionAt` (pas `receptionTempC`) pour les lots sans temp. Nouveaux statuts : "En attente corner" (orange) et "Reçu sans temp" (vert) pour les lots sans température de départ.
+
+- **Planning — modifier/supprimer un événement** : `EventModal` a un nouvel onglet "✏️ Modifier / Supprimer". Affiche les événements détectés sur la plage, permet de changer le type (remove + re-add via `onReplace`) ou de tout supprimer. `onReplace` branché dans `index.tsx` : `removeEventRange` puis `setEventRange` en séquence.
+
+## Fonctionnalités déployées session 3 (2026-04-26)
+
+- **AdminUsers — section MOT DE PASSE** : fix timing `auth.currentUser` via `onAuthStateChanged` dans `useEffect`. UI refaite : input pleine largeur + bouton "Changer le mot de passe" en dessous (plus en ligne). Visible uniquement pour `administrateur`. Testé et confirmé fonctionnel.
+
+## Fonctionnalités déployées session 2 (2026-04-26)
+
+- **Stats mois** : Alexandre/Arthur/Layal exclus via `EXCLUDED_NAMES`. Tous les employés avec `subStatus` non-null aussi exclus (stagiaires, alternants, extras).
+- **`SubStatus`** sur `Employee` : `'stagiaire' | 'alternant' | 'extra'`. Champ optionnel Firestore — absent = employé lambda.
+- **EmployeeManager** : dropdown "Statut" dans formulaire + badge violet en liste.
+- **PrimesTab** : même exclusion `subStatus` que MonthlyView.
+- **EmpCard** (planning semaine) : badge violet sous le nom + bordure violette pour les non-lambda.
+
+---
+
+## Fonctionnalités NON COMMENCÉES
+
+1. **AdminSettings** — section "Contrats de travail" : CRUD des types de contrats — `settings/contrats`
+2. **EmployeeManager** — dropdown heures contrat avec les types configurés (au lieu de `input number` libre)
+3. **Lien employé — utilisateur** pour le planning et les primes
+
+### Structure `settings/contrats`
+```json
+{ "types": [
+  { "hours": 15, "label": "Mi-temps 15h", "compMax": 20, "caMax": 60 },
+  { "hours": 20, "label": "20h", "compMax": 30, "caMax": 100 },
+  { "hours": 25, "label": "25h", "compMax": 40, "caMax": 150 },
+  { "hours": 30, "label": "30h", "compMax": 50, "caMax": 200 },
+  { "hours": 33, "label": "Hybride 33h", "compMax": 55, "caMax": 225 },
+  { "hours": 35, "label": "35h", "compMax": 60, "caMax": 250 }
+]}
+```
+
+---
+
+## REGLES ABSOLUES — lire avant toute action
 
 1. **Ne JAMAIS appeler `initializeApp()`** dans un module ou une page.
-   → Seul `src/firebase/config.ts` initialise Firebase, une seule fois.
+   Seul `src/firebase/config.ts` initialise Firebase, une seule fois.
 
 2. **Un seul projet Firestore : `cuisine-yorgios`.**
-   → `src/modules/cuisine/firebase/firebase.ts` est un simple re-export de `src/firebase/config.ts`.
+   `src/modules/cuisine/firebase/firebase.ts` est un simple re-export de `src/firebase/config.ts`.
 
 3. **Toujours importer** `db`, `auth`, `storage`, `functions` depuis `src/firebase/config.ts`.
 
-4. **Modules indépendants** → zéro import croisé entre modules.
+4. **Modules indépendants** — zéro import croisé entre modules.
    Exception : `src/pages/CommandePublique.tsx` importe `CommandeFormBody` depuis `modules/corner/pages/Commandes.tsx`.
 
 5. **Rôle `administrateur`** = alias de `patron` (mêmes droits complets).
-   → Partout où `patron` est vérifié, ajouter `administrateur`.
+   Partout où `patron` est vérifié, ajouter `administrateur`.
 
-6. **Deploy functions** → toujours compiler d'abord :
+6. **Deploy functions** — toujours compiler d'abord :
    ```bash
    cd functions && npm run build && cd .. && firebase deploy --only functions:nomFonction
    ```
 
-7. **Températures** → doc ID format : `{YYYY-MM-DD}_{fridgeId}_{session}` (`matin` ou `soir`).
+7. **Températures** — doc ID format : `{YYYY-MM-DD}_{fridgeId}_{session}` (`matin` ou `soir`).
 
-8. **Pointages** → NE JAMAIS écrire directement dans `pointages` depuis le client.
-   → Appeler `createPointage` via `httpsCallable(functions, 'createPointage')`.
+8. **Pointages** — NE JAMAIS écrire directement dans `pointages` depuis le client.
+   Appeler `createPointage` via `httpsCallable(functions, 'createPointage')`.
 
-9. **Route cuisine** → `/cuisine` rend `CuisineDashboard`. Réception = `/cuisine/reception`.
+9. **Route cuisine** — `/cuisine` rend `CuisineDashboard`. Réception = `/cuisine/reception`.
 
-10. **Ruptures — accumulation obligatoire** → Chaque envoi corner crée un **nouveau doc** `ruptures_actives` sans jamais archiver les précédents. `flatMap` + déduplication case-insensitive sur TOUS les docs non-vus → les envois du jour s'additionnent.
-    → NE JAMAIS marquer `viewed: true` les ruptures existantes lors d'un nouvel envoi corner.
-    → NE JAMAIS cliquer "✓ On s'en occupe" lors des tests.
+10. **Ruptures — accumulation obligatoire** — Chaque envoi corner crée un **nouveau doc** `ruptures_actives` sans jamais archiver les précédents. `flatMap` + déduplication case-insensitive sur TOUS les docs non-vus — les envois du jour s'additionnent.
+    NE JAMAIS marquer `viewed: true` les ruptures existantes lors d'un nouvel envoi corner.
+    NE JAMAIS cliquer "On s'en occupe" lors des tests.
 
-11. **Ruptures — tri par priorité** → Dashboard cuisine groupe par champ `priority` de `catalogue`. Noms dans `ruptures_actives` doivent correspondre EXACTEMENT aux noms du catalogue. Priorité 1 en premier, `null` = "Sans priorité" en dernier.
+11. **Ruptures — tri par priorité** — Dashboard cuisine groupe par champ `priority` de `catalogue`. Noms dans `ruptures_actives` doivent correspondre EXACTEMENT aux noms du catalogue. Priorité 1 en premier, `null` = "Sans priorité" en dernier.
 
-12. **Catalogue** → collection `catalogue` (pas `produits`). Noms exacts obligatoires partout (ruptures, best-sellers dans settings, pertes, vitrine). Best-sellers dans `settings/ruptures.produits[]` doivent matcher exactement les noms du catalogue.
+12. **Catalogue** — collection `catalogue` (pas `produits`). Noms exacts obligatoires partout (ruptures, best-sellers dans settings, pertes, vitrine). Best-sellers dans `settings/ruptures.produits[]` doivent matcher exactement les noms du catalogue.
 
-13. **Compte `planning@yorgios.fr`** → accès planning lecture seule uniquement. Pas de DailyPointageGate, pas d'autres routes. Bouton "📅 Mon planning" sur Login → connexion automatique sans saisie.
+13. **Compte `planning@yorgios.fr`** — accès planning lecture seule uniquement. Pas de DailyPointageGate, pas d'autres routes. Bouton "Mon planning" sur Login — connexion automatique sans saisie.
 
 ---
 
@@ -142,7 +240,7 @@
 
 ---
 
-## Équipe & Rôles
+## Équipe et Rôles
 
 | Rôle | Accès | Redirection login |
 |------|-------|-------------------|
@@ -172,7 +270,7 @@
 | **iPad Corner** | `corner` | ipad@yorgios.fr |
 | **Planning** | `corner` | planning@yorgios.fr |
 
-> Mots de passe : Firebase Console → Authentication.
+> Mots de passe : Firebase Console — Authentication.
 
 ---
 
@@ -181,32 +279,38 @@
 ```
 src/
   firebase/
-    config.ts           ← UNIQUE initializeApp() — exporte db, auth, storage, functions
-    messaging.ts        ← FCM + registerDeviceAsIPad()
+    config.ts           — UNIQUE initializeApp() — exporte db, auth, storage, functions
+    messaging.ts        — FCM + registerDeviceAsIPad()
   auth/
     useAuth.ts / AuthGuard.tsx
-  router/index.tsx      ← React.lazy() + Suspense (code splitting)
+  router/index.tsx      — React.lazy() + Suspense (code splitting)
   components/
-    Layout.tsx          ← sidebar + bottom nav + FAB pointage sortie + bannière messages
-    ModuleGridPanel.tsx ← bottom sheet grille 3×3 sous-pages Corner/Cuisine
-    DailyPointageGate.tsx ← gate géoloc (exclut planning@yorgios.fr)
+    Layout.tsx          — sidebar + bottom nav + FAB pointage sortie + bannière messages
+    ModuleGridPanel.tsx — bottom sheet grille 3x3 sous-pages Corner/Cuisine
+    DailyPointageGate.tsx — gate géoloc (exclut planning@yorgios.fr)
+    AnnonceGate.tsx     — modal lecture obligatoire (scroll-to-bottom avant confirmation)
   pages/
-    Login.tsx           ← boutons iPad Corner/Cuisine + bouton Planning (auto-login)
-    AdminProduits.tsx   ← catalogue (filtre catégorie + priorité)
-    AdminSettings.tsx   ← fournisseurs, alertes temp, best-sellers ruptures, niveaux priorité, barème CA
+    Login.tsx           — boutons iPad Corner/Cuisine + bouton Planning (auto-login) + "Mot de passe oublié"
+    AdminProduits.tsx   — catalogue (filtre catégorie + priorité)
+    AdminSettings.tsx   — fournisseurs, alertes temp, best-sellers ruptures, niveaux priorité, barème CA, contrats
+    AdminUsers.tsx      — CRUD utilisateurs + CF updateUserEmail/setUserDisabled/updateUserPassword
+    AdminDocuments.tsx  — ORPHELIN (fusionné dans Documents.tsx — peut être supprimé)
+    Documents.tsx       — hub unifié 7 onglets : Charte, Livret, Modifier charte, Livret PDF, Signatures, GMAO, CRETA GEL
+    AdminAnnonces.tsx   — gestion annonces obligatoires (patron/admin/manager)
+    AdminConges.tsx     — validation demandes de congés (patron/admin/manager)
   modules/
-    planning/     ← PlanningGrid (desktop) + MobilePlanningView (< 768px)
-    cuisine/      ← Dashboard + Réception + Fabrication + Livraisons + Températures + Contrôle + ReceptionHistorique
-    corner/       ← Dashboard + Températures + Hygiene + Livraison + Vitrine + StockageFrigo
+    planning/     — PlanningGrid (desktop) + MobilePlanningView (< 768px)
+    cuisine/      — Dashboard + Réception + Fabrication + Livraisons + Températures + Contrôle + ReceptionHistorique
+    corner/       — Dashboard + Températures + Hygiene + Livraison + Vitrine + StockageFrigo
                      Ruptures + Commandes + Pertes + Controle + PlanningCorner
-    crm/          ← CaptationPage + useCaptation hook
+    crm/          — CaptationPage + useCaptation hook
   hooks/
-    usePointageSortie.ts ← FAB sortie, appelle CF createPointage
+    usePointageSortie.ts — FAB sortie, appelle CF createPointage
 
 functions/src/
-  index.ts          ← 26 Cloud Functions
-  domain/loyalty.ts ← paliers fidélité
-  crm/index.ts      ← syncContactToBrevo, validatePromoCode
+  index.ts          — Cloud Functions
+  domain/loyalty.ts — paliers fidélité
+  crm/index.ts      — syncContactToBrevo, validatePromoCode
 ```
 
 ---
@@ -222,7 +326,7 @@ functions/src/
 | `receptions` | cuisine | réceptions HACCP |
 | `lots_cuisine` | lecture isAnyRole, create cuisine, update isAnyRole, delete corner | lots fabrication — `receptionId`, `fournisseur` pour traçabilité |
 | `lot_counters` | cuisine | séquences numéros de lot |
-| `livraisons` | lecture isAnyRole, create cuisine, update isAnyRole | livraisons cuisine → corner |
+| `livraisons` | lecture isAnyRole, create cuisine, update isAnyRole | livraisons cuisine — corner |
 | `temperatures` | lecture isAnyRole, create/update isAnyRole, delete patron/manager | relevés frigos — doc ID `{YYYY-MM-DD}_{fridgeId}_{session}` |
 | `archives` | cuisine | archives mensuelles |
 | `hygiene_corner` | corner | checklists — `{date}_quotidien` / `{YYYY-WXX}_hebdo` / `{YYYY-MM}_mensuel` |
@@ -234,17 +338,38 @@ functions/src/
 | `non_conformites` | corner | livraisons refusées + décisions |
 | `objectifs_ca` | écriture patron/admin/manager, lecture corner | CA mensuel (doc ID = YYYY-MM) |
 | `pointages` | write bloqué client (CF uniquement), read patron/admin/manager | pointages GPS |
-| `settings` | écriture patron/admin, lecture tous | fournisseurs, alertes, best-sellers ruptures, priority_levels, primes_ca |
+| `settings` | écriture patron/admin, lecture tous | voir section Settings ci-dessous |
 | `pertes_corner` | corner | pertes |
 | `deliveries` | lecture isAuth, write CF uniquement | suivi coursier Twilio — `trackingUrl`, `eta`, `status`, `rawMessage` |
-| `devices` | lecture isAnyRole, écriture own ou patron/admin | `{ type: 'ipad_corner'\|'mobile', fcmToken, label }` |
+| `devices` | lecture isAnyRole, écriture own ou patron/admin | `{ type: 'ipad_corner' ou 'mobile', fcmToken, label }` |
 | `customers` | CRM functions | fidélité + promos |
+| `gmao_demandes` | patron/admin/manager | `{ motif, departement, date, numeroIntervention, statut, photoUrl?, createdAt }`. Statuts : `en cours` / `en attente` / `terminé`. Photos dans Storage `gmao/` |
+| `creta_gel_docs` | patron/admin/manager | `{ label, fileUrl, fileType, date, createdAt }`. Fichiers dans Storage `creta_gel/` |
+| `annonces` | lecture isAnyRole, create/delete isPatronOrManager, update isAnyRole | `{ titre, corps, destIds: string[] ('*'=tous), destAll, actif, createdAt, createdByName, readBy: {[uid]: Timestamp} }` |
+| `documents_a_signer` | read isAuth, create/delete patron, update patron ou uid dans targetUids | `{ title, type: 'text'|'pdf', content?, fileUrl?, version, targetUids[], active, signatures: {[uid]: {signedAt, version}} }` |
+| `conges_demandes` | create isAnyRole, read own ou isPatronOrManager, update isPatronOrManager | `{ uid, nom, email, du, au, motif, statut, commentaire?, traitePar?, traiteAt? }` |
 
 ### Catalogue — champs clés
-- `defaultCategory` : groupement affichage (Mezze · Plats · Bowl · Tiropitas · Salades · Desserts · Boissons · Autre)
+- `defaultCategory` : groupement affichage (Mezze, Plats, Bowl, Tiropitas, Salades, Desserts, Boissons, Autre)
 - `gepCategory` : seuil GEP livraison (VIANDE, POISSON, PLAT_CUISINE, LEGUMES, etc.)
 - `priority` : number | null — 1 = urgent (affiché en premier dans dashboard cuisine)
 - `inFabrication: true` par défaut si absent — filtre `!== false`
+
+---
+
+## Settings Firestore (collection `settings`, DB `test`)
+
+| Doc | Champs | Usage |
+|-----|--------|-------|
+| `settings/ruptures` | `produits: string[]` | Best-sellers corner (noms exacts catalogue) |
+| `settings/primes_ca` | CA progressif | Barème CA planning |
+| `settings/contrats` | `types: ContractType[]` | Types contrats (20/25/30/35h + custom). Fallback `DEFAULT_CONTRACTS` si absent |
+| `settings/nightly_ruptures` | `enabled: boolean`, `pauseFrom: string`, `pauseTo: string` (YYYY-MM-DD), `ccEmails: string[]` | Email Timour 21h30 — toggle + vacances + CC |
+| `settings/alert_emails` | `responsables: string[]` | Destinataires retard/REFUSE/NC. Fallback `['a.cozzika@gmail.com', 'kyriazis@outlook.fr', 'sebastien.coenca@gmail.com']` si vide |
+| `settings/history_limits` | `lotsJours: number` (défaut 30), `livraisonsJours: number` (défaut 30) | Durée historique lots Fabrication + galerie photos Livraison. Températures/hygiène/pointages = illimités |
+| `settings/commandes_emails` | `relanceEnabled: boolean`, `destinataires: string[]` | Relance commandes 6h/12h/18h + email immédiat nouvelle commande. Défaut : `a.cozzika@gmail.com` |
+| `settings/notifications` | `costas: boolean`, `weeklyHygieneLundi.email: boolean`, `gmaoRappelLundi.email: boolean` | Toggles notifications |
+| `settings/priority_levels` | levels[] | Niveaux de priorité catalogue |
 
 ---
 
@@ -254,27 +379,38 @@ functions/src/
 |----------|------------|------|
 | `onNewMessage` | Firestore create `messages/{id}` | Push FCM à tous sauf expéditeur |
 | `purgeOldMessages` | Scheduler quotidien | Supprime messages expirés |
-| `onNewCommande` | Firestore create `commandes_externes/{id}` | Anti-spam 3/24h + Push FCM |
-| `onCommandeUpdated` | Firestore update `commandes_externes/{id}` | Acceptée → GCal + FCM ; Livrée → Brevo + fidélité |
+| `onNewCommande` | Firestore create `commandes_externes/{id}` | Anti-spam 3/24h + Push FCM + email `settings/commandes_emails.destinataires` |
+| `onCommandeUpdated` | Firestore update `commandes_externes/{id}` | Acceptée — GCal + FCM ; Livrée — Brevo + fidélité |
 | `onCommandePrete` | httpsCallable | FCM patron+manager+cuisine + messagerie |
-| `notifCommandesJ7` | Scheduler 8h00 | Email HTML toutes commandes J+0→J+7 |
+| `notifCommandesJ7` | Scheduler 8h00 | Email HTML toutes commandes J+0 vers J+7 |
 | `notifCommandesJ2` | Scheduler 14h00 | FCM + Email HTML commandes dans 2 jours |
 | `notifCommandesJJ` | Scheduler 09h00 | FCM rappel jour-J |
-| `onPointageLate` | Firestore create `pointages/{id}` | Email si retard > 10 min |
-| `createPointage` | httpsCallable | Validation GPS Haversine, anti-doublon |
+| `relanceCommandes` | Scheduler `0 6,12,18 * * *` Paris | Relance si `relanceEnabled===true` dans `settings/commandes_emails` |
+| `onPointageLate` | Firestore create `pointages/{id}` | Email HTML à `settings/alert_emails.responsables` si retard > 10 min + event `retard` dans `planningWeeks` |
+| `createPointage` | httpsCallable | Validation GPS Haversine, anti-doublon, bloc sortie < 1h, overtime auto-checkout |
+| `autoCheckoutSortie` | Scheduler `*/30 7-23 * * *` Paris | Auto-checkout 1h après fin shift si pas de départ manuel. Timestamp = heure fin prévue |
 | `notifTemperatures` | Scheduler 8h30 | FCM si frigos matin non saisis |
 | `notifTemperaturesEvening` | Scheduler 22h00 | FCM si frigos soir non saisis |
-| `notifCartonsChambrefroide` | Scheduler 9h30 | FCM corner+cuisine |
-| `notifPlatsJour` | Scheduler 11h00 | FCM cuisine+corner |
+| `notifCartonsChambrefroide` | Scheduler 9h30 | FCM corner+patron+admin+manager (cuisine exclue) |
+| `notifPlatsJour` | Scheduler 11h00 | FCM corner+patron+admin+manager (cuisine exclue) |
 | `notifUrgences` | Scheduler 15h00 | FCM employés pointés |
+| `notifCostas` | Scheduler dimanche 10h | FCM corner+patron+admin+manager (si `settings/notifications.costas`) |
 | `notifHygieneHebdo` | Scheduler samedi 18h | FCM si checklist hebdo non faite |
 | `notifHygieneMensuel` | Scheduler 28-31 du mois 18h | FCM si checklist mensuelle non faite |
-| `weeklyHygieneRecap` | Scheduler lundi 8h | Email récap températures + hygiène |
+| `weeklyHygieneRecap` | Scheduler lundi 8h | Email récap températures + hygiène (si `settings/notifications.weeklyHygieneLundi.email`) |
+| `notifNightlyRuptures` | Scheduler 21h30 | Email Timour groupé par priorité. Vérifie `settings/nightly_ruptures.enabled` + pause vacances |
+| `previewNightlyRuptures` | httpsCallable (patron/admin) | Aperçu email ruptures sans envoi — retourne `{ items, commandes, hasContent, emailHtml }` |
 | `createUser` | httpsCallable (patron/admin) | Créer compte utilisateur |
 | `deleteUser` | httpsCallable (patron/admin) | Supprimer compte utilisateur |
+| `updateUserEmail` | httpsCallable (patron/admin) | Modifier email utilisateur |
+| `setUserDisabled` | httpsCallable (patron/admin) | Désactiver/réactiver compte (`disabledUntil` optionnel) |
+| `updateUserPassword` | httpsCallable (administrateur uniquement) | Modifier mot de passe utilisateur |
 | `onLivraisonTemperature` | Firestore create `livraisons/{id}` | FCM départ livraison |
-| `onLivraisonReception` | Firestore update `livraisons/{id}` | FCM + email patron si REFUSE |
-| `incomingSms` | onRequest (Twilio webhook) | Parse SMS coursier → `deliveries` + FCM |
+| `onLivraisonReception` | Firestore update `livraisons/{id}` | FCM + email `settings/alert_emails.responsables` si REFUSE |
+| `onNonConformiteCreated` | Firestore create `non_conformites/{id}` | Email décision NC à `settings/alert_emails.responsables` |
+| `sendGmaoEmail` | httpsCallable (patron/admin) | Email à Christelle `cvandaele@la-grande-epicerie.fr`. Objet éditable + `customBody` |
+| `gmaoWeeklyReminder` | Scheduler lundi 9h | Email à Alexandre + Sébastien si demandes GMAO "en cours" (si `settings/notifications.gmaoRappelLundi.email`) |
+| `incomingSms` | onRequest (Twilio webhook) | Parse SMS coursier — `deliveries` + FCM |
 | `syncContactToBrevo` | httpsCallable | Sync contact Brevo + `customers/` |
 | `validatePromoCode` | httpsCallable | Vérifie code promo (app) |
 | `validatePromoCodePublic` | onRequest | Vérifie code promo (WordPress) |
@@ -295,11 +431,15 @@ functions/src/
 | `/pointage` | tous sauf manager |
 | `/profile` | tous |
 | `/livraisons` | tous |
+| `/commandes` | tous |
 | `/admin/users` | patron, admin |
 | `/admin/settings` | patron, admin |
 | `/admin/pointages` | patron, admin, manager |
 | `/admin/produits` | patron, admin |
 | `/admin/allergenes` | patron, admin, manager |
+| `/admin/annonces` | patron, admin, manager |
+| `/admin/conges` | patron, admin, manager |
+| `/documents` | tous |
 | `/crm/captation` | tous |
 
 ---
@@ -326,15 +466,15 @@ functions/src/
 | `--border-soft` | `rgba(28,28,24,0.06)` | Séparateurs légers |
 
 ### Classes
-`.page` · `.card` · `.btn-primary` · `.btn-secondary` · `.btn-danger` · `.btn-icon`
-`.input` · `.input-filled` · `.section-title` · `.section-label`
-`.chip-ok` · `.chip-danger` · `.chip-warn` · `.nav-tabs` / `.nav-tab` · `.glass` · `.divider`
-`.spinner` · `.skeleton`
+`.page` `.card` `.btn-primary` `.btn-secondary` `.btn-danger` `.btn-icon`
+`.input` `.input-filled` `.section-title` `.section-label`
+`.chip-ok` `.chip-danger` `.chip-warn` `.nav-tabs` `.nav-tab` `.glass` `.divider`
+`.spinner` `.skeleton`
 
 ### Règles
 - Overlays modals : `rgba(28,28,24,0.45)`
 - Fonts : **Epilogue** (titres h1-h3) + **Manrope** (body)
-- Tap targets min 44×44px mobile
+- Tap targets min 44x44px mobile
 
 ---
 
@@ -377,17 +517,18 @@ functions/src/
 
 ## Règles GEP — températures livraison
 
-| Catégorie | Max standard | Max tolérance |
-|-----------|-------------|---------------|
-| Viande hachée | 2°C | 3°C |
-| Viande | 3°C | 5°C |
-| Poisson | 2°C | 3°C |
-| Lait | 4°C | 6°C |
-| Plat cuisiné frais | 3°C | 5°C |
-| Pâtisserie fraîche | 3°C | 5°C |
-| Légumes | 8°C | 10°C |
+| Catégorie | Clé RULES | Max standard | Max tolérance |
+|-----------|-----------|-------------|---------------|
+| Viande hachée | `VIANDE_HACHEE` | 2°C | 3°C |
+| Viande | `VIANDE` | 3°C | 5°C |
+| Poisson | `POISSON` | 2°C | 3°C |
+| Lait | `LAIT` | 4°C | 6°C |
+| Plat cuisiné frais | `PLAT_CUISINE` | 3°C | 5°C |
+| Pâtisserie fraîche | `PATISSERIE` | 3°C | 5°C |
+| Légumes | `LEGUME` | 8°C | 10°C |
 
-Tout dépassement de `maxTol` → `result: 'REFUSE'` → email patron + push FCM.
+Tout dépassement de `maxTol` — `result: 'REFUSE'` — email `settings/alert_emails.responsables` + FCM.
+`managerOverride: true` sur le doc `livraisons/` = validation manuelle hors tolérance GEP.
 
 ---
 
@@ -439,32 +580,44 @@ firebase deploy --only firestore:indexes
 
 ---
 
-## ⚠️ ARCHITECTURE MÉTIER — RÈGLES INVIOLABLES
+## ARCHITECTURE METIER — REGLES INVIOLABLES
+
+### Planning — employés
+
+- **`Employee.subStatus?: 'stagiaire' | 'alternant' | 'extra'`** — absent = employé lambda.
+- Exclus du décompte mensuel (stats + exports Excel/PDF) ET des primes.
+- Apparaissent dans la grille semaine avec badge violet + bordure violette.
+- `EXCLUDED_NAMES = ['Layal', 'Alexandre', 'Arthur']` dans `primes.ts` — exclus aussi des stats/primes (patrons + cas particuliers).
+- Pour créer un extra : EmployeeManager → dropdown "Statut" → Extra. Heures contrat = 0 si pas de contrat fixe.
+
+---
 
 ### Cycle de vie d'un lot cuisine
 
 ```
 Fabrication (cuisine)
-  → Livraison cuisine (départ + temp)
-    → Livraison corner (arrivée + temp)
-      → Frigo corner (stockage_frigo)  ──→  Vitrine (corner_stock, active=true)
-      → Vitrine directe (corner_stock)
+  vers Livraison cuisine (départ + temp)
+    vers Livraison corner (arrivée + temp)
+      vers Frigo corner (stockage_frigo)  vers  Vitrine (corner_stock, active=true)
+      vers Vitrine directe (corner_stock)
 ```
 
 1. **Pas de doublon** dans `lots_cuisine`, `stockage_frigo`, `corner_stock`. Bloquer si doublon.
-2. **Lot livré + accepté** → `lots_cuisine.archived=true`. Disparaît de "Lots en cours".
-3. **Lot ajouté en vitrine depuis lots cuisine** → archive `lots_cuisine` + crée `corner_stock`.
-4. **Lot transféré frigo → vitrine** → `deleteDoc stockage_frigo` automatique. Frigo et vitrine sont mutuellement exclusifs.
-5. **Retour cuisine depuis Vitrine** → `corner_stock.active=false` + `lots_cuisine.sent=false`.
+2. **Lot livré + accepté** — `lots_cuisine.archived=true`. Disparaît de "Lots en cours".
+3. **Lot ajouté en vitrine depuis lots cuisine** — archive `lots_cuisine` + crée `corner_stock`.
+4. **Lot transféré frigo vers vitrine** — `deleteDoc stockage_frigo` automatique. Frigo et vitrine sont mutuellement exclusifs.
+5. **Retour cuisine depuis Vitrine** — `corner_stock.active=false` + `lots_cuisine.sent=false`.
 
 ---
 
 ### Cuisine — Dashboard
 
-- **Encadré rouge ruptures** : un seul encadré en haut, triés par priorité catalogue. Fenêtre : avant 10h → depuis hier 13h ; après 10h → depuis minuit.
-- **Ruptures** : `flatMap` sur tous les docs `viewed==false` → déduplication case-insensitive.
-- **"✓ On s'en occupe"** → `batch.update viewed:true` sur tous les docs visibles.
+- **Encadré rouge ruptures** : un seul encadré en haut, triés par priorité catalogue. Fenêtre : avant 10h — depuis hier 13h ; après 10h — depuis minuit.
+- **Ruptures** : `flatMap` sur tous les docs `viewed==false` — déduplication case-insensitive.
+- **"On s'en occupe"** — `batch.update viewed:true` sur tous les docs visibles.
 - **Commandes** : filtre `STATUTS_ACTIFS = ['en cours', 'devis envoyé', 'accepté']`.
+- **Dashboard ruptures weekend** : Sam+Dim cumulés jusqu'à lundi 12h.
+- **Pastilles priorité** : `priority === null` = jaune `#ca8a04`. Priorité définie = rouge (rupture) ou orange (presque rupture).
 
 ---
 
@@ -473,60 +626,74 @@ Fabrication (cuisine)
 - Produits depuis `catalogue where inReception==true && active==true`.
 - N° lot : saisie manuelle ou scan code-barres (html5-qrcode, lazy).
 - Crée un doc `receptions` — référencé dans Fabrication (`receptionId`).
+- DLC viande en mode Réception = **7 jours** (filtre liste réceptions aussi étendu à 7j).
 
 ---
 
 ### Cuisine — Fabrication
 
 - Vérifier `lotCode` inexistant avant `setDoc`. Bloquer si doublon.
-- Mode "📦 Réception" : pré-remplit `productName` + `fournisseur`, stocke `receptionId`.
+- Mode Réception : pré-remplit `productName` + `fournisseur`, stocke `receptionId`.
+- Mode Transformation : hachage/découpe/marinade — `isTransformation:true`, `transformationType`, DLC auto, badge TRANSFO violet. Exclu de Livraisons (`!l.isTransformation`).
 - DLC auto : J+`dlcDays` depuis date fabrication (configurable dans catalogue).
+- Durée historique lots : `settings/history_limits.lotsJours` (défaut 30j) — query Firestore date-based dans `loadLots()`.
+- **Onglet principal** : lots du jour (tous) + lots d'anciens jours `sent!=true`. Les lots `sent=true` d'anciens jours ne s'affichent PAS — ils sont en transit ou archivés. Badge **ENVOYÉ** vert sur les lots du jour déjà expédiés.
+- **Pas de bouton "Livré"** — archivage uniquement via flux Livraisons → Vitrine/Frigo corner.
+- `creatorName` stocké à la création (prénom depuis profil Firestore). Affiché sous la DLC pour patron/admin uniquement. Backfill automatique au chargement.
+- Filtre viande (VIANDE/VIANDE_HACHEE) + badge >4j.
 
 ---
 
 ### Cuisine — Livraison (départ)
 
-- Lots non livrés (`sent!=true`). Température obligatoire pour lots soumis GEP.
-- Lots sans temp → case à cocher côté corner à l'arrivée.
-- Lots sélectionnés → `sent=true`.
+- Lots non livrés (`sent!=true && !isTransformation`). Température obligatoire pour lots soumis GEP.
+- Lots sans temp — case à cocher côté corner à l'arrivée.
+- Lots sélectionnés — `sent=true`.
+- **Statuts affichés** : avec temp non réceptionné → "À compléter (réception)" ; sans temp non confirmé → "En attente corner" ; avec temp reçu → "Réception OK (résultat)" ; sans temp confirmé → "Reçu sans temp".
 
 ---
 
 ### Corner — Dashboard
 
-- **Filtre livraisons pending** : `receptionTempC == null && !receptionAt && !returned && departAt >= todayStart`.
-- ⚠️ Ce filtre doit être **identique** dans `corner/Dashboard.tsx` et `corner/Livraison.tsx`.
+- **Filtre livraisons pending** (card du dashboard) : `receptionTempC == null && !receptionAt && !returned && departAt >= todayStart`. Affiche uniquement les livraisons en attente du jour pour le compteur de la card.
+- **`overdueLivraisons`** : calculés depuis les 200 dernières livraisons — lots pending avec `departAt + 6h < now`. Déclenche un **bandeau orange en haut de page** cliquable vers `/corner/livraison`. Texte : `"X lot(s) non réceptionné(s) depuis plus de 6h"`.
+- Le filtre `departAt >= todayStart` est UNIQUEMENT dans `Dashboard.tsx` pour le compteur de la card. `Livraison.tsx` affiche TOUS les jours sans filtre de date.
 - **Commandes** : même filtre `STATUTS_ACTIFS` que cuisine.
 
 ---
 
 ### Corner — Livraison (arrivée)
 
+- `load()` récupère les **200 dernières** livraisons sans filtre date.
+- `pending` : `receptionAt == null && !returned` — SANS filtre de date. Tous les lots non traités de tous les jours sont visibles.
 - Lots AVEC `departTempC` en premier, SANS `departTempC` ensuite.
-- Avec temp → saisie temp arrivée + photo → résultat GEP. Dépassement `maxTol` → email patron + FCM.
-- Sans temp → checkbox groupée "Livraison reçue ✓" → `result: 'ACCEPTE'`.
-- `pending` : `receptionTempC == null && !receptionAt && !returned`.
-- `done` : `(receptionTempC != null || receptionAt != null) && !returned`.
-- Bouton "↩ Retour cuisine" : tous rôles. Bouton "🗑 Supprimer" : patron/admin/manager.
+- **"À compléter (N)"** : uniquement les lots avec `departTempC != null` — saisie temp arrivée + photo — résultat GEP. Dépassement `maxTol` — email + FCM.
+- **"À confirmer — sans temp (N)"** : section séparée — checkbox groupée "Livraison reçue" — `result: 'ACCEPTE'`. NE PAS les compter dans "À compléter".
+- `done` (Complétées aujourd'hui) : `receptionAt >= todayStart()` — filtré par date de réception corner, pas date d'envoi cuisine.
+- `stalePending` : lots pending avec `departAt < todayStart()` — bandeau orange + badge date sur chaque carte.
+- Bouton "Retour cuisine" : tous rôles. Bouton "Supprimer" : patron/admin/manager.
 
 ---
 
 ### Corner — Vitrine
 
 **3 modes d'ajout** :
-1. **✏️ Manuel** : catalogue `inVitrine==true`, multi-sélection.
-2. **📦 Lot cuisine** : `lots_cuisine where sent==true && inVitrine!=false`. Sélection → `addDoc corner_stock` + archive `lots_cuisine`.
-3. **🧊 Frigo** : `stockage_frigo`. Sélection → `addDoc corner_stock` + `deleteDoc stockage_frigo`.
+1. **Manuel** : catalogue `inVitrine==true`, multi-sélection.
+2. **Lot cuisine** : `lots_cuisine where sent==true && inVitrine!=false`. Sélection — `addDoc corner_stock` + archive `lots_cuisine`.
+3. **Frigo** : `stockage_frigo`. Sélection — `addDoc corner_stock` + `deleteDoc stockage_frigo`.
+
+Pastilles DLC : AUJ. = orange, DEMAIN = violet.
 
 ---
 
 ### Corner — Ruptures
 
 - Best-sellers depuis `settings/ruptures.produits[]` (noms exacts catalogue).
-- Catalogue depuis `catalogue` (active==true), ordre fixe : Mezze→Salades→Tiropitas→Plats→Bowl→Desserts→Autre→Boissons.
-- 3 états : null → 🔴 urgent → 🟠 moins-urgent → null. ✕ dans panel = null direct.
+- Catalogue depuis `catalogue` (active==true), ordre fixe : Mezze, Salades, Tiropitas, Plats, Bowl, Desserts, Autre, Boissons.
+- 3 états : null, urgent, moins-urgent, null. Croix dans panel = null direct.
 - Chaque envoi = **nouveau doc** `ruptures_actives`, jamais d'archivage des précédents.
 - `ruptures[]` = urgent, `presqueRuptures[]` = moins-urgent.
+- Lien WhatsApp `wa.me` vers Timour (+33781468107) après envoi ruptures.
 
 ---
 
@@ -543,118 +710,37 @@ Fabrication (cuisine)
 
 ---
 
-### Livraisons coursier (Twilio)
+### Documents — GMAO + CRETA GEL (onglets admin dans `/documents`)
 
-- CF `incomingSms` → parse SMS → écrit dans `deliveries`.
-- Page `/livraisons` : `onSnapshot deliveries where status=='in_progress'`.
-- iPad Corner : enregistre `devices/{uid}` au login, son + WakeLock sur nouvelle livraison.
+- **GMAO** : collection `gmao_demandes`. Photos dans Storage `gmao/`. Filtres client-side : statut + plage dates sur champ `date`.
+- **CRETA GEL** : collection `creta_gel_docs`. Fichiers dans Storage `creta_gel/`. Filtres client-side : plage dates sur champ `date`.
+- Accessible via `/documents` → onglets 🔧 GMAO / 🧊 CRETA GEL (patron/administrateur uniquement).
+
+---
+
+### Pointages
+
+- `createPointage` (CF) : bloc sortie < 1h après arrivée — `BLOCKED_1H:HH:MM:message`.
+- Overtime : re-arrivée après auto-checkout — supprime l'auto-checkout, crée nouvelle arrivée.
+- `autoCheckoutSortie` : `*/30 7-23 * * *` Paris — crée départ `{ autoCheckout: true, plannedEndHour }` si pas de départ manuel 1h après fin shift. Timestamp = heure de fin prévue.
+- `onPointageLate` : event `retard` dans `planningWeeks/{weekId}/events/{dateISO}` : `{ empId, type: 'retard', minutes }`.
+- Champs ajoutés sur pointage arrivée : `lateMinutes`, `plannedStartHour`, `plannedEndHour`.
+- Layout.tsx : double confirmation sortie — 1er clic "Pointer ma sortie", 2ème clic "Oui, je quitte mon poste". FAB affiche `blockedUntil` si < 1h.
 
 ---
 
 ### Planning — barèmes
 
-- **CA progressif** → `/admin/settings` → `settings/primes_ca`
-- **Comportement/ponctualité** → `src/modules/planning/utils/primes.ts`, constante `BAREME`
-- **Prime hygiène** → même fichier, `HYGIENE_BONUS = 50`
-- **Montants custom par employé** → `/planning` → 👥 Employés
-- **Avenants contrat** → même UI
+- **CA progressif** — `/admin/settings` — `settings/primes_ca`
+- **Comportement/ponctualité** — `src/modules/planning/utils/primes.ts`, constante `BAREME`
+- **Prime hygiène** — même fichier, `HYGIENE_BONUS = 50`
+- **Montants custom par employé** — `/planning` — section Employés
+- **Contrats** — `settings/contrats.types[]`. Fallback `DEFAULT_CONTRACTS` si absent. `getContractForHours(emp.weeklyCapHours, contracts)` utilisé dans PrimesTab.
 
-<!-- gitnexus:start -->
-# GitNexus — Code Intelligence
+---
 
-This project is indexed by GitNexus as **yorgios-app** (1374 symbols, 3095 relationships, 112 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+### Livraisons coursier (Twilio)
 
-> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
-
-## Always Do
-
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
-
-## When Debugging
-
-1. `gitnexus_query({query: "<error or symptom>"})` — find execution flows related to the issue
-2. `gitnexus_context({name: "<suspect function>"})` — see all callers, callees, and process participation
-3. `READ gitnexus://repo/yorgios-app/process/{processName}` — trace the full execution flow step by step
-4. For regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "main"})` — see what your branch changed
-
-## When Refactoring
-
-- **Renaming**: MUST use `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` first. Review the preview — graph edits are safe, text_search edits need manual review. Then run with `dry_run: false`.
-- **Extracting/Splitting**: MUST run `gitnexus_context({name: "target"})` to see all incoming/outgoing refs, then `gitnexus_impact({target: "target", direction: "upstream"})` to find all external callers before moving code.
-- After any refactor: run `gitnexus_detect_changes({scope: "all"})` to verify only expected files changed.
-
-## Never Do
-
-- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
-- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
-
-## Tools Quick Reference
-
-| Tool | When to use | Command |
-|------|-------------|---------|
-| `query` | Find code by concept | `gitnexus_query({query: "auth validation"})` |
-| `context` | 360-degree view of one symbol | `gitnexus_context({name: "validateUser"})` |
-| `impact` | Blast radius before editing | `gitnexus_impact({target: "X", direction: "upstream"})` |
-| `detect_changes` | Pre-commit scope check | `gitnexus_detect_changes({scope: "staged"})` |
-| `rename` | Safe multi-file rename | `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` |
-| `cypher` | Custom graph queries | `gitnexus_cypher({query: "MATCH ..."})` |
-
-## Impact Risk Levels
-
-| Depth | Meaning | Action |
-|-------|---------|--------|
-| d=1 | WILL BREAK — direct callers/importers | MUST update these |
-| d=2 | LIKELY AFFECTED — indirect deps | Should test |
-| d=3 | MAY NEED TESTING — transitive | Test if critical path |
-
-## Resources
-
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/yorgios-app/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/yorgios-app/clusters` | All functional areas |
-| `gitnexus://repo/yorgios-app/processes` | All execution flows |
-| `gitnexus://repo/yorgios-app/process/{name}` | Step-by-step execution trace |
-
-## Self-Check Before Finishing
-
-Before completing any code modification task, verify:
-1. `gitnexus_impact` was run for all modified symbols
-2. No HIGH/CRITICAL risk warnings were ignored
-3. `gitnexus_detect_changes()` confirms changes match expected scope
-4. All d=1 (WILL BREAK) dependents were updated
-
-## Keeping the Index Fresh
-
-After committing code changes, the GitNexus index becomes stale. Re-run analyze to update it:
-
-```bash
-npx gitnexus analyze
-```
-
-If the index previously included embeddings, preserve them by adding `--embeddings`:
-
-```bash
-npx gitnexus analyze --embeddings
-```
-
-> Claude Code users: A PostToolUse hook handles this automatically after `git commit` and `git merge`.
-
-## CLI
-
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-
-<!-- gitnexus:end -->
+- CF `incomingSms` — parse SMS — écrit dans `deliveries`.
+- Page `/livraisons` : `onSnapshot deliveries where status=='in_progress'`.
+- iPad Corner : enregistre `devices/{uid}` au login, son + WakeLock sur nouvelle livraison.

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { deleteField } from 'firebase/firestore'
-import type { Employee, RestrictionRule, Avenant } from '../../types'
+import type { Employee, RestrictionRule, Avenant, SubStatus } from '../../types'
 import { HOURS, DAYS_LABELS } from '../../types'
 import { createEmployee, updateEmployee, deactivateEmployee, subscribeAllEmployees, suspendEmployee } from '../../firebase/employees'
 import { getBareme } from '../../utils/primes'
@@ -35,10 +35,11 @@ export function EmployeeManager({ onClose }: Props) {
   const [primeComp, setPrimeComp]   = useState<number | ''>('')
   const [primePonct, setPrimePonct] = useState<number | ''>('')
   const [avenants, setAvenants] = useState<Avenant[]>([])
+  const [subStatus, setSubStatus] = useState<SubStatus | ''>('')
   const [saving, setSaving] = useState(false)
 
   function openNew() {
-    setEditing(null); setName(''); setInitials(''); setColor(PRESET_COLORS[0]); setCap(35); setRestrictions([]); setPrimeComp(''); setPrimePonct(''); setAvenants([]); setMode('edit')
+    setEditing(null); setName(''); setInitials(''); setColor(PRESET_COLORS[0]); setCap(35); setRestrictions([]); setPrimeComp(''); setPrimePonct(''); setAvenants([]); setSubStatus(''); setMode('edit')
   }
 
   function openEdit(emp: Employee) {
@@ -50,6 +51,7 @@ export function EmployeeManager({ onClose }: Props) {
     setPrimeComp(emp.primeComportement !== undefined ? emp.primeComportement : '')
     setPrimePonct(emp.primePonctualite !== undefined ? emp.primePonctualite : '')
     setAvenants(emp.avenants ?? [])
+    setSubStatus(emp.subStatus ?? '')
     setMode('edit')
   }
 
@@ -78,6 +80,7 @@ export function EmployeeManager({ onClose }: Props) {
       primeComportement: primeComp !== '' ? Number(primeComp) : (editing ? deleteField() as any : undefined),
       primePonctualite:  primePonct !== '' ? Number(primePonct) : (editing ? deleteField() as any : undefined),
       avenants: avenants.length > 0 ? avenants : [],
+      subStatus: subStatus || (editing ? deleteField() as any : undefined),
     }
     try {
       editing ? await updateEmployee(editing.id, data) : await createEmployee(data)
@@ -167,15 +170,19 @@ export function EmployeeManager({ onClose }: Props) {
                         <span style={{ color: 'var(--on-surface)', fontSize: '0.875rem', fontWeight: 600 }}>
                           {emp.name}
                         </span>
+                        {emp.subStatus && (
+                          <span style={{
+                            fontSize: '0.65rem', fontWeight: 700, borderRadius: 4, padding: '1px 6px', whiteSpace: 'nowrap',
+                            background: emp.subStatus === 'extra' ? '#7c3aed22' : 'var(--surface-high)',
+                            color: emp.subStatus === 'extra' ? '#7c3aed' : 'var(--on-surface-2)',
+                          }}>
+                            {emp.subStatus.charAt(0).toUpperCase() + emp.subStatus.slice(1)}
+                          </span>
+                        )}
                         {emp.suspended && (
                           <span style={{
-                            fontSize: '0.65rem',
-                            fontWeight: 700,
-                            color: 'var(--on-surface-2)',
-                            background: 'var(--surface-high)',
-                            borderRadius: 4,
-                            padding: '1px 6px',
-                            whiteSpace: 'nowrap',
+                            fontSize: '0.65rem', fontWeight: 700, color: 'var(--on-surface-2)',
+                            background: 'var(--surface-high)', borderRadius: 4, padding: '1px 6px', whiteSpace: 'nowrap',
                           }}>
                             Suspendu
                           </span>
@@ -231,6 +238,26 @@ export function EmployeeManager({ onClose }: Props) {
                   className="input-filled w-full"
                   placeholder="ex: Matthieu"
                 />
+              </div>
+
+              {/* Statut */}
+              <div>
+                <label className="section-label mb-1 block">Statut</label>
+                <select
+                  value={subStatus}
+                  onChange={e => setSubStatus(e.target.value as SubStatus | '')}
+                  className="input-filled w-full"
+                >
+                  <option value="">Employé (défaut)</option>
+                  <option value="stagiaire">Stagiaire</option>
+                  <option value="alternant">Alternant</option>
+                  <option value="extra">Extra</option>
+                </select>
+                {subStatus && (
+                  <p style={{ fontSize: '0.72rem', color: 'var(--on-surface-3)', marginTop: 4 }}>
+                    Non comptabilisé dans le décompte mensuel ni les primes.
+                  </p>
+                )}
               </div>
 
               {/* Initiales */}

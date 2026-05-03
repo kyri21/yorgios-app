@@ -55,6 +55,9 @@ export default function AdminDocuments() {
   // ── GMAO state ──
   const [demandes, setDemandes] = useState<GmaoDemande[]>([])
   const [loadingDemandes, setLoadingDemandes] = useState(false)
+  const [gmaoFilterStatut, setGmaoFilterStatut] = useState<string>('tous')
+  const [gmaoFilterFrom, setGmaoFilterFrom] = useState('')
+  const [gmaoFilterTo, setGmaoFilterTo] = useState('')
   const [showGmaoForm, setShowGmaoForm] = useState(false)
   const [gmaoMotif, setGmaoMotif] = useState('')
   const [gmaoDept, setGmaoDept] = useState(DEPARTEMENTS[0])
@@ -71,6 +74,8 @@ export default function AdminDocuments() {
   // ── CRETA GEL state ──
   const [cretaDocs, setCretaDocs] = useState<CretaGelDoc[]>([])
   const [loadingCreta, setLoadingCreta] = useState(false)
+  const [cretaFilterFrom, setCretaFilterFrom] = useState('')
+  const [cretaFilterTo, setCretaFilterTo] = useState('')
   const [cretaLabel, setCretaLabel] = useState('')
   const [cretaDate, setCretaDate] = useState(todayISO())
   const [cretaFile, setCretaFile] = useState<File | null>(null)
@@ -187,6 +192,19 @@ export default function AdminDocuments() {
     show('Document supprimé')
   }
 
+  const demandesFiltrees = demandes.filter(d => {
+    if (gmaoFilterStatut !== 'tous' && d.statut !== gmaoFilterStatut) return false
+    if (gmaoFilterFrom && d.date < gmaoFilterFrom) return false
+    if (gmaoFilterTo && d.date > gmaoFilterTo) return false
+    return true
+  })
+
+  const cretaDocsFiltres = cretaDocs.filter(d => {
+    if (cretaFilterFrom && d.date < cretaFilterFrom) return false
+    if (cretaFilterTo && d.date > cretaFilterTo) return false
+    return true
+  })
+
   return (
     <div className="page">
       <div style={{ marginBottom: 4 }}>
@@ -300,18 +318,53 @@ export default function AdminDocuments() {
             </div>
           )}
 
+          {/* Filtres GMAO */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <select
+              value={gmaoFilterStatut}
+              onChange={e => setGmaoFilterStatut(e.target.value)}
+              className="input-filled"
+              style={{ fontSize: 13 }}
+            >
+              <option value="tous">Tous les statuts</option>
+              <option value="en cours">En cours</option>
+              <option value="en attente">En attente</option>
+              <option value="terminé">Terminé</option>
+            </select>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <div>
+                <p className="section-label" style={{ marginBottom: 4 }}>Du</p>
+                <input type="date" className="input-filled" value={gmaoFilterFrom}
+                  onChange={e => setGmaoFilterFrom(e.target.value)} style={{ fontSize: 13 }} />
+              </div>
+              <div>
+                <p className="section-label" style={{ marginBottom: 4 }}>Au</p>
+                <input type="date" className="input-filled" value={gmaoFilterTo}
+                  onChange={e => setGmaoFilterTo(e.target.value)} style={{ fontSize: 13 }} />
+              </div>
+            </div>
+            {(gmaoFilterStatut !== 'tous' || gmaoFilterFrom || gmaoFilterTo) && (
+              <button
+                onClick={() => { setGmaoFilterStatut('tous'); setGmaoFilterFrom(''); setGmaoFilterTo('') }}
+                style={{ fontSize: 12, color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', padding: 0 }}
+              >
+                ✕ Effacer les filtres ({demandesFiltrees.length}/{demandes.length})
+              </button>
+            )}
+          </div>
+
           {loadingDemandes ? (
             <div style={{ textAlign: 'center', padding: '40px 0' }}><div className="spinner" style={{ margin: '0 auto' }} /></div>
-          ) : demandes.length === 0 ? (
+          ) : demandesFiltrees.length === 0 ? (
             <div className="card" style={{ textAlign: 'center', padding: '44px 20px' }}>
               <div style={{ fontSize: 40, marginBottom: 12 }}>🔧</div>
               <p style={{ fontFamily: 'Epilogue, sans-serif', fontWeight: 700, fontSize: 16, color: 'var(--on-surface)', margin: '0 0 6px' }}>
-                Aucune demande GMAO
+                {demandes.length === 0 ? 'Aucune demande GMAO' : 'Aucun résultat pour ces filtres'}
               </p>
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {demandes.map(d => (
+              {demandesFiltrees.map(d => (
                 <div key={d.id} className="card" style={{ padding: '14px 16px' }}>
                   <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -428,18 +481,40 @@ export default function AdminDocuments() {
             </button>
           </div>
 
+          {/* Filtres CRETA GEL */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <div>
+              <p className="section-label" style={{ marginBottom: 4 }}>Du</p>
+              <input type="date" className="input-filled" value={cretaFilterFrom}
+                onChange={e => setCretaFilterFrom(e.target.value)} style={{ fontSize: 13 }} />
+            </div>
+            <div>
+              <p className="section-label" style={{ marginBottom: 4 }}>Au</p>
+              <input type="date" className="input-filled" value={cretaFilterTo}
+                onChange={e => setCretaFilterTo(e.target.value)} style={{ fontSize: 13 }} />
+            </div>
+          </div>
+          {(cretaFilterFrom || cretaFilterTo) && (
+            <button
+              onClick={() => { setCretaFilterFrom(''); setCretaFilterTo('') }}
+              style={{ fontSize: 12, color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', padding: 0 }}
+            >
+              ✕ Effacer ({cretaDocsFiltres.length}/{cretaDocs.length})
+            </button>
+          )}
+
           {loadingCreta ? (
             <div style={{ textAlign: 'center', padding: '30px 0' }}><div className="spinner" style={{ margin: '0 auto' }} /></div>
-          ) : cretaDocs.length === 0 ? (
+          ) : cretaDocsFiltres.length === 0 ? (
             <div className="card" style={{ textAlign: 'center', padding: '40px 20px' }}>
               <div style={{ fontSize: 40, marginBottom: 10 }}>🧊</div>
               <p style={{ fontFamily: 'Epilogue, sans-serif', fontWeight: 700, fontSize: 15, color: 'var(--on-surface)', margin: 0 }}>
-                Aucun document CRETA GEL
+                {cretaDocs.length === 0 ? 'Aucun document CRETA GEL' : 'Aucun résultat pour ces filtres'}
               </p>
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {cretaDocs.map(d => (
+              {cretaDocsFiltres.map(d => (
                 <div key={d.id} style={{
                   display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px',
                   borderRadius: 12, background: 'var(--surface-low)', border: '1px solid var(--border-soft)',

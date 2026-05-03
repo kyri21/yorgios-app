@@ -16,6 +16,33 @@ export function getBareme(weeklyCapHours: number) {
   return BAREME[key]
 }
 
+/** Type de contrat configurable dans settings/contrats */
+export interface ContractType {
+  hours: number
+  label?: string
+  compMax: number   // prime comportement+ponctualité max total (splitté 50/50 par défaut)
+  caMax: number     // prime CA max
+}
+
+export const DEFAULT_CONTRACTS: ContractType[] = [
+  { hours: 20, label: '20h',  compMax: 30,  caMax: 100 },
+  { hours: 25, label: '25h',  compMax: 40,  caMax: 150 },
+  { hours: 30, label: '30h',  compMax: 50,  caMax: 200 },
+  { hours: 35, label: '35h',  compMax: 60,  caMax: 250 },
+]
+
+export function getContractForHours(
+  weeklyCapHours: number,
+  contracts: ContractType[] = DEFAULT_CONTRACTS,
+): ContractType {
+  const exact = contracts.find(c => c.hours === weeklyCapHours)
+  if (exact) return exact
+  if (contracts.length === 0) return { hours: weeklyCapHours, compMax: 0, caMax: 0 }
+  return contracts.reduce((prev, curr) =>
+    Math.abs(curr.hours - weeklyCapHours) < Math.abs(prev.hours - weeklyCapHours) ? curr : prev
+  )
+}
+
 export function hygieneBonus(score: number | null): number {
   if (score == null) return 0
   if (score >= 92) return HYGIENE_BONUS
@@ -32,9 +59,9 @@ export type CaMaxPrimes = Record<number, number>
 export const DEFAULT_CA_MAX_PRIMES: CaMaxPrimes = { 20: 100, 25: 150, 30: 200, 35: 250 }
 
 export const DEFAULT_CA_PALIERS: CaPalier[] = [
-  { seuil: 0.80, pct: 40 },
-  { seuil: 0.90, pct: 60 },
-  { seuil: 1.00, pct: 80 },
+  { seuil: 0.80, pct: 20 },
+  { seuil: 0.90, pct: 40 },
+  { seuil: 1.00, pct: 70 },
   { seuil: 1.10, pct: 100 },
 ]
 

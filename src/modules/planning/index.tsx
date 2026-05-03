@@ -10,6 +10,7 @@ import { ImportModal } from './components/Import/ImportModal'
 import { canEdit } from './types'
 import type { Employee, AbsenceType } from './types'
 import { weekId } from './firebase/planning'
+import { createEmployee } from './firebase/employees'
 import { prevMonday, nextMonday, weekLabel, prevMonth, nextMonth, monthLabel } from './utils/dateUtils'
 import { mondayOf, duplicateWeek } from './firebase/planning'
 import { exportCSV, exportICS } from './utils/exports'
@@ -25,10 +26,11 @@ interface EmpCardProps {
 }
 
 function EmpCard({ emp, worked, selected, onSelect }: EmpCardProps) {
+  const isExtra = !!emp.subStatus
   const pct  = emp.weeklyCapHours > 0 ? worked / emp.weeklyCapHours : 0
-  const dot  = pct < 0.9 ? 'var(--success)' : pct <= 1 ? 'var(--warning)' : 'var(--danger)'
+  const dot  = isExtra ? '#7c3aed' : (pct < 0.9 ? 'var(--success)' : pct <= 1 ? 'var(--warning)' : 'var(--danger)')
   const bgCol = selected ? emp.color + 'cc' : 'var(--surface-low)'
-  const border = `2px solid ${selected ? emp.color : emp.color + '44'}`
+  const border = `2px solid ${selected ? emp.color : isExtra ? '#7c3aed44' : emp.color + '44'}`
 
   return (
     <div
@@ -58,23 +60,134 @@ function EmpCard({ emp, worked, selected, onSelect }: EmpCardProps) {
       <div style={{ fontSize: '11px', fontWeight: 600, color: selected ? '#fff' : 'var(--on-surface)', lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontFamily: 'Manrope, sans-serif' }}>
         {emp.name}
       </div>
+      {emp.subStatus && (
+        <div style={{ fontSize: '9px', fontWeight: 700, color: selected ? 'rgba(255,255,255,0.8)' : '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.04em', marginTop: '1px' }}>
+          {emp.subStatus}
+        </div>
+      )}
       <div style={{ marginTop: '3px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '3px' }}>
         <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: dot, flexShrink: 0 }} />
         <span style={{ fontSize: '10px', color: selected ? 'rgba(255,255,255,0.85)' : 'var(--on-surface-3)', fontVariantNumeric: 'tabular-nums' }}>
-          {worked}h / {emp.weeklyCapHours}h
+          {isExtra && emp.weeklyCapHours === 0 ? `${worked}h` : `${worked}h / ${emp.weeklyCapHours}h`}
         </span>
       </div>
-      <div style={{ marginTop: '3px', height: '3px', background: 'var(--border)', borderRadius: '2px', overflow: 'hidden' }}>
-        <div style={{
-          height: '100%',
-          width: `${Math.min(100, pct * 100)}%`,
-          background: dot,
-          borderRadius: '2px',
-          transition: 'width 0.2s',
-        }} />
+      {(!isExtra || emp.weeklyCapHours > 0) && (
+        <div style={{ marginTop: '3px', height: '3px', background: 'var(--border)', borderRadius: '2px', overflow: 'hidden' }}>
+          <div style={{
+            height: '100%',
+            width: `${Math.min(100, pct * 100)}%`,
+            background: dot,
+            borderRadius: '2px',
+            transition: 'width 0.2s',
+          }} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Modal Extra Rapide ──────────────────────────────────────────────────────
+const EXTRA_COLORS = ['#7c3aed','#1976D2','#43A047','#F4511E','#00897B','#FB8C00','#00ACC1','#F06292']
+
+function QuickExtraModal({ onClose }: { onClose: () => void }) {
+  const [name, setName]   = useState('')
+  const [color, setColor] = useState('#7c3aed')
+  const [hours, setHours] = useState(0)
+  const [saving, setSaving] = useState(false)
+
+  async function handleSave() {
+    if (!name.trim()) return
+    setSaving(true)
+    try {
+      await createEmployee({
+        name: name.trim(),
+        initials: name.trim().slice(0, 2).toUpperCase(),
+        color,
+        weeklyCapHours: hours,
+        active: true,
+        restrictions: [],
+        subStatus: 'extra',
+      })
+      onClose()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, background: 'rgba(28,28,24,0.45)', backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}
+      onClick={onClose}
+    >
+      <div
+        style={{ background: 'var(--surface)', borderRadius: 'var(--radius-xl)', padding: '22px', width: '300px', boxShadow: 'var(--shadow-float)' }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '18px' }}>
+          <div>
+            <div style={{ fontSize: '15px', fontWeight: 800, color: 'var(--on-surface)', fontFamily: 'Epilogue, sans-serif' }}>⚡ Extra</div>
+            <div style={{ fontSize: '11px', color: 'var(--on-surface-3)', marginTop: 2 }}>Poste temporaire — non comptabilisé dans les primes</div>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--on-surface-3)', fontSize: '16px', lineHeight: 1 }}>✕</button>
+        </div>
+
+        <div style={{ marginBottom: '14px' }}>
+          <label style={quickLabelStyle}>Prénom *</label>
+          <input
+            value={name}
+            onChange={e => setName(e.target.value)}
+            className="input-filled"
+            style={{ width: '100%', boxSizing: 'border-box' }}
+            placeholder="ex: Kevin"
+            autoFocus
+            onKeyDown={e => e.key === 'Enter' && handleSave()}
+          />
+        </div>
+
+        <div style={{ marginBottom: '14px', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <label style={quickLabelStyle}>Heures/semaine</label>
+            <input
+              type="number"
+              value={hours}
+              onChange={e => setHours(Math.max(0, Number(e.target.value)))}
+              className="input-filled"
+              style={{ width: '100%', boxSizing: 'border-box' }}
+              min={0} max={45}
+            />
+          </div>
+          <div style={{ fontSize: '10px', color: 'var(--on-surface-3)', marginTop: 14, whiteSpace: 'nowrap' }}>0 = non défini</div>
+        </div>
+
+        <div style={{ marginBottom: '20px' }}>
+          <label style={quickLabelStyle}>Couleur</label>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
+            {EXTRA_COLORS.map(c => (
+              <button key={c} onClick={() => setColor(c)} style={{
+                width: 28, height: 28, borderRadius: 6, background: c, border: 'none',
+                outline: color === c ? '2.5px solid var(--primary)' : '2px solid transparent',
+                outlineOffset: 2, cursor: 'pointer',
+              }} />
+            ))}
+          </div>
+        </div>
+
+        <button
+          onClick={handleSave}
+          disabled={saving || !name.trim()}
+          className="btn-primary"
+          style={{ width: '100%', opacity: (saving || !name.trim()) ? 0.5 : 1 }}
+        >
+          {saving ? 'Ajout…' : "Ajouter l'extra"}
+        </button>
       </div>
     </div>
   )
+}
+
+const quickLabelStyle: React.CSSProperties = {
+  display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--on-surface-2)',
+  textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '5px',
 }
 
 // ─── Module principal ────────────────────────────────────────────────────────
@@ -103,6 +216,7 @@ export default function PlanningModule() {
     return () => mq.removeEventListener('change', handler)
   }, [])
 
+  const [showQuickExtra, setShowQuickExtra] = useState(false)
   const [showDuplicate, setShowDuplicate]   = useState(false)
   const [duplicateTarget, setDuplicateTarget] = useState('')
   const [duplicating, setDuplicating]       = useState(false)
@@ -273,6 +387,11 @@ export default function PlanningModule() {
             </div>
             <button onClick={() => setShowEmpManager(true)} style={btnStyle}>👥</button>
             <button
+              onClick={() => setShowQuickExtra(true)}
+              style={{ ...btnStyle, color: '#7c3aed', border: '1px solid rgba(124,58,237,0.35)', background: 'rgba(124,58,237,0.07)', fontWeight: 700 }}
+              title="Ajouter un extra rapidement"
+            >⚡ Extra</button>
+            <button
               onClick={async () => {
                 if (!confirm(`Supprimer tout le planning de la semaine ?\n${weekLabel(planning.monday)}\n\nCette action est irréversible.`)) return
                 await planning.clearCurrentWeek()
@@ -390,6 +509,11 @@ export default function PlanningModule() {
         <EmployeeManager onClose={() => setShowEmpManager(false)} />
       )}
 
+      {/* ── Modal extra rapide ─────────────────────────────────────── */}
+      {showQuickExtra && (
+        <QuickExtraModal onClose={() => setShowQuickExtra(false)} />
+      )}
+
       {/* ── Modal import CSV/ICS ────────────────────────────────────── */}
       {showImport && user && (
         <ImportModal
@@ -412,12 +536,18 @@ export default function PlanningModule() {
           emp={byId[selectedEmpId]}
           initialDateISO={eventModalDate}
           weekEvents={planning.weekEvents}
+          userRole={user.role}
           onConfirm={(startISO, endISO, type, minutes) => {
             planning.setEventRange(startISO, endISO, selectedEmpId, type, minutes)
             setEventModalDate(null)
           }}
           onRemove={(startISO, endISO) => {
             planning.removeEventRange(startISO, endISO, selectedEmpId)
+            setEventModalDate(null)
+          }}
+          onReplace={async (startISO, endISO, type, minutes) => {
+            await planning.removeEventRange(startISO, endISO, selectedEmpId)
+            planning.setEventRange(startISO, endISO, selectedEmpId, type, minutes)
             setEventModalDate(null)
           }}
           onClose={() => setEventModalDate(null)}

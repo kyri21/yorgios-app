@@ -24,7 +24,9 @@ const AllergeneMenu   = lazy(() => import('../pages/AllergeneMenu'));
 const CaptationPage   = lazy(() => import('../modules/crm/CaptationPage'));
 const Livraisons      = lazy(() => import('../pages/Livraisons'))
 const Commandes       = lazy(() => import('../modules/corner/pages/Commandes'));
-const AdminDocuments  = lazy(() => import('../pages/AdminDocuments'));
+const AdminAnnonces   = lazy(() => import('../pages/AdminAnnonces'));
+const AdminConges     = lazy(() => import('../pages/AdminConges'));
+const Documents       = lazy(() => import('../pages/Documents'));
 
 function RootRedirect() {
   const { user, loading } = useAuth();
@@ -150,12 +152,22 @@ export default function AppRouter() {
           }
         />
 
-        {/* Documents GMAO + CRETA GEL — patron + administrateur */}
+{/* Annonces obligatoires — patron + admin + manager */}
         <Route
-          path="/admin/documents"
+          path="/admin/annonces"
           element={
-            <AuthGuard allowedRoles={['patron', 'administrateur']}>
-              <Layout><AdminDocuments /></Layout>
+            <AuthGuard allowedRoles={['patron', 'administrateur', 'manager']}>
+              <Layout><AdminAnnonces /></Layout>
+            </AuthGuard>
+          }
+        />
+
+        {/* Demandes de congés — patron + admin + manager */}
+        <Route
+          path="/admin/conges"
+          element={
+            <AuthGuard allowedRoles={['patron', 'administrateur', 'manager']}>
+              <Layout><AdminConges /></Layout>
             </AuthGuard>
           }
         />
@@ -196,6 +208,16 @@ export default function AppRouter() {
           element={
             <AuthGuard allowedRoles={['patron', 'administrateur', 'manager', 'cuisine', 'corner']}>
               <Layout><Commandes /></Layout>
+            </AuthGuard>
+          }
+        />
+
+        {/* Documents RH — tous les rôles */}
+        <Route
+          path="/documents"
+          element={
+            <AuthGuard allowedRoles={['patron', 'administrateur', 'manager', 'cuisine', 'corner']}>
+              <Layout><Documents /></Layout>
             </AuthGuard>
           }
         />

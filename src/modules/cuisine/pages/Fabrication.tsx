@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { SkeletonList } from '../../../components/Skeleton'
 import { EmptyState } from '../../../components/EmptyState'
 import {
@@ -6,6 +6,7 @@ import {
   limit, orderBy, query, runTransaction, setDoc, updateDoc, where,
 } from 'firebase/firestore'
 import { db, auth } from '../../../firebase/config'
+import { useAuth } from '../../../auth/useAuth'
 import { useToast } from '../../../hooks/useToast'
 import type { HaccpCategory } from '../lib/haccpRules'
 
@@ -54,6 +55,10 @@ type Lot = {
   dlcAt: any
   archived?: boolean
   archivedAt?: any
+  sent?: boolean
+  sentToCornerAt?: any
+  createdBy?: string
+  creatorName?: string
   // Traçabilité
   isTransformation?: boolean
   transformationType?: 'hachage' | 'decoupe' | 'marinade' | 'autre'
@@ -85,6 +90,13 @@ async function nextLotSequence(date: Date, abrv: string): Promise<number> {
 const TRANSFO_DLC: Record<string, number> = { hachage: 2, decoupe: 3, marinade: 5, autre: 3 }
 const TRANSFO_CATEGORY: Record<string, string> = { hachage: 'VIANDE_HACHEE', decoupe: 'VIANDE', marinade: 'VIANDE', autre: 'PLAT_CUISINE' }
 const TRANSFO_LABEL: Record<string, string> = { hachage: 'Hachage', decoupe: 'Découpe', marinade: 'Marinade', autre: 'Autre transformation' }
+const TRANSFO_ICON: Record<string, string> = { hachage: '🔪', decoupe: '✂️', marinade: '🌿', autre: '🔄' }
+// Fallback DLC par catégorie GEP quand dlcDays absent du catalogue
+const GEP_DLC: Record<string, number> = { VIANDE_HACHEE: 2, VIANDE: 3, POISSON: 2, LAIT: 4, PLAT_CUISINE: 3, PATISSERIE: 3, LEGUME: 8 }
+function getProductDlcDays(p: Produit): number {
+  if (p.dlcDays && p.dlcDays > 0) return p.dlcDays
+  return GEP_DLC[p.gepCategory ?? ''] ?? 3
+}
 
 const labelStyle: React.CSSProperties = {
   fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)',
@@ -94,6 +106,8 @@ const labelStyle: React.CSSProperties = {
 
 export default function Fabrication() {
   const { show } = useToast()
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'patron' || user?.role === 'administrateur'
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [savedOk, setSavedOk] = useState(false)
@@ -166,7 +180,7 @@ export default function Fabrication() {
     const q = Number(quantity)
     const okQty = Number.isFinite(q) && q > 0
     const d = producedDate ? new Date(`${producedDate}T00:00:00`) : null
-    const dlcDays = Number(selectedProduit?.dlcDays ?? 0)
+    const dlcDays = selectedProduit ? getProductDlcDays(selectedProduit) : 0
     const dlcAt = d && dlcDays > 0 ? new Date(d.getTime() + dlcDays * 24 * 3600 * 1000) : null
     return { okQty, dlcDays: dlcDays || null, dlcAt }
   }, [quantity, producedDate, selectedProduit])
@@ -261,6 +275,37 @@ export default function Fabrication() {
     })()
   }, [])
 
+  const backfillDone = useRef(false)
+  useEffect(() => {
+    if (!isAdmin || backfillDone.current) return
+    backfillDone.current = true
+    ;(async () => {
+      try {
+        const toFix = lots.filter(l => l.createdBy && !l.creatorName)
+        if (toFix.length === 0) return
+        const uids = [...new Set(toFix.map(l => l.createdBy!))]
+        const userSnaps = await Promise.all(uids.map(uid => getDoc(doc(db, 'users', uid))))
+        const nameMap: Record<string, string> = {}
+        userSnaps.forEach((snap, i) => {
+          if (snap.exists()) {
+            const d = snap.data()
+            nameMap[uids[i]] = d.displayName || d.email || uids[i]
+          }
+        })
+        await Promise.all(toFix.map(l => {
+          const name = nameMap[l.createdBy!]
+          if (!name) return Promise.resolve()
+          return updateDoc(doc(db, 'lots_cuisine', l.id), { creatorName: name })
+        }))
+        setLots(prev => prev.map(l =>
+          l.createdBy && !l.creatorName && nameMap[l.createdBy]
+            ? { ...l, creatorName: nameMap[l.createdBy] }
+            : l
+        ))
+      } catch { /* silently ignore */ }
+    })()
+  }, [isAdmin, lots.length])
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
@@ -275,41 +320,28 @@ export default function Fabrication() {
     const selectedReception = receptions.find(r => r.id === selectedReceptionId) || null
     const selectedTransfoReception = transfoReceptions.find(r => r.id === transfoReceptionId) || null
 
-    if (!isManuel && !isReception && !isTransformation && !selectedProduit) return setError('Produit obligatoire.')
+    if (!isManuel && !selectedProduit) return setError('Produit obligatoire.')
     if (isManuel && !manualName.trim()) return setError('Nom du produit obligatoire.')
     if (isReception && !selectedReception) return setError('Sélectionner une réception source.')
     if (isTransformation && !transfoReceptionId) return setError('Sélectionner une réception source.')
 
-    const productName = isManuel
-      ? manualName.trim()
-      : isReception
-        ? selectedReception!.productName
-        : isTransformation
-          ? `${selectedTransfoReception!.productName} — ${TRANSFO_LABEL[transfoType]}`
-          : selectedProduit!.name
+    const productName = isManuel ? manualName.trim() : selectedProduit!.name
     const abrv = isManuel
       ? manualName.trim().slice(0, 4).toUpperCase().replace(/\s+/g, '')
-      : isReception
-        ? productName.slice(0, 4).toUpperCase().replace(/\s+/g, '')
-        : isTransformation
-          ? transfoType.slice(0, 4).toUpperCase()
-          : (selectedProduit!.abrv || selectedProduit!.name.slice(0, 3)).trim().toUpperCase()
+      : (selectedProduit!.abrv || selectedProduit!.name.slice(0, 3)).trim().toUpperCase()
     const dlcDays = isManuel
       ? Number(manualDlcDays) || 3
-      : isReception ? 7
-      : isTransformation ? TRANSFO_DLC[transfoType]
-      : Number(selectedProduit?.dlcDays ?? 3)
+      : getProductDlcDays(selectedProduit!)
     const category = isManuel
       ? manualCategory
-      : isReception
-        ? (selectedReception!.category || 'PLAT_CUISINE')
-        : isTransformation
-          ? TRANSFO_CATEGORY[transfoType]
-          : (selectedProduit!.gepCategory ?? selectedProduit!.defaultCategory ?? 'AUTRE')
+      : isTransformation
+        ? TRANSFO_CATEGORY[transfoType]
+        : (selectedProduit!.gepCategory ?? selectedProduit!.defaultCategory ?? 'AUTRE')
 
     setLoading(true)
     try {
       const uid = auth.currentUser?.uid || ''
+      const creatorName = user?.displayName || auth.currentUser?.email || uid
       const producedAtDate = new Date(`${producedDate}T00:00:00`)
       const seq = await nextLotSequence(producedAtDate, abrv)
       const lotCode = `${toDDMMYYYY(producedAtDate)}-${String(seq).padStart(2, '0')}-${abrv}`
@@ -331,7 +363,7 @@ export default function Fabrication() {
       await setDoc(lotRef, {
         producedAt: Timestamp.fromDate(producedAtDate),
         dlcAt: Timestamp.fromDate(dlcAtDate),
-        productId: isManuel || isReception || isTransformation ? null : selectedProduit!.id,
+        productId: isManuel ? null : selectedProduit!.id,
         productName,
         abrv,
         category,
@@ -346,6 +378,7 @@ export default function Fabrication() {
         ingredientLotCodes: isTransformation ? [] : selectedIngredientLotIds,
         createdAt: Timestamp.now(),
         createdBy: uid,
+        creatorName,
       })
       setQuantity('')
       setProductId('')
@@ -395,18 +428,6 @@ export default function Fabrication() {
       setTraceData({ ingredientLots, directReception })
     } catch { }
     finally { setTraceLoading(false) }
-  }
-
-  async function archiveLot(lotId: string) {
-    try {
-      await updateDoc(doc(db, 'lots_cuisine', lotId), {
-        archived: true,
-        archivedAt: Timestamp.now(),
-      })
-      await loadLots()
-    } catch (e: any) {
-      setError(e?.message)
-    }
   }
 
   async function deleteLot(lot: Lot) {
@@ -480,7 +501,15 @@ export default function Fabrication() {
     win.document.close()
   }
 
-  const visibleLots = lots.filter(l => showArchived ? l.archived === true : l.archived !== true)
+  const todayStr = toYYYYMMDD(new Date())
+  const visibleLots = lots.filter(l => {
+    if (showArchived) return l.archived === true
+    if (l.archived === true) return false
+    const lotDateStr = l.producedAt?.toDate ? toYYYYMMDD(l.producedAt.toDate()) : ''
+    const isToday = lotDateStr === todayStr
+    // Jours précédents : n'afficher que les lots pas encore envoyés au corner
+    return isToday || !l.sent
+  })
 
   return (
     <div className="page">
@@ -571,17 +600,14 @@ export default function Fabrication() {
           {formMode === 'catalogue' && (
             <>
               <label style={{ ...labelStyle, marginTop: 14 }}>Produit *</label>
-              <select className="input" value={productId} onChange={e => setProductId(e.target.value)} disabled={!produitsLoaded}>
-                <option value="">{produitsLoaded ? '— Sélectionner —' : 'Chargement…'}</option>
-                {produits.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
+              <ProductPicker value={productId} onChange={setProductId} produits={produits} loaded={produitsLoaded} />
               {selectedProduit && (
                 <div style={{
                   fontSize: 12, color: 'var(--on-surface-2)', marginTop: 8,
                   padding: '8px 12px', borderRadius: 10,
                   background: 'var(--surface-mid)',
                 }}>
-                  DLC : <b style={{ color: 'var(--on-surface)', fontWeight: 700 }}>{selectedProduit.dlcDays ?? '?'} j</b>
+                  DLC : <b style={{ color: 'var(--on-surface)', fontWeight: 700 }}>{getProductDlcDays(selectedProduit)} j</b>
                   {computed.dlcAt && (
                     <> · Expire le <b style={{ color: 'var(--warning)', fontWeight: 700 }}>{computed.dlcAt.toLocaleDateString('fr-FR')}</b></>
                   )}
@@ -640,7 +666,18 @@ export default function Fabrication() {
 
           {formMode === 'reception' && (
             <>
-              <label style={{ ...labelStyle, marginTop: 14 }}>Réception source *</label>
+              <label style={{ ...labelStyle, marginTop: 14 }}>Produit fabriqué *</label>
+              <ProductPicker value={productId} onChange={setProductId} produits={produits} loaded={produitsLoaded} />
+              {selectedProduit && (
+                <div style={{ fontSize: 12, color: 'var(--on-surface-2)', marginTop: 8, padding: '8px 12px', borderRadius: 10, background: 'var(--surface-mid)' }}>
+                  DLC : <b style={{ color: 'var(--on-surface)', fontWeight: 700 }}>{getProductDlcDays(selectedProduit)} j</b>
+                  {computed.dlcAt && (
+                    <> · Expire le <b style={{ color: 'var(--warning)', fontWeight: 700 }}>{computed.dlcAt.toLocaleDateString('fr-FR')}</b></>
+                  )}
+                </div>
+              )}
+
+              <label style={{ ...labelStyle, marginTop: 14 }}>Réception source (traçabilité origine) *</label>
               {!receptionsLoaded ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {[1,2,3].map(i => <div key={i} className="skeleton" style={{ height: 52, borderRadius: 10 }} />)}
@@ -694,13 +731,17 @@ export default function Fabrication() {
                   </div>
                 </>
               )}
-              {selectedReceptionId && (() => {
+              {selectedReceptionId && selectedProduit && (() => {
                 const r = receptions.find(r => r.id === selectedReceptionId)
                 if (!r) return null
+                const d = r.receivedAt?.toDate?.() ?? new Date()
                 return (
-                  <div style={{ fontSize: 12, color: 'var(--on-surface-2)', marginTop: 8, padding: '8px 12px', borderRadius: 10, background: 'rgba(0,66,117,0.06)', border: '1px solid rgba(0,66,117,0.12)' }}>
-                    Traçabilité : <b>{r.productName}</b> reçu de <b>{r.fournisseur}</b>
-                    {r.supplierLot ? <> (lot <b>{r.supplierLot}</b>)</> : ''}
+                  <div style={{ fontSize: 12, color: 'var(--on-surface-2)', marginTop: 8, padding: '8px 12px', borderRadius: 10, background: 'rgba(0,66,117,0.06)', border: '1px solid rgba(0,66,117,0.12)', lineHeight: 1.7 }}>
+                    <div>🍽 <b style={{ color: 'var(--primary)' }}>{selectedProduit.name}</b></div>
+                    <div style={{ marginTop: 2 }}>
+                      📦 Origine : <b>{r.productName}</b> ({r.fournisseur}) reçu le {d.toLocaleDateString('fr-FR')}
+                      {r.supplierLot ? <> · lot <b>{r.supplierLot}</b></> : ''}
+                    </div>
                   </div>
                 )
               })()}
@@ -709,6 +750,9 @@ export default function Fabrication() {
 
           {formMode === 'transformation' && (
             <>
+              <label style={{ ...labelStyle, marginTop: 14 }}>Produit fabriqué *</label>
+              <ProductPicker value={productId} onChange={setProductId} produits={produits} loaded={produitsLoaded} />
+
               <label style={{ ...labelStyle, marginTop: 14 }}>Type de transformation *</label>
               <select
                 className="input"
@@ -753,12 +797,15 @@ export default function Fabrication() {
                   })}
                 </div>
               )}
-              {transfoReceptionId && (() => {
+              {transfoReceptionId && selectedProduit && (() => {
                 const r = transfoReceptions.find(r => r.id === transfoReceptionId)
                 if (!r) return null
+                const d = r.receivedAt?.toDate?.() ?? new Date()
                 return (
-                  <div style={{ fontSize: 12, color: 'var(--on-surface-2)', marginTop: 8, padding: '8px 12px', borderRadius: 10, background: 'rgba(109,40,217,0.05)', border: '1px solid rgba(109,40,217,0.15)' }}>
-                    <b>{TRANSFO_LABEL[transfoType]}</b> de <b>{r.productName}</b> ({r.fournisseur}){r.supplierLot ? ` · lot ${r.supplierLot}` : ''} · DLC auto J+{TRANSFO_DLC[transfoType]}
+                  <div style={{ fontSize: 12, color: 'var(--on-surface-2)', marginTop: 8, padding: '8px 12px', borderRadius: 10, background: 'rgba(109,40,217,0.05)', border: '1px solid rgba(109,40,217,0.15)', lineHeight: 1.9 }}>
+                    <div>🍽 <b style={{ color: 'var(--primary)' }}>{selectedProduit.name}</b></div>
+                    <div>🔪 <b>{TRANSFO_LABEL[transfoType]}</b> · DLC J+{getProductDlcDays(selectedProduit)}</div>
+                    <div>📦 Depuis réception : <b>{r.productName}</b> ({r.fournisseur}) · {d.toLocaleDateString('fr-FR')}{r.supplierLot ? ` · lot ${r.supplierLot}` : ''}</div>
                   </div>
                 )
               })()}
@@ -829,10 +876,10 @@ export default function Fabrication() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16 }}>
             <button className="btn-primary" type="submit"
               disabled={loading || !computed.okQty || (
-                formMode === 'catalogue' ? !productId :
-                formMode === 'reception' ? !selectedReceptionId :
-                formMode === 'transformation' ? !transfoReceptionId :
-                !manualName.trim()
+                formMode === 'manuel' ? !manualName.trim() :
+                formMode === 'reception' ? (!productId || !selectedReceptionId) :
+                formMode === 'transformation' ? (!productId || !transfoReceptionId) :
+                !productId
               )}
               style={{ flex: 1 }}>
               {loading ? 'Création…' : 'Valider le lot'}
@@ -897,6 +944,18 @@ export default function Fabrication() {
                       fontFamily: 'monospace', letterSpacing: '0.02em', marginBottom: 4,
                     }}>
                       {lot.lotCode}
+                      {lot.sent && (
+                        <span style={{
+                          display: 'inline-block', fontSize: 9, fontWeight: 800,
+                          letterSpacing: '0.08em', color: '#2d7a4f',
+                          background: 'rgba(45,122,79,0.10)',
+                          border: '1px solid rgba(45,122,79,0.25)',
+                          borderRadius: 5, padding: '1px 6px', marginLeft: 6,
+                          verticalAlign: 'middle', textTransform: 'uppercase',
+                        }}>
+                          ENVOYÉ
+                        </span>
+                      )}
                       {lot.isTransformation && (
                         <span style={{
                           display: 'inline-block', fontSize: 9, fontWeight: 800,
@@ -927,6 +986,11 @@ export default function Fabrication() {
                         {isExpired && ' ⚠ expirée'}
                       </span>
                     </div>
+                    {isAdmin && lot.creatorName && (
+                      <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 4 }}>
+                        Créé par <b style={{ color: 'var(--on-surface-2)' }}>{lot.creatorName}</b>
+                      </div>
+                    )}
                   </div>
 
                   {/* Actions */}
@@ -952,20 +1016,6 @@ export default function Fabrication() {
                           display: 'flex', alignItems: 'center', justifyContent: 'center',
                         }}
                       >✏️</button>
-                      {/* Livré */}
-                      <button
-                        onClick={() => archiveLot(lot.id)}
-                        title="Marquer livré"
-                        style={{
-                          height: 34, padding: '0 10px', borderRadius: 10,
-                          border: '1.5px solid rgba(84,101,30,0.3)',
-                          background: 'rgba(84,101,30,0.08)',
-                          color: 'var(--secondary)',
-                          cursor: 'pointer', fontSize: 11, fontWeight: 700,
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          gap: 4, whiteSpace: 'nowrap',
-                        }}
-                      >✓ Livré</button>
                       {/* Supprimer */}
                       <button
                         onClick={() => deleteLot(lot)}
@@ -1053,6 +1103,10 @@ export default function Fabrication() {
               <>
                 {traceData.directReception && (<>
                   <TraceArrow />
+                  {traceLot.isTransformation && traceLot.transformationType && (<>
+                    <TraceNode icon={TRANSFO_ICON[traceLot.transformationType] ?? '🔄'} label={TRANSFO_LABEL[traceLot.transformationType] ?? 'Transformation'} sub={`Étape transformation · ${traceLot.producedAt?.toDate?.().toLocaleDateString('fr-FR') ?? '—'}`} color="#6d28d9" badge={TRANSFO_LABEL[traceLot.transformationType]} />
+                    <TraceArrow />
+                  </>)}
                   <TraceNode icon="📦" label={traceData.directReception.productName} sub={`${traceData.directReception.fournisseur} · reçu le ${traceData.directReception.receivedAt?.toDate?.().toLocaleDateString('fr-FR') ?? '—'}${traceData.directReception.supplierLot ? ` · lot ${traceData.directReception.supplierLot}` : ''}`} color="var(--success)" />
                 </>)}
                 {traceData.ingredientLots.length > 0 && (<>
@@ -1182,6 +1236,103 @@ function TraceNode({ icon, label, sub, color, badge, nested }: {
         </div>
         <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2 }}>{sub}</div>
       </div>
+    </div>
+  )
+}
+
+// ─── ProductPicker — autocomplete filtrant ────────────────────────
+function ProductPicker({
+  value, onChange, produits, loaded,
+}: {
+  value: string; onChange: (id: string) => void;
+  produits: Produit[]; loaded: boolean;
+}) {
+  const [inputValue, setInputValue] = useState('')
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const selected = produits.find(p => p.id === value) ?? null
+
+  useEffect(() => {
+    if (!value) setInputValue('')
+    else if (selected) setInputValue(selected.name)
+  }, [value, selected?.name])
+
+  useEffect(() => {
+    function onDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false)
+        setInputValue(selected?.name ?? '')
+      }
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [selected])
+
+  const showAll = !inputValue || selected?.name === inputValue
+  const filtered = showAll
+    ? produits
+    : produits.filter(p => p.name.toLowerCase().includes(inputValue.toLowerCase()))
+
+  function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
+    setInputValue(e.target.value)
+    setOpen(true)
+    if (value) onChange('')
+  }
+
+  function handleFocus() {
+    setOpen(true)
+    if (selected) setInputValue('')
+  }
+
+  function handleSelect(p: Produit) {
+    onChange(p.id)
+    setInputValue(p.name)
+    setOpen(false)
+  }
+
+  if (!loaded) {
+    return <div className="input" style={{ color: 'var(--on-surface-3)', pointerEvents: 'none' }}>Chargement…</div>
+  }
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <input
+        className="input"
+        value={inputValue}
+        onChange={handleChange}
+        onFocus={handleFocus}
+        placeholder="Rechercher un produit…"
+        autoComplete="off"
+        style={{ width: '100%', boxSizing: 'border-box' }}
+      />
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 60,
+          background: 'var(--surface)', borderRadius: 12,
+          border: '1.5px solid var(--border)',
+          boxShadow: '0 4px 24px rgba(28,28,24,0.13)',
+          maxHeight: 240, overflowY: 'auto',
+        }}>
+          {filtered.length === 0
+            ? <div style={{ padding: '12px 14px', fontSize: 13, color: 'var(--on-surface-3)' }}>Aucun résultat</div>
+            : filtered.map(p => (
+              <div
+                key={p.id}
+                onMouseDown={e => { e.preventDefault(); handleSelect(p) }}
+                style={{
+                  padding: '10px 14px', cursor: 'pointer', fontSize: 13,
+                  color: p.id === value ? 'var(--primary)' : 'var(--on-surface)',
+                  fontWeight: p.id === value ? 700 : 400,
+                  background: p.id === value ? 'rgba(0,66,117,0.06)' : 'transparent',
+                }}
+                onMouseEnter={e => { if (p.id !== value) (e.currentTarget as HTMLDivElement).style.background = 'var(--surface-mid)' }}
+                onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = p.id === value ? 'rgba(0,66,117,0.06)' : 'transparent' }}
+              >
+                {p.name}
+              </div>
+            ))}
+        </div>
+      )}
     </div>
   )
 }

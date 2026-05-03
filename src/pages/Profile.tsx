@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { updatePassword, EmailAuthProvider, reauthenticateWithCredential } from 'firebase/auth'
-import { doc, getDoc, updateDoc, addDoc, collection, Timestamp } from 'firebase/firestore'
+import { doc, getDoc, updateDoc, addDoc, collection, Timestamp, query, where, orderBy, onSnapshot } from 'firebase/firestore'
 import { useNavigate } from 'react-router-dom'
 import { auth, db } from '../firebase/config'
 import { useAuth } from '../auth/useAuth'
@@ -150,14 +150,27 @@ export default function Profile() {
   const [planLoading, setPlanLoading] = useState(true)
   const [notifEnabled, setNotifEnabled] = useState(false)
 
+  /* ── Mes demandes de congés ── */
+  const [mesConges, setMesConges] = useState<Array<{
+    id: string; dateDebut: string; dateFin: string; motif: string;
+    statut: string; commentaire?: string; traitePar?: string; createdAt: Timestamp
+  }>>([])
+
+  /* ── Charte ── */
+  const [charteVersion, setCharteVersion] = useState('')
+  const [charteSignedVersion, setCharteSignedVersion] = useState<string | null>(null)
+
   /* ── Congés ── */
   const [congesDateDebut, setCongesDateDebut] = useState('')
   const [congesDateFin, setCongesDateFin] = useState('')
   const [congesMotif, setCongesMotif] = useState('')
   const [congesLoading, setCongesLoading] = useState(false)
   const [congesSent, setCongesSent] = useState(false)
+  const [congesError, setCongesError] = useState<string | null>(null)
+  const [showCongesPopup, setShowCongesPopup] = useState(false)
+  const [congesDestinataires, setCongesDestinataires] = useState<string[]>(['a.cozzika@gmail.com', 'kyriazis@outlook.fr'])
 
-  /* ── Charger téléphone + notif pref ── */
+  /* ── Charger téléphone + notif pref + charte ── */
   useEffect(() => {
     if (!user?.uid) return
     getDoc(doc(db, 'users', user.uid)).then(snap => {
@@ -165,7 +178,32 @@ export default function Profile() {
         const data = snap.data()
         setPhone(data.phone ?? '')
         setNotifEnabled(data.planningReminders ?? false)
+        setCharteSignedVersion(data.reglementSigned?.version ?? null)
       }
+    })
+    getDoc(doc(db, 'settings', 'emails')).then(snap => {
+      if (!snap.exists()) return
+      const raw = snap.data() as any
+      const dest = typeof raw.congesDestinataires === 'string'
+        ? raw.congesDestinataires.split(',').map((s: string) => s.trim()).filter(Boolean)
+        : Array.isArray(raw.congesDestinataires) ? raw.congesDestinataires : []
+      if (dest.length > 0) setCongesDestinataires(dest)
+    })
+    getDoc(doc(db, 'settings', 'reglement_interieur')).then(snap => {
+      if (snap.exists()) setCharteVersion(snap.data().version || '1.0')
+    })
+  }, [user?.uid])
+
+  /* ── Charger mes demandes de congés ── */
+  useEffect(() => {
+    if (!user?.uid) return
+    const q = query(
+      collection(db, 'conges_demandes'),
+      where('uid', '==', user.uid),
+      orderBy('createdAt', 'desc'),
+    )
+    return onSnapshot(q, snap => {
+      setMesConges(snap.docs.map(d => ({ id: d.id, ...d.data() } as any)))
     })
   }, [user?.uid])
 
@@ -237,10 +275,21 @@ export default function Profile() {
     await updateDoc(doc(db, 'users', user.uid), { planningReminders: next })
   }
 
+  /* ── Validation date congés ── */
+  function congesDebutTropProche(): boolean {
+    if (!congesDateDebut) return false
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const oneMonthLater = new Date(today.getFullYear(), today.getMonth() + 1, today.getDate())
+    return new Date(congesDateDebut + 'T00:00:00') < oneMonthLater
+  }
+
   /* ── Envoyer demande de congés ── */
   async function sendConges() {
     if (!congesDateDebut || !congesDateFin || !congesMotif) return
+    if (congesDebutTropProche()) return
     setCongesLoading(true)
+    setCongesError(null)
     try {
       await addDoc(collection(db, 'conges_demandes'), {
         uid: user?.uid,
@@ -252,14 +301,10 @@ export default function Profile() {
         statut: 'En attente',
         createdAt: Timestamp.now(),
       })
-      const sujet = encodeURIComponent(`Demande de congés de ${user?.displayName ?? user?.email}`)
-      const corps = encodeURIComponent(
-        `Bonjour,\n\nJe souhaite poser des congés du ${congesDateDebut} au ${congesDateFin}.\n\nMotif : ${congesMotif}\n\nCordialement,\n${user?.displayName ?? user?.email}`
-      )
-      window.location.href = `mailto:a.cozzika@gmail.com?cc=kyriazis@outlook.fr&subject=${sujet}&body=${corps}`
-      setCongesSent(true)
       setCongesDateDebut(''); setCongesDateFin(''); setCongesMotif('')
-      setTimeout(() => { setCongesSent(false); setSection(null) }, 3000)
+      setShowCongesPopup(true)
+    } catch (e: any) {
+      setCongesError('Erreur lors de l\'envoi — ' + (e?.message ?? 'réessayez'))
     } finally {
       setCongesLoading(false)
     }
@@ -274,6 +319,29 @@ export default function Profile() {
 
   return (
     <div className="page" style={{ paddingTop: 24 }}>
+
+      {/* ── Popup confirmation congés ── */}
+      {showCongesPopup && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(28,28,24,0.5)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 400 }}>
+          <div style={{ background: 'var(--surface)', borderRadius: 'var(--radius-xl)', padding: '26px 22px', width: '320px', boxShadow: '0 20px 48px rgba(28,28,24,0.18)', textAlign: 'center', margin: '0 16px' }}>
+            <div style={{ fontSize: '36px', marginBottom: '12px' }}>🏖</div>
+            <div style={{ fontFamily: 'Epilogue, sans-serif', fontWeight: 800, fontSize: '15px', color: 'var(--on-surface)', marginBottom: '10px' }}>
+              Demande envoyée ✓
+            </div>
+            <div style={{ fontSize: '13px', color: 'var(--on-surface-2)', lineHeight: 1.6, marginBottom: '20px', fontFamily: 'Manrope, sans-serif' }}>
+              Pour rappel, toute demande peut être déclinée.<br /><br />
+              <strong style={{ color: 'var(--on-surface)' }}>Merci d'attendre la validation de votre manager.</strong>
+            </div>
+            <button
+              onClick={() => { setShowCongesPopup(false); setSection(null) }}
+              className="btn-primary"
+              style={{ width: '100%' }}
+            >
+              Compris ✓
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── Avatar + identité ── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '4px 2px 12px' }}>
@@ -446,6 +514,23 @@ export default function Profile() {
       {/* ── Section : Demande de congés ── */}
       <div>
         <SectionLabel title="Demande de congés" />
+        <div style={{
+          background: 'rgba(180,83,9,0.08)',
+          border: '1.5px solid rgba(180,83,9,0.22)',
+          borderRadius: 14, padding: '13px 16px',
+          marginBottom: 10,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+            <span style={{ fontSize: 18, flexShrink: 0, lineHeight: 1.3 }}>📋</span>
+            <div style={{ fontFamily: 'Manrope, sans-serif', fontSize: 13, color: 'var(--warning)', lineHeight: 1.65 }}>
+              <strong>Toute demande de congés peut être refusée.</strong>
+              {' '}Merci d'attendre la confirmation de votre manager avant d'organiser votre absence.
+              <br />
+              <strong>Délai minimum : 1 mois avant la date de début souhaitée.</strong>
+              {' '}Les demandes déposées moins d'un mois à l'avance ne pourront pas être traitées via ce formulaire.
+            </div>
+          </div>
+        </div>
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
           <Row label="Faire une demande de congés" onClick={() => setSection(section === 'conges' ? null : 'conges')} />
           {section === 'conges' && (
@@ -457,19 +542,27 @@ export default function Profile() {
                 </div>
                 <div>
                   <label style={{ fontSize: 11, color: 'var(--on-surface-2)', display: 'block', marginBottom: 4, fontFamily: 'Manrope, sans-serif', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Date de fin</label>
-                  <input className="input" type="date" value={congesDateFin} onChange={e => setCongesDateFin(e.target.value)} />
+                  <input className="input" type="date" value={congesDateFin} min={congesDateDebut || undefined} onChange={e => setCongesDateFin(e.target.value)} />
                 </div>
               </div>
+              {congesDateDebut && congesDebutTropProche() && (
+                <div style={{ background: 'rgba(192,57,43,0.08)', borderRadius: 10, padding: '10px 12px', fontSize: 12, color: 'var(--danger)', fontWeight: 600, lineHeight: 1.5, fontFamily: 'Manrope, sans-serif' }}>
+                  ⛔ Demande trop proche (moins d'un mois) — merci de contacter directement votre manager.
+                </div>
+              )}
               <div>
                 <label style={{ fontSize: 11, color: 'var(--on-surface-2)', display: 'block', marginBottom: 4, fontFamily: 'Manrope, sans-serif', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Motif</label>
                 <textarea className="input" placeholder="Motif de la demande…" value={congesMotif} onChange={e => setCongesMotif(e.target.value)} style={{ minHeight: 72, resize: 'none' }} />
               </div>
-              {congesSent && (
-                <p style={{ fontSize: 13, color: 'var(--success)', margin: 0, fontFamily: 'Manrope, sans-serif' }}>Demande envoyée ✓ La messagerie s'ouvre automatiquement.</p>
+              {congesError && (
+                <div style={{ fontSize: 12, color: 'var(--danger)', background: 'rgba(192,57,43,0.08)', borderRadius: 8, padding: '8px 12px', fontFamily: 'Manrope, sans-serif' }}>
+                  {congesError}
+                </div>
               )}
               <button className="btn-primary"
                 onClick={sendConges}
-                disabled={congesLoading || !congesDateDebut || !congesDateFin || !congesMotif}>
+                disabled={congesLoading || !congesDateDebut || !congesDateFin || !congesMotif || congesDebutTropProche()}
+                style={{ opacity: (congesLoading || !congesDateDebut || !congesDateFin || !congesMotif || congesDebutTropProche()) ? 0.5 : 1 }}>
                 {congesLoading ? 'Envoi…' : 'Envoyer la demande'}
               </button>
               <p style={{ fontSize: 11, color: 'var(--on-surface-3)', margin: 0, fontFamily: 'Manrope, sans-serif' }}>
@@ -480,10 +573,60 @@ export default function Profile() {
         </div>
       </div>
 
+      {/* ── Section : Mes demandes de congés ── */}
+      {mesConges.length > 0 && (
+        <div>
+          <SectionLabel title="Mes demandes de congés" />
+          <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+            {mesConges.map((c, i) => {
+              const statusMap: Record<string, { bg: string; color: string; label: string }> = {
+                'En attente': { bg: 'rgba(180,83,9,0.08)',  color: 'var(--warning)', label: '⏳ En attente' },
+                'Acceptée':   { bg: 'rgba(45,122,79,0.08)', color: 'var(--success)', label: '✓ Acceptée' },
+                'Refusée':    { bg: 'rgba(192,57,43,0.08)', color: 'var(--danger)',  label: '✗ Refusée' },
+              }
+              const s = statusMap[c.statut] ?? statusMap['En attente']
+              const fmtD = (iso: string) => new Date(iso + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' })
+              return (
+                <div key={c.id} style={{
+                  padding: '14px 16px',
+                  borderBottom: i < mesConges.length - 1 ? '1px solid var(--border-soft)' : 'none',
+                  borderLeft: `3px solid ${s.color}`,
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontFamily: 'Manrope, sans-serif', fontSize: 14, fontWeight: 600, color: 'var(--on-surface)', marginBottom: 2 }}>
+                        {fmtD(c.dateDebut)} → {fmtD(c.dateFin)}
+                      </div>
+                      {c.motif && (
+                        <div style={{ fontFamily: 'Manrope, sans-serif', fontSize: 12, color: 'var(--on-surface-2)', marginBottom: c.commentaire ? 4 : 0 }}>{c.motif}</div>
+                      )}
+                      {c.commentaire && (
+                        <div style={{ fontFamily: 'Manrope, sans-serif', fontSize: 12, color: 'var(--on-surface-3)', fontStyle: 'italic' }}>
+                          "{c.commentaire}"
+                          {c.traitePar && <span style={{ fontStyle: 'normal' }}> — {c.traitePar}</span>}
+                        </div>
+                      )}
+                    </div>
+                    <span style={{ background: s.bg, color: s.color, borderRadius: 8, fontSize: 11, fontWeight: 700, padding: '3px 8px', fontFamily: 'Manrope, sans-serif', flexShrink: 0 }}>
+                      {s.label}
+                    </span>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {/* ── Section : Accès rapide ── */}
       <div>
         <SectionLabel title="Accès rapide" />
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+          <Row
+            label="📋 Documents RH"
+            value={charteVersion && charteSignedVersion === charteVersion ? '✓ Charte signée' : charteVersion ? '⚠ Charte à signer' : ''}
+            onClick={() => navigate('/documents')}
+          />
           {user?.role !== 'manager' && (
             <Row label="Pointage" onClick={() => navigate('/pointage')} />
           )}

@@ -1,8 +1,9 @@
 import { useRef, useState, useEffect } from 'react'
-import { collection, doc, getDoc, getDocs, query, setDoc, where } from 'firebase/firestore'
+import { collection, doc, getDoc, getDocs, query, setDoc, updateDoc, where } from 'firebase/firestore'
 import { db, functions } from '../firebase/config'
 import { httpsCallable } from 'firebase/functions'
 import { useNavigate } from 'react-router-dom'
+import { useAuth } from '../auth/useAuth'
 
 /* ─── Types ─────────────────────────────────────────── */
 interface NotifConfig {
@@ -20,10 +21,13 @@ interface NotificationsSettings {
   commandeJour: NotifConfig
   livraisonTemperature: NotifConfig
   congesDemande: NotifConfig
+  costas: NotifConfig
+  weeklyHygieneLundi: NotifConfig
+  gmaoRappelLundi: NotifConfig
 }
 interface EmailsSettings {
   retardDestinataire: string
-  congesDestinataires: string
+  congesDestinataires: string[]
 }
 interface ExportsSettings {
   hygieneFormat: 'pdf' | 'csv'
@@ -42,7 +46,24 @@ interface NightlyRupturesConfig {
   enabled: boolean
   pauseFrom: string
   pauseTo: string
+  ccEmails: string[]
 }
+interface AlertEmailsSettings {
+  responsables: string[]
+  canOverrideEmails: string[]
+}
+interface HistoryLimitsSettings {
+  lotsJours: number
+  livraisonsJours: number
+  temperaturesJours: number
+  vitrineJours: number
+  hygieneJours: number
+}
+interface CommandesEmailsSettings {
+  relanceEnabled: boolean
+  destinataires: string[]
+}
+type ManagerUser = { email: string; displayName: string; role: string }
 export interface PriorityLevel {
   level: number
   name: string
@@ -65,11 +86,17 @@ const DEFAULT_NOTIFS: NotificationsSettings = {
   commandeJour:         { inbox: true,  push: true },
   livraisonTemperature: { inbox: true,  push: true },
   congesDemande:        { inbox: false, push: false, email: true },
+  costas:               { inbox: true,  push: true },
+  weeklyHygieneLundi:   { inbox: false, push: false, email: true },
+  gmaoRappelLundi:      { inbox: false, push: false, email: true },
 }
 const DEFAULT_EMAILS: EmailsSettings = {
   retardDestinataire:  'a.cozzika@gmail.com',
-  congesDestinataires: 'a.cozzika@gmail.com,kyriazis@outlook.fr',
+  congesDestinataires: ['a.cozzika@gmail.com', 'kyriazis@outlook.fr'],
 }
+const DEFAULT_ALERT_EMAILS: AlertEmailsSettings = { responsables: [], canOverrideEmails: [] }
+const DEFAULT_HISTORY_LIMITS: HistoryLimitsSettings = { lotsJours: 30, livraisonsJours: 30, temperaturesJours: 365, vitrineJours: 365, hygieneJours: 365 }
+const DEFAULT_COMMANDES_EMAILS: CommandesEmailsSettings = { relanceEnabled: true, destinataires: ['a.cozzika@gmail.com'] }
 const DEFAULT_EXPORTS: ExportsSettings = {
   hygieneFormat:  'pdf',
   hygienePeriode: 'semaine',
@@ -155,10 +182,12 @@ function NavRow({ label, sub, onClick, last }: { label: string; sub: string; onC
 }
 
 /* ─── Page principale ─────────────────────────────────── */
-function NightlyRupturesPanel({ cfg, onChange }: { cfg: NightlyRupturesConfig; onChange: (c: NightlyRupturesConfig) => void }) {
+function NightlyRupturesPanel({ cfg, onChange, managers }: { cfg: NightlyRupturesConfig; onChange: (c: NightlyRupturesConfig) => void; managers: ManagerUser[] }) {
   const [sendStatus, setSendStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle')
   const [preview, setPreview] = useState<{ emailHtml: string } | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
+  // Filtre Timour de la liste CC (il est le destinataire principal)
+  const eligibleManagers = managers.filter(u => u.email !== 'ytimour86@gmail.com')
 
   async function send() {
     setSendStatus('loading')
@@ -233,6 +262,37 @@ function NightlyRupturesPanel({ cfg, onChange }: { cfg: NightlyRupturesConfig; o
         </div>
       </div>
 
+      {/* Mise en copie */}
+      {eligibleManagers.length > 0 && (
+        <div style={{ marginBottom: 14, padding: '10px 12px', background: 'var(--surface-low)', borderRadius: 10, border: '1px solid var(--border-soft)' }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--on-surface-2)', marginBottom: 8 }}>Mettre en copie</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {eligibleManagers.map(u => {
+              const checked = (cfg.ccEmails ?? []).includes(u.email)
+              return (
+                <label key={u.email} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={e => {
+                      const next = e.target.checked
+                        ? [...(cfg.ccEmails ?? []), u.email]
+                        : (cfg.ccEmails ?? []).filter(x => x !== u.email)
+                      onChange({ ...cfg, ccEmails: next })
+                    }}
+                    style={{ width: 16, height: 16, accentColor: 'var(--primary)' }}
+                  />
+                  <span style={{ fontSize: 13, color: 'var(--on-surface)' }}>
+                    {u.displayName}
+                    <span style={{ fontSize: 11, color: 'var(--on-surface-3)', marginLeft: 6 }}>{u.email}</span>
+                  </span>
+                </label>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Boutons aperçu + envoyer */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button onClick={openPreview} disabled={previewLoading} className="btn-secondary"
@@ -248,8 +308,11 @@ function NightlyRupturesPanel({ cfg, onChange }: { cfg: NightlyRupturesConfig; o
   )
 }
 
+type IpadInfo = { uid: string; email: string; displayName: string; tag: string }
+
 export default function AdminSettings() {
   const navigate = useNavigate()
+  const { user: currentUser } = useAuth()
   const [notifs, setNotifs] = useState<NotificationsSettings>(DEFAULT_NOTIFS)
   const [emails, setEmails] = useState<EmailsSettings>(DEFAULT_EMAILS)
   const [exports, setExports] = useState<ExportsSettings>(DEFAULT_EXPORTS)
@@ -261,15 +324,85 @@ export default function AdminSettings() {
   const [ruptureCatalogueSearch, setRuptureCatalogueSearch] = useState('')
   const [catalogueProduits, setCatalogueProduits] = useState<{ id: string; name: string; priority: number | null }[]>([])
   const [priorityLevels, setPriorityLevels] = useState<PriorityLevel[]>(DEFAULT_PRIORITY_LEVELS)
-  const [nightlyCfg, setNightlyCfg] = useState<NightlyRupturesConfig>({ enabled: true, pauseFrom: '', pauseTo: '' })
+  const [nightlyCfg, setNightlyCfg] = useState<NightlyRupturesConfig>({ enabled: true, pauseFrom: '', pauseTo: '', ccEmails: [] })
+  const [alertEmails, setAlertEmails] = useState<AlertEmailsSettings>(DEFAULT_ALERT_EMAILS)
+  const [historyLimits, setHistoryLimits] = useState<HistoryLimitsSettings>(DEFAULT_HISTORY_LIMITS)
+  const [commandesEmails, setCommandesEmails] = useState<CommandesEmailsSettings>(DEFAULT_COMMANDES_EMAILS)
+  const [managers, setManagers] = useState<ManagerUser[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+
+  // ── iPads ──
+  const [ipads, setIpads] = useState<IpadInfo[]>([])
+  const [ipadNames, setIpadNames] = useState<Record<string, string>>({})
+  const [ipadPwds, setIpadPwds] = useState<Record<string, string>>({})
+  const [ipadNameStatus, setIpadNameStatus] = useState<Record<string, 'idle' | 'saving' | 'ok'>>({})
+  const [ipadPwdStatus, setIpadPwdStatus] = useState<Record<string, 'idle' | 'saving' | 'ok' | 'err'>>({})
   const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    getDocs(query(collection(db, 'users'), where('role', 'in', ['patron', 'administrateur', 'manager'])))
+      .then(snap => {
+        const list = snap.docs
+          .map(d => d.data() as ManagerUser)
+          .filter(u => u.email)
+          .sort((a, b) => (a.displayName || '').localeCompare(b.displayName || ''))
+        setManagers(list)
+      })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    getDocs(query(collection(db, 'users'), where('email', 'in', ['ipad@yorgios.fr', 'ipad.cuisine@yorgios.fr'])))
+      .then(snap => {
+        const list: IpadInfo[] = snap.docs.map(d => {
+          const data = d.data() as any
+          return {
+            uid: d.id,
+            email: data.email,
+            displayName: data.displayName || '',
+            tag: data.email === 'ipad@yorgios.fr' ? 'iPad Corner' : 'iPad Cuisine',
+          }
+        }).sort((a, b) => a.tag.localeCompare(b.tag))
+        setIpads(list)
+        const names: Record<string, string> = {}
+        list.forEach(i => { names[i.uid] = i.displayName })
+        setIpadNames(names)
+      })
+      .catch(() => {})
+  }, [])
+
+  async function saveIpadName(uid: string) {
+    const name = (ipadNames[uid] ?? '').trim()
+    if (!name) return
+    setIpadNameStatus(s => ({ ...s, [uid]: 'saving' }))
+    try {
+      await updateDoc(doc(db, 'users', uid), { displayName: name })
+      setIpads(list => list.map(i => i.uid === uid ? { ...i, displayName: name } : i))
+      setIpadNameStatus(s => ({ ...s, [uid]: 'ok' }))
+      setTimeout(() => setIpadNameStatus(s => ({ ...s, [uid]: 'idle' })), 2000)
+    } catch { setIpadNameStatus(s => ({ ...s, [uid]: 'idle' })) }
+  }
+
+  async function saveIpadPassword(uid: string) {
+    const pwd = ipadPwds[uid] ?? ''
+    if (pwd.length < 6) return
+    setIpadPwdStatus(s => ({ ...s, [uid]: 'saving' }))
+    try {
+      await httpsCallable(functions, 'updateUserPassword')({ uid, password: pwd })
+      setIpadPwds(p => ({ ...p, [uid]: '' }))
+      setIpadPwdStatus(s => ({ ...s, [uid]: 'ok' }))
+      setTimeout(() => setIpadPwdStatus(s => ({ ...s, [uid]: 'idle' })), 2000)
+    } catch {
+      setIpadPwdStatus(s => ({ ...s, [uid]: 'err' }))
+      setTimeout(() => setIpadPwdStatus(s => ({ ...s, [uid]: 'idle' })), 3000)
+    }
+  }
 
   useEffect(() => {
     async function load() {
       try {
-        const [nSnap, eSnap, xSnap, rSnap, tSnap, rupSnap, plSnap, catSnap, nrSnap] = await Promise.all([
+        const [nSnap, eSnap, xSnap, rSnap, tSnap, rupSnap, plSnap, catSnap, nrSnap, aeSnap, hlSnap, ceSnap] = await Promise.all([
           getDoc(doc(db, 'settings', 'notifications')),
           getDoc(doc(db, 'settings', 'emails')),
           getDoc(doc(db, 'settings', 'exports')),
@@ -279,14 +412,26 @@ export default function AdminSettings() {
           getDoc(doc(db, 'settings', 'priority_levels')),
           getDocs(query(collection(db, 'catalogue'), where('active', '==', true))),
           getDoc(doc(db, 'settings', 'nightly_ruptures')),
+          getDoc(doc(db, 'settings', 'alert_emails')),
+          getDoc(doc(db, 'settings', 'history_limits')),
+          getDoc(doc(db, 'settings', 'commandes_emails')),
         ])
         if (nSnap.exists()) setNotifs({ ...DEFAULT_NOTIFS, ...nSnap.data() } as NotificationsSettings)
-        if (eSnap.exists()) setEmails({ ...DEFAULT_EMAILS, ...eSnap.data() } as EmailsSettings)
+        if (eSnap.exists()) {
+          const raw = eSnap.data() as any
+          if (typeof raw.congesDestinataires === 'string') {
+            raw.congesDestinataires = raw.congesDestinataires.split(',').map((s: string) => s.trim()).filter(Boolean)
+          }
+          setEmails({ ...DEFAULT_EMAILS, ...raw } as EmailsSettings)
+        }
         if (xSnap.exists()) setExports({ ...DEFAULT_EXPORTS, ...xSnap.data() } as ExportsSettings)
         if (rSnap.exists()) setReception({ ...DEFAULT_RECEPTION, ...rSnap.data() } as ReceptionSettings)
         if (tSnap.exists()) setTemperatures({ ...DEFAULT_TEMPERATURES, ...tSnap.data() } as TemperaturesSettings)
         if (rupSnap.exists()) setRuptures({ ...DEFAULT_RUPTURES, ...rupSnap.data() } as RupturesSettings)
         if (nrSnap.exists()) setNightlyCfg(d => ({ ...d, ...nrSnap.data() } as NightlyRupturesConfig))
+        if (aeSnap.exists()) setAlertEmails({ ...DEFAULT_ALERT_EMAILS, ...aeSnap.data() } as AlertEmailsSettings)
+        if (hlSnap.exists()) setHistoryLimits({ ...DEFAULT_HISTORY_LIMITS, ...hlSnap.data() } as HistoryLimitsSettings)
+        if (ceSnap.exists()) setCommandesEmails({ ...DEFAULT_COMMANDES_EMAILS, ...ceSnap.data() } as CommandesEmailsSettings)
         if (plSnap.exists()) {
           const lvls = (plSnap.data() as any).levels
           if (Array.isArray(lvls) && lvls.length > 0) setPriorityLevels(lvls)
@@ -315,6 +460,9 @@ export default function AdminSettings() {
         setDoc(doc(db, 'settings', 'ruptures'), ruptures),
         setDoc(doc(db, 'settings', 'priority_levels'), { levels: priorityLevels }),
         setDoc(doc(db, 'settings', 'nightly_ruptures'), nightlyCfg),
+        setDoc(doc(db, 'settings', 'alert_emails'), alertEmails),
+        setDoc(doc(db, 'settings', 'history_limits'), historyLimits),
+        setDoc(doc(db, 'settings', 'commandes_emails'), commandesEmails),
       ])
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
@@ -373,32 +521,132 @@ export default function AdminSettings() {
           <NotifRow label="Urgences corner (15h00)" config={notifs.urgences} onChange={v => updateNotif('urgences', v)} />
           <NotifRow label="Commande du jour" config={notifs.commandeJour} onChange={v => updateNotif('commandeJour', v)} />
           <NotifRow label="Relevé température livraison" config={notifs.livraisonTemperature} onChange={v => updateNotif('livraisonTemperature', v)} />
-          <NotifRow label="Demande de congés" config={notifs.congesDemande} hasEmail onChange={v => updateNotif('congesDemande', v)} last />
+          <NotifRow label="Demande de congés" config={notifs.congesDemande} hasEmail onChange={v => updateNotif('congesDemande', v)} />
+          <NotifRow label="Costas — arrosage (dim. 10h)" config={notifs.costas} onChange={v => updateNotif('costas', v)} />
+          <NotifRow label="Récap hygiène hebdo (lun. 8h)" config={notifs.weeklyHygieneLundi} hasEmail onChange={v => updateNotif('weeklyHygieneLundi', v)} />
+          <NotifRow label="Rappel GMAO (lun. 9h)" config={notifs.gmaoRappelLundi} hasEmail onChange={v => updateNotif('gmaoRappelLundi', v)} last />
         </div>
       </div>
 
-      {/* ── Section : Emails ── */}
+      {/* ── Section : Alertes email — responsables ── */}
       <div>
-        <p className="section-label" style={{ marginBottom: 8 }}>Destinataires email</p>
-        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-          <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border-soft)' }}>
-            <label style={{ fontSize: 12, color: 'var(--on-surface-3)', display: 'block', marginBottom: 6 }}>
-              Retards pointage (email principal)
-            </label>
-            <input className="input-filled" type="email" value={emails.retardDestinataire}
-              onChange={e => setEmails(em => ({ ...em, retardDestinataire: e.target.value }))} />
+        <p className="section-label" style={{ marginBottom: 8 }}>Alertes email — responsables</p>
+        <div className="card" style={{ padding: '14px 16px' }}>
+          <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginBottom: 10 }}>
+            Personnes alertées pour : retards de pointage · livraisons refusées (REFUSE) · non-conformités
           </div>
-          <div style={{ padding: '14px 16px' }}>
-            <label style={{ fontSize: 12, color: 'var(--on-surface-3)', display: 'block', marginBottom: 6 }}>
-              Demandes de congés (séparés par une virgule)
-            </label>
-            <input className="input-filled" type="text" value={emails.congesDestinataires}
-              placeholder="email1@gmail.com,email2@outlook.fr"
-              onChange={e => setEmails(em => ({ ...em, congesDestinataires: e.target.value }))} />
-            <p style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 6 }}>
-              Actuellement : {emails.congesDestinataires.split(',').filter(Boolean).join(' + ')}
+          {managers.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {managers.map(u => {
+                const checked = (alertEmails.responsables ?? []).includes(u.email)
+                return (
+                  <label key={u.email} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox" checked={checked}
+                      onChange={e => {
+                        const next = e.target.checked
+                          ? [...(alertEmails.responsables ?? []), u.email]
+                          : (alertEmails.responsables ?? []).filter(x => x !== u.email)
+                        setAlertEmails(a => ({ ...a, responsables: next }))
+                      }}
+                      style={{ width: 16, height: 16, accentColor: 'var(--primary)', flexShrink: 0 }}
+                    />
+                    <span style={{ fontSize: 13, color: 'var(--on-surface)' }}>
+                      {u.displayName}
+                      <span style={{ fontSize: 11, color: 'var(--on-surface-3)', marginLeft: 6 }}>{u.email}</span>
+                    </span>
+                  </label>
+                )
+              })}
+            </div>
+          ) : (
+            <p style={{ fontSize: 12, color: 'var(--on-surface-3)', margin: 0 }}>Chargement des utilisateurs…</p>
+          )}
+          {(alertEmails.responsables ?? []).length === 0 && managers.length > 0 && (
+            <p style={{ fontSize: 11, color: 'var(--warning)', marginTop: 10, marginBottom: 0 }}>
+              Aucun responsable sélectionné — liste par défaut utilisée (Alexandre, Arthur, Sébastien).
             </p>
+          )}
+        </div>
+      </div>
+
+      {/* ── Section : Dérogation température livraison ── */}
+      <div>
+        <p className="section-label" style={{ marginBottom: 8 }}>Dérogation livraison refusée</p>
+        <div className="card" style={{ padding: '14px 16px' }}>
+          <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginBottom: 10 }}>
+            Personnes autorisées à accepter un produit malgré une température hors norme (bouton "Accepter en dérogation").
+            Si personne n'est sélectionné, seuls les rôles patron / administrateur / manager peuvent accepter.
           </div>
+          {managers.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {managers.map(u => {
+                const checked = (alertEmails.canOverrideEmails ?? []).includes(u.email)
+                return (
+                  <label key={u.email} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox" checked={checked}
+                      onChange={e => {
+                        const next = e.target.checked
+                          ? [...(alertEmails.canOverrideEmails ?? []), u.email]
+                          : (alertEmails.canOverrideEmails ?? []).filter(x => x !== u.email)
+                        setAlertEmails(a => ({ ...a, canOverrideEmails: next }))
+                      }}
+                      style={{ width: 16, height: 16, accentColor: 'var(--primary)', flexShrink: 0 }}
+                    />
+                    <span style={{ fontSize: 13, color: 'var(--on-surface)' }}>
+                      {u.displayName}
+                      <span style={{ fontSize: 11, color: 'var(--on-surface-3)', marginLeft: 6 }}>{u.email}</span>
+                    </span>
+                  </label>
+                )
+              })}
+            </div>
+          ) : (
+            <p style={{ fontSize: 12, color: 'var(--on-surface-3)', margin: 0 }}>Chargement des utilisateurs…</p>
+          )}
+        </div>
+      </div>
+
+      {/* ── Section : Demandes de congés — destinataires ── */}
+      <div>
+        <p className="section-label" style={{ marginBottom: 8 }}>Demandes de congés — destinataires</p>
+        <div className="card" style={{ padding: '14px 16px' }}>
+          <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginBottom: 10 }}>
+            Personnes notifiées quand un employé soumet une demande de congés depuis son profil.
+          </div>
+          {managers.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {managers.map(u => {
+                const checked = (emails.congesDestinataires ?? []).includes(u.email)
+                return (
+                  <label key={u.email} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox" checked={checked}
+                      onChange={e => {
+                        const next = e.target.checked
+                          ? [...(emails.congesDestinataires ?? []), u.email]
+                          : (emails.congesDestinataires ?? []).filter(x => x !== u.email)
+                        setEmails(em => ({ ...em, congesDestinataires: next }))
+                      }}
+                      style={{ width: 16, height: 16, accentColor: 'var(--primary)', flexShrink: 0 }}
+                    />
+                    <span style={{ fontSize: 13, color: 'var(--on-surface)' }}>
+                      {u.displayName}
+                      <span style={{ fontSize: 11, color: 'var(--on-surface-3)', marginLeft: 6 }}>{u.email}</span>
+                    </span>
+                  </label>
+                )
+              })}
+            </div>
+          ) : (
+            <p style={{ fontSize: 12, color: 'var(--on-surface-3)', margin: 0 }}>Chargement des utilisateurs…</p>
+          )}
+          {(emails.congesDestinataires ?? []).length === 0 && managers.length > 0 && (
+            <p style={{ fontSize: 11, color: 'var(--warning)', marginTop: 10, marginBottom: 0 }}>
+              Aucun destinataire sélectionné — par défaut : Alexandre + Arthur.
+            </p>
+          )}
         </div>
       </div>
 
@@ -656,26 +904,227 @@ export default function AdminSettings() {
         </div>
       </div>
 
-      {/* ── Section : Comptes iPad (informatif) ── */}
+      {/* ── Section : Comptes iPad ── */}
       <div>
         <p className="section-label" style={{ marginBottom: 8 }}>Comptes iPad</p>
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-          <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border-soft)' }}>
-            <div style={{ fontSize: 14, color: 'var(--on-surface)', fontWeight: 500, marginBottom: 2 }}>iPad Corner</div>
-            <div style={{ fontSize: 12, color: 'var(--on-surface-3)' }}>ipad@yorgios.fr</div>
+          {ipads.length === 0 && (
+            <div style={{ padding: '14px 16px', fontSize: 13, color: 'var(--on-surface-3)' }}>Chargement…</div>
+          )}
+          {ipads.map((ipad, idx) => {
+            const nameStatus = ipadNameStatus[ipad.uid] ?? 'idle'
+            const pwdStatus  = ipadPwdStatus[ipad.uid]  ?? 'idle'
+            const pwd        = ipadPwds[ipad.uid] ?? ''
+            const isAdmin    = currentUser?.role === 'administrateur'
+            return (
+              <div key={ipad.uid} style={{
+                padding: '16px 16px',
+                borderBottom: idx < ipads.length - 1 ? '1px solid var(--border-soft)' : 'none',
+              }}>
+                {/* En-tête */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                  <span style={{ fontSize: 18 }}>📱</span>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--on-surface)' }}>{ipad.tag}</div>
+                    <div style={{ fontSize: 11, color: 'var(--on-surface-3)' }}>{ipad.email}</div>
+                  </div>
+                </div>
+
+                {/* Nom de session */}
+                <div style={{ marginBottom: 12 }}>
+                  <label style={{ fontSize: 12, color: 'var(--on-surface-3)', display: 'block', marginBottom: 5 }}>
+                    Nom affiché dans l'app
+                  </label>
+                  <input
+                    className="input-filled"
+                    value={ipadNames[ipad.uid] ?? ipad.displayName}
+                    onChange={e => setIpadNames(n => ({ ...n, [ipad.uid]: e.target.value }))}
+                    style={{ width: '100%', boxSizing: 'border-box', marginBottom: 6 }}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                      onClick={() => saveIpadName(ipad.uid)}
+                      disabled={nameStatus === 'saving' || !(ipadNames[ipad.uid] ?? '').trim()}
+                      className="btn-secondary"
+                      style={{ fontSize: 12, padding: '4px 14px' }}
+                    >
+                      {nameStatus === 'saving' ? '…' : nameStatus === 'ok' ? '✓ Sauvegardé' : 'Sauver'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Mot de passe */}
+                <div>
+                  <label style={{ fontSize: 12, color: 'var(--on-surface-3)', display: 'block', marginBottom: 5 }}>
+                    Nouveau mot de passe
+                    {!isAdmin && <span style={{ color: 'var(--warning)', marginLeft: 6 }}>(administrateur uniquement)</span>}
+                  </label>
+                  <input
+                    className="input-filled"
+                    type="password"
+                    placeholder="Min. 6 caractères"
+                    value={pwd}
+                    onChange={e => setIpadPwds(p => ({ ...p, [ipad.uid]: e.target.value }))}
+                    disabled={!isAdmin}
+                    style={{ width: '100%', boxSizing: 'border-box', marginBottom: 6 }}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                      onClick={() => saveIpadPassword(ipad.uid)}
+                      disabled={!isAdmin || pwdStatus === 'saving' || pwd.length < 6}
+                      className="btn-secondary"
+                      style={{ fontSize: 12, padding: '4px 14px' }}
+                    >
+                      {pwdStatus === 'saving' ? '…' : pwdStatus === 'ok' ? '✓ Changé' : pwdStatus === 'err' ? '✗ Erreur' : 'Changer le mot de passe'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* ── Section : Historique ── */}
+      <div>
+        <p className="section-label" style={{ marginBottom: 8 }}>Durée de l'historique</p>
+        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderBottom: '1px solid var(--border-soft)' }}>
+            <div>
+              <div style={{ fontSize: 14, color: 'var(--on-surface)', fontWeight: 500 }}>Lots cuisine</div>
+              <div style={{ fontSize: 12, color: 'var(--on-surface-3)' }}>Affichés en fabrication</div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input
+                type="number" min={7} max={365} value={historyLimits.lotsJours}
+                onChange={e => setHistoryLimits(h => ({ ...h, lotsJours: parseInt(e.target.value) || 30 }))}
+                style={{ width: 64, background: 'var(--surface-high)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--on-surface)', fontSize: 14, fontWeight: 700, textAlign: 'center', padding: '6px 8px', outline: 'none' }}
+              />
+              <span style={{ fontSize: 13, color: 'var(--on-surface-3)' }}>jours</span>
+            </div>
           </div>
-          <div style={{ padding: '14px 16px' }}>
-            <div style={{ fontSize: 14, color: 'var(--on-surface)', fontWeight: 500, marginBottom: 2 }}>iPad Cuisine</div>
-            <div style={{ fontSize: 12, color: 'var(--on-surface-3)' }}>ipad.cuisine@yorgios.fr</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderBottom: '1px solid var(--border-soft)' }}>
+            <div>
+              <div style={{ fontSize: 14, color: 'var(--on-surface)', fontWeight: 500 }}>Livraisons</div>
+              <div style={{ fontSize: 12, color: 'var(--on-surface-3)' }}>Historique par défaut — corner & cuisine</div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input
+                type="number" min={7} max={730} value={historyLimits.livraisonsJours}
+                onChange={e => setHistoryLimits(h => ({ ...h, livraisonsJours: parseInt(e.target.value) || 30 }))}
+                style={{ width: 64, background: 'var(--surface-high)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--on-surface)', fontSize: 14, fontWeight: 700, textAlign: 'center', padding: '6px 8px', outline: 'none' }}
+              />
+              <span style={{ fontSize: 13, color: 'var(--on-surface-3)' }}>jours</span>
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderBottom: '1px solid var(--border-soft)' }}>
+            <div>
+              <div style={{ fontSize: 14, color: 'var(--on-surface)', fontWeight: 500 }}>Températures</div>
+              <div style={{ fontSize: 12, color: 'var(--on-surface-3)' }}>Cuisine & corner — durée de rétention</div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input
+                type="number" min={90} max={730} value={historyLimits.temperaturesJours}
+                onChange={e => setHistoryLimits(h => ({ ...h, temperaturesJours: parseInt(e.target.value) || 365 }))}
+                style={{ width: 64, background: 'var(--surface-high)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--on-surface)', fontSize: 14, fontWeight: 700, textAlign: 'center', padding: '6px 8px', outline: 'none' }}
+              />
+              <span style={{ fontSize: 13, color: 'var(--on-surface-3)' }}>jours</span>
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderBottom: '1px solid var(--border-soft)' }}>
+            <div>
+              <div style={{ fontSize: 14, color: 'var(--on-surface)', fontWeight: 500 }}>Contenu vitrine</div>
+              <div style={{ fontSize: 12, color: 'var(--on-surface-3)' }}>Historique des ajouts/retraits vitrine</div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input
+                type="number" min={90} max={730} value={historyLimits.vitrineJours}
+                onChange={e => setHistoryLimits(h => ({ ...h, vitrineJours: parseInt(e.target.value) || 365 }))}
+                style={{ width: 64, background: 'var(--surface-high)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--on-surface)', fontSize: 14, fontWeight: 700, textAlign: 'center', padding: '6px 8px', outline: 'none' }}
+              />
+              <span style={{ fontSize: 13, color: 'var(--on-surface-3)' }}>jours</span>
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px' }}>
+            <div>
+              <div style={{ fontSize: 14, color: 'var(--on-surface)', fontWeight: 500 }}>Hygiène</div>
+              <div style={{ fontSize: 12, color: 'var(--on-surface-3)' }}>Checklists quotidien / hebdo / mensuel</div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input
+                type="number" min={90} max={730} value={historyLimits.hygieneJours}
+                onChange={e => setHistoryLimits(h => ({ ...h, hygieneJours: parseInt(e.target.value) || 365 }))}
+                style={{ width: 64, background: 'var(--surface-high)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--on-surface)', fontSize: 14, fontWeight: 700, textAlign: 'center', padding: '6px 8px', outline: 'none' }}
+              />
+              <span style={{ fontSize: 13, color: 'var(--on-surface-3)' }}>jours</span>
+            </div>
           </div>
         </div>
+        <p style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 6, marginBottom: 0 }}>
+          Pointages : navigation illimitée. Minimum recommandé : 365 jours pour températures, vitrine et hygiène.
+        </p>
       </div>
 
       {/* ── Email récap ruptures Timour ── */}
       <div>
         <p className="section-label" style={{ marginBottom: 8 }}>Email récap nuit — Timour</p>
         <div className="card" style={{ padding: '14px 16px' }}>
-          <NightlyRupturesPanel cfg={nightlyCfg} onChange={setNightlyCfg} />
+          <NightlyRupturesPanel cfg={nightlyCfg} onChange={setNightlyCfg} managers={managers} />
+        </div>
+      </div>
+
+      {/* ── Section : Commandes clients ── */}
+      <div>
+        <p className="section-label" style={{ marginBottom: 8 }}>Commandes clients</p>
+        <div className="card" style={{ padding: '14px 16px' }}>
+          {/* Toggle relance */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--on-surface)' }}>Relance automatique</div>
+              <div style={{ fontSize: 12, color: 'var(--on-surface-3)' }}>Rappel par email à 6h, 12h et 18h si commandes en attente</div>
+            </div>
+            <Toggle value={commandesEmails.relanceEnabled} onChange={v => setCommandesEmails(c => ({ ...c, relanceEnabled: v }))} />
+          </div>
+
+          {/* Destinataires */}
+          <div style={{ padding: '10px 12px', background: 'var(--surface-low)', borderRadius: 10, border: '1px solid var(--border-soft)' }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--on-surface-2)', marginBottom: 8 }}>
+              Destinataires (relance + nouvelle commande)
+            </div>
+            {managers.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {managers.map(u => {
+                  const checked = (commandesEmails.destinataires ?? []).includes(u.email)
+                  return (
+                    <label key={u.email} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={e => {
+                          const next = e.target.checked
+                            ? [...(commandesEmails.destinataires ?? []), u.email]
+                            : (commandesEmails.destinataires ?? []).filter(x => x !== u.email)
+                          setCommandesEmails(c => ({ ...c, destinataires: next }))
+                        }}
+                        style={{ width: 16, height: 16, accentColor: 'var(--primary)', flexShrink: 0 }}
+                      />
+                      <span style={{ fontSize: 13, color: 'var(--on-surface)' }}>
+                        {u.displayName}
+                        <span style={{ fontSize: 11, color: 'var(--on-surface-3)', marginLeft: 6 }}>{u.email}</span>
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+            ) : (
+              <p style={{ fontSize: 12, color: 'var(--on-surface-3)', margin: 0 }}>Chargement des utilisateurs…</p>
+            )}
+            {(commandesEmails.destinataires ?? []).length === 0 && managers.length > 0 && (
+              <p style={{ fontSize: 11, color: 'var(--warning)', marginTop: 10, marginBottom: 0 }}>
+                Aucun destinataire sélectionné — fallback sur Alexandre (a.cozzika@gmail.com).
+              </p>
+            )}
+          </div>
         </div>
       </div>
 

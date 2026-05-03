@@ -73,29 +73,43 @@ export function computeWeekCounters(
     : []
 
   return employees.map(emp => {
+    // Jours où l'employé est entièrement absent (heures annulées)
+    const absenceDaySet = new Set<number>()
+    // Heures manquées par jour pour parti_tot
+    const partiTotByDay: Record<number, number> = {}
+    let conges = 0, sansSolde = 0, absences = 0, retardMinutes = 0, joursOff = 0, maladesHeures = 0, partiTotHeures = 0
+
+    Object.entries(weekEvents).forEach(([dateISO, dayEvts]) => {
+      const idx = dayISOs.length > 0 ? dayISOs.indexOf(dateISO) : -1
+      dayEvts.filter(e => e.empId === emp.id).forEach(e => {
+        if (e.type === 'conge') { conges++; if (idx >= 0) absenceDaySet.add(idx) }
+        else if (e.type === 'sans_solde') { sansSolde++; if (idx >= 0) absenceDaySet.add(idx) }
+        else if (e.type === 'absence') { absences++; if (idx >= 0) absenceDaySet.add(idx) }
+        else if (e.type === 'malade') { maladesHeures += e.hours ?? 0; if (idx >= 0) absenceDaySet.add(idx) }
+        else if (e.type === 'jour_off') { joursOff++; if (idx >= 0) absenceDaySet.add(idx) }
+        else if (e.type === 'retard') retardMinutes += e.minutes ?? 0
+        else if (e.type === 'parti_tot') {
+          partiTotHeures += e.hours ?? 0
+          if (idx >= 0) partiTotByDay[idx] = (partiTotByDay[idx] ?? 0) + (e.hours ?? 0)
+        }
+      })
+    })
+
     let heuresTravaillees = 0, heuresDimanche = 0, heuresFerie = 0
     for (let i = 0; i < 7; i++) {
+      if (absenceDaySet.has(i)) continue  // jour d'absence : 0h comptées
       const hours = draft[i]?.hours ?? {}
+      let dayHours = 0
       Object.values(hours).forEach(emps => {
         if (emps.includes(emp.id)) {
-          heuresTravaillees++
+          dayHours++
           if (i === 6) heuresDimanche++
           if (dayISOs[i] && isHoliday(dayISOs[i])) heuresFerie++
         }
       })
+      const missed = partiTotByDay[i] ?? 0
+      heuresTravaillees += Math.max(0, dayHours - missed)
     }
-    let conges = 0, sansSolde = 0, absences = 0, retardMinutes = 0, joursOff = 0, maladesHeures = 0, partiTotHeures = 0
-    Object.values(weekEvents).forEach(dayEvents => {
-      dayEvents.filter(e => e.empId === emp.id).forEach(e => {
-        if (e.type === 'conge') conges++
-        else if (e.type === 'sans_solde') sansSolde++
-        else if (e.type === 'absence') absences++
-        else if (e.type === 'retard') retardMinutes += e.minutes ?? 0
-        else if (e.type === 'jour_off') joursOff++
-        else if (e.type === 'malade') maladesHeures += e.hours ?? 0
-        else if (e.type === 'parti_tot') partiTotHeures += e.hours ?? 0
-      })
-    })
     return {
       empId: emp.id,
       heuresTravaillees,

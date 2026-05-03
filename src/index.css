@@ -482,6 +482,11 @@
   50%       { background: rgba(192,57,43,0.18); border-color: rgba(192,57,43,0.60); }
 }
 
+@keyframes annonce-pulse {
+  0%, 100% { background: #c0392b; }
+  50%       { background: #a93226; }
+}
+
 /* ─── Checkbox animation ──────────────────────────── */
 @keyframes check-pop {
   0%   { transform: scale(1); }

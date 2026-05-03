@@ -410,12 +410,12 @@ export default function Login() {
           fontFamily: 'Manrope, sans-serif', fontSize: 12,
           color: 'var(--on-surface-3)', textAlign: 'center',
         }}>
-          En vous connectant, vous acceptez notre{' '}
+          En vous connectant, vous acceptez nos{' '}
           <a
             href="/rgpd"
             style={{ color: 'var(--primary)', textDecoration: 'underline', fontWeight: 600 }}
           >
-            politique de confidentialité
+            CGU et politique de confidentialité
           </a>
         </p>
       </div>

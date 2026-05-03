@@ -78,16 +78,25 @@ export default function Livraison() {
   const [histError, setHistError] = useState<string | null>(null)
 
   // --- Galerie photos ---
-  function sevenDaysAgo() {
-    const d = new Date(); d.setDate(d.getDate() - 7); return toLocalDateValue(d)
+  function nDaysAgo(n: number) {
+    const d = new Date(); d.setDate(d.getDate() - n); return toLocalDateValue(d)
   }
-  const [galFrom, setGalFrom] = useState(sevenDaysAgo)
+  const [galFrom, setGalFrom] = useState(() => nDaysAgo(30))
+
+  useEffect(() => {
+    getDoc(doc(db, 'settings', 'history_limits'))
+      .then(snap => { if (snap.exists()) setGalFrom(nDaysAgo((snap.data() as any).livraisonsJours ?? 30)) })
+      .catch(() => {})
+  }, [])
   const [galTo, setGalTo] = useState(toLocalDateValue(new Date()))
   const [gallery, setGallery] = useState<GalleryItem[]>([])
   const [galLoading, setGalLoading] = useState(false)
 
   // --- Modal photo ---
   const [photoModal, setPhotoModal] = useState<PhotoModal | null>(null)
+
+  // --- Dérogation : liste des emails autorisés à accepter malgré REFUSE ---
+  const [canOverrideEmails, setCanOverrideEmails] = useState<string[]>([])
 
   // --- Coursier (Twilio) ---
   const [deliveries, setDeliveries] = useState<DeliveryDoc[]>([])
@@ -100,12 +109,7 @@ export default function Livraison() {
       const q = query(collection(db, 'livraisons'), orderBy('departAt', 'desc'), limit(200))
       const snap = await getDocs(q)
       const all: LivrDoc[] = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }))
-      const t0 = todayStart()
-      const today = all.filter(x => {
-        const dt = x.departAt?.toDate ? x.departAt.toDate() : null
-        return dt && dt.getTime() >= t0
-      })
-      setLivraisons(today)
+      setLivraisons(all)
     } catch (e: any) { setError(e?.message) }
     finally { setStatus('') }
   }
@@ -148,6 +152,12 @@ export default function Livraison() {
     } catch { /* silencieux */ }
     finally { setGalLoading(false) }
   }
+
+  useEffect(() => {
+    getDoc(doc(db, 'settings', 'alert_emails'))
+      .then(snap => { if (snap.exists()) setCanOverrideEmails((snap.data() as any).canOverrideEmails ?? []) })
+      .catch(() => {})
+  }, [])
 
   useEffect(() => { load() }, [])
   useEffect(() => { if (tab === 'historique') loadHistorique(histDate) }, [tab, histDate])
@@ -260,6 +270,20 @@ export default function Livraison() {
     finally { setBulkLoading(false); setStatus('') }
   }
 
+  async function accepterDérogation(id: string) {
+    try {
+      const uid = auth.currentUser?.uid || ''
+      await updateDoc(doc(db, 'livraisons', id), {
+        result: 'ACCEPTE',
+        managerOverride: true,
+        managerOverrideAt: Timestamp.now(),
+        managerOverrideBy: uid,
+      })
+      setNcModal(null)
+      await load()
+    } catch (e: any) { setError(e?.message) }
+  }
+
   async function retourCuisine(id: string, lotCode?: string) {
     try {
       await updateDoc(doc(db, 'livraisons', id), { returned: true, returnedAt: Timestamp.now() })
@@ -317,11 +341,18 @@ export default function Livraison() {
     finally { setNcLoading(false) }
   }
 
+  const t0 = todayStart()
   const pendingAll = livraisons.filter(l => l.receptionTempC == null && !l.receptionAt && !l.returned)
   const pendingWithTemp = pendingAll.filter(l => l.departTempC != null)
   const pendingNoTemp   = pendingAll.filter(l => l.departTempC == null)
   const pending = [...pendingWithTemp, ...pendingNoTemp]
-  const done = livraisons.filter(l => (l.receptionTempC != null || l.receptionAt != null) && !l.returned)
+  const stalePending = pendingAll.filter(l => l.departAt?.toDate && l.departAt.toDate().getTime() < t0)
+  // done = validées aujourd'hui (filtré par receptionAt, pas departAt)
+  const done = livraisons.filter(l => {
+    if (l.returned) return false
+    const recAt = l.receptionAt?.toDate ? l.receptionAt.toDate().getTime() : null
+    return recAt !== null && recAt >= t0
+  })
 
   const allNoTempChecked = pendingNoTemp.length > 0 && pendingNoTemp.every(l => receptionChecked[l.id])
   function toggleAllNoTemp(checked: boolean) {
@@ -331,6 +362,11 @@ export default function Livraison() {
       return n
     })
   }
+
+  const isManagerRole = ['patron', 'administrateur', 'manager'].includes(user?.role ?? '')
+  const canOverride = canOverrideEmails.length > 0
+    ? canOverrideEmails.includes(user?.email ?? '')
+    : isManagerRole
 
   function resultChip(result: string) {
     if (result === 'ACCEPTE') return <span className="chip-ok">ACCEPTÉ</span>
@@ -390,7 +426,7 @@ export default function Livraison() {
           )}
 
           <p className="section-label" style={{ margin: 0 }}>
-            À compléter ({pending.length})
+            À compléter ({pendingWithTemp.length})
           </p>
 
           {/* Empty state */}
@@ -412,17 +448,27 @@ export default function Livraison() {
           {/* ── Produits AVEC température (cartes individuelles) ── */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {pendingWithTemp.map(l => {
-              const depAt = l.departAt?.toDate
-                ? l.departAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                : ''
+              const depDate = l.departAt?.toDate ? l.departAt.toDate() : null
+              const depAt = depDate ? depDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+              const isStale = depDate !== null && depDate.getTime() < t0
+              const depDateLabel = isStale && depDate
+                ? depDate.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })
+                : null
               return (
-                <div key={l.id} className="card" style={{ border: '1.5px solid rgba(0,66,117,0.15)' }}>
-                  <div style={{ marginBottom: 4 }}>
+                <div key={l.id} className="card" style={{
+                  border: isStale ? '1.5px solid rgba(180,83,9,0.30)' : '1.5px solid rgba(0,66,117,0.15)',
+                }}>
+                  <div style={{ marginBottom: 4, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                     <span style={{ fontFamily: 'Epilogue, sans-serif', fontWeight: 700, fontSize: 15, color: 'var(--on-surface)' }}>
                       {l.productName}
+                      {l.isManual && (
+                        <span style={{ fontSize: 11, color: 'var(--on-surface-3)', fontWeight: 400, marginLeft: 6 }}>(manuel)</span>
+                      )}
                     </span>
-                    {l.isManual && (
-                      <span style={{ fontSize: 11, color: 'var(--on-surface-3)', fontWeight: 400, marginLeft: 6 }}>(manuel)</span>
+                    {depDateLabel && (
+                      <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--warning)', flexShrink: 0, background: 'rgba(180,83,9,0.08)', padding: '2px 7px', borderRadius: 6 }}>
+                        {depDateLabel}
+                      </span>
                     )}
                   </div>
                   <p style={{ fontSize: 12, color: 'var(--on-surface-3)', marginBottom: 14, marginTop: 0 }}>
@@ -489,6 +535,11 @@ export default function Livraison() {
 
           {/* ── Produits SANS température (liste groupée + validation globale) ── */}
           {pendingNoTemp.length > 0 && (
+            <p className="section-label" style={{ margin: '8px 0 0' }}>
+              À confirmer — sans temp ({pendingNoTemp.length})
+            </p>
+          )}
+          {pendingNoTemp.length > 0 && (
             <div className="card" style={{ border: '1.5px solid rgba(0,66,117,0.15)', padding: 0, overflow: 'hidden' }}>
               {/* En-tête groupe */}
               <div style={{
@@ -515,14 +566,17 @@ export default function Livraison() {
 
               {/* Lignes produits */}
               {pendingNoTemp.map((l, idx) => {
-                const depAt = l.departAt?.toDate
-                  ? l.departAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                  : ''
+                const depDate = l.departAt?.toDate ? l.departAt.toDate() : null
+                const depAt = depDate ? depDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+                const isStale = depDate !== null && depDate.getTime() < t0
+                const depDateLabel = isStale && depDate
+                  ? depDate.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })
+                  : null
                 const checked = !!receptionChecked[l.id]
                 return (
                   <div key={l.id} style={{
                     borderBottom: idx < pendingNoTemp.length - 1 ? '1px solid var(--border-soft)' : 'none',
-                    background: checked ? 'rgba(45,122,79,0.05)' : 'var(--surface)',
+                    background: checked ? 'rgba(45,122,79,0.05)' : isStale ? 'rgba(180,83,9,0.03)' : 'var(--surface)',
                     transition: 'background 0.15s',
                   }}>
                     {/* Ligne principale */}
@@ -547,6 +601,9 @@ export default function Livraison() {
                         </div>
                         <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2 }}>
                           Lot {l.lotCode} · Départ {depAt}
+                          {depDateLabel && (
+                            <span style={{ marginLeft: 6, fontWeight: 700, color: 'var(--warning)' }}>· {depDateLabel}</span>
+                          )}
                         </div>
                       </div>
                       {checked && <span style={{ fontSize: 18, flexShrink: 0 }}>✓</span>}
@@ -648,8 +705,21 @@ export default function Livraison() {
                         </div>
                         {resultChip(l.result)}
                       </div>
-                      {/* Bouton retour cuisine */}
-                      <div style={{ marginTop: 8 }}>
+                      {/* Bouton retour cuisine + dérogation si REFUSÉ */}
+                      <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        {isRefuse && canOverride && (
+                          <button
+                            onClick={() => accepterDérogation(l.id)}
+                            style={{
+                              fontSize: 11, padding: '5px 10px', borderRadius: 7, cursor: 'pointer',
+                              border: '1px solid rgba(45,122,79,0.3)',
+                              background: 'rgba(45,122,79,0.08)', color: 'var(--success)', fontWeight: 600,
+                              fontFamily: 'Manrope, sans-serif',
+                            }}
+                          >
+                            ✅ Accepter (dérogation)
+                          </button>
+                        )}
                         <button
                           onClick={() => retourCuisine(l.id, l.lotCode)}
                           style={{
@@ -1156,6 +1226,24 @@ export default function Livraison() {
 
                 {/* Options décision */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {/* Dérogation — accepter malgré la température (selon paramètres AdminSettings) */}
+                  {canOverride && <button
+                    onClick={() => accepterDérogation(ncModal.l.id)}
+                    disabled={ncLoading}
+                    style={{
+                      padding: '14px 16px', borderRadius: 14, fontSize: 14, fontWeight: 700,
+                      border: '1.5px solid rgba(45,122,79,0.35)',
+                      background: 'rgba(45,122,79,0.08)',
+                      color: 'var(--success)', cursor: 'pointer', textAlign: 'left',
+                      opacity: ncLoading ? 0.6 : 1, transition: 'background 0.15s',
+                      fontFamily: 'Manrope, sans-serif',
+                    }}
+                  >
+                    ✅ Accepter quand même (dérogation)
+                  </button>}
+
+                  {canOverride && <div style={{ borderTop: '1px solid var(--border-soft)', margin: '4px 0' }} />}
+
                   {NC_DECISIONS.map(d => (
                     <button
                       key={d}

@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Timestamp, addDoc, collection, getDocs, getDocsFromServer, query, updateDoc, deleteDoc, doc, where, limit, orderBy } from 'firebase/firestore'
+import { Timestamp, addDoc, collection, getDocs, getDocsFromServer, query, updateDoc, deleteDoc, doc, where, limit, orderBy, getDoc } from 'firebase/firestore'
 import { db, auth } from '../../../firebase/config'
 import { useToast } from '../../../hooks/useToast'
+import { useAuth } from '../../../auth/useAuth'
 
 
 type StockItem = {
@@ -54,6 +55,8 @@ function dlcStatus(dlcAt: any): 'expire' | 'today' | 'tomorrow' | 'ok' {
 
 export default function Vitrine() {
   const { show } = useToast()
+  const { user } = useAuth()
+  const canDelete = ['patron', 'administrateur', 'manager'].includes(user?.role || '')
   const [mainTab, setMainTab] = useState<'stock' | 'lots' | 'historique'>('stock')
   const [items, setItems]         = useState<StockItem[]>([])
   const [loading, setLoading]     = useState(false)
@@ -62,13 +65,13 @@ export default function Vitrine() {
   const [showForm, setShowForm]   = useState(false)
 
   // --- Historique ---
-  function thirtyDaysAgo() {
-    const d = new Date(); d.setDate(d.getDate() - 30); return localISO(d)
+  function nDaysAgo(n: number) {
+    const d = new Date(); d.setDate(d.getDate() - n); return localISO(d)
   }
   const [histItems, setHistItems] = useState<StockItem[]>([])
   const [histLoading, setHistLoading] = useState(false)
   const [histSearch, setHistSearch] = useState('')
-  const [histFrom, setHistFrom] = useState(thirtyDaysAgo)
+  const [histFrom, setHistFrom] = useState(() => nDaysAgo(365))
   const [histTo, setHistTo] = useState(localISO())
 
   // Mode formulaire
@@ -167,7 +170,15 @@ export default function Vitrine() {
     finally { setHistLoading(false) }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    getDoc(doc(db, 'settings', 'history_limits')).then(snap => {
+      if (snap.exists()) {
+        const j = (snap.data() as any).vitrineJours
+        if (typeof j === 'number' && j > 0) setHistFrom(nDaysAgo(j))
+      }
+    })
+  }, [])
   useEffect(() => { if (mainTab === 'historique') loadHistorique() }, [mainTab, histFrom, histTo])
   useEffect(() => { if (mainTab === 'lots') loadLotsRecus() }, [mainTab])
 
@@ -191,9 +202,8 @@ export default function Vitrine() {
   async function loadLots() {
     setLotsLoading(true)
     try {
-      // getDocs (pas getDocsFromServer) pour compatibilité iPad WiFi + lots sans sentToCornerAt
       const [snap, vitrineSnap, catalogueSnap] = await Promise.all([
-        getDocs(query(
+        getDocsFromServer(query(
           collection(db, 'lots_cuisine'),
           where('sent', '==', true),
           limit(100),
@@ -356,6 +366,8 @@ export default function Vitrine() {
           archived: true, archivedAt: Timestamp.now(), sent: false,
         })
       }
+      const addedIds = new Set(toAdd.map(l => l.id))
+      setLots(prev => prev.filter(l => !addedIds.has(l.id)))
       setSelectedLotIds(new Set()); setShowForm(false)
       show(`${toAdd.length} produit(s) ajouté(s) en vitrine`)
       await load()
@@ -1080,17 +1092,45 @@ export default function Vitrine() {
                       </div>
                     </div>
                     {dlcChip(st)}
-                    <button
-                      onClick={() => retirer(item.id, item.productName)}
-                      style={{
-                        background: 'rgba(192,57,43,0.07)', border: '1px solid rgba(192,57,43,0.2)',
-                        borderRadius: 8, color: 'var(--danger)', fontSize: 11, fontWeight: 700,
-                        cursor: 'pointer', padding: '4px 10px', flexShrink: 0,
-                        fontFamily: 'Manrope, sans-serif', whiteSpace: 'nowrap',
-                      }}
-                    >
-                      Retirer
-                    </button>
+                    <div style={{ display: 'flex', gap: 5, flexShrink: 0 }}>
+                      <button
+                        onClick={() => renvoyerCuisine(item)}
+                        title="Retour cuisine"
+                        style={{
+                          background: 'rgba(0,66,117,0.07)', border: '1px solid rgba(0,66,117,0.2)',
+                          borderRadius: 8, color: 'var(--primary)', fontSize: 11, fontWeight: 700,
+                          cursor: 'pointer', padding: '4px 8px', flexShrink: 0,
+                          fontFamily: 'Manrope, sans-serif', whiteSpace: 'nowrap',
+                        }}
+                      >
+                        🏠
+                      </button>
+                      <button
+                        onClick={() => retirer(item.id, item.productName)}
+                        style={{
+                          background: 'rgba(192,57,43,0.07)', border: '1px solid rgba(192,57,43,0.2)',
+                          borderRadius: 8, color: 'var(--danger)', fontSize: 11, fontWeight: 700,
+                          cursor: 'pointer', padding: '4px 10px', flexShrink: 0,
+                          fontFamily: 'Manrope, sans-serif', whiteSpace: 'nowrap',
+                        }}
+                      >
+                        Retirer
+                      </button>
+                      {canDelete && (
+                        <button
+                          onClick={() => supprimerItem(item)}
+                          title="Supprimer définitivement"
+                          style={{
+                            background: 'rgba(192,57,43,0.07)', border: '1px solid rgba(192,57,43,0.2)',
+                            borderRadius: 8, color: 'var(--danger)', fontSize: 11, fontWeight: 700,
+                            cursor: 'pointer', padding: '4px 8px', flexShrink: 0,
+                            fontFamily: 'Manrope, sans-serif',
+                          }}
+                        >
+                          🗑
+                        </button>
+                      )}
+                    </div>
                   </div>
                 )
               })}
@@ -1196,7 +1236,15 @@ export default function Vitrine() {
       {/* ════════════════ HISTORIQUE ════════════════ */}
       {mainTab === 'historique' && (
         <>
-          {/* Filtres date */}
+          {/* Raccourcis + date range */}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 4 }}>
+            {[30, 90, 180, 365].map(n => (
+              <button key={n} onClick={() => setHistFrom(nDaysAgo(n))}
+                style={{ fontSize: 11, padding: '4px 10px', borderRadius: 20, border: '1px solid var(--border)', background: histFrom === nDaysAgo(n) ? 'var(--primary)' : 'var(--surface)', color: histFrom === nDaysAgo(n) ? '#fff' : 'var(--on-surface-2)', cursor: 'pointer', fontWeight: 600 }}>
+                {n === 365 ? '1 an' : n === 180 ? '6 mois' : `${n}j`}
+              </button>
+            ))}
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <div>
               <p className="section-label" style={{ marginBottom: 5 }}>Du</p>

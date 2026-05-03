@@ -59,6 +59,33 @@ function todayISO() {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
 
+// Jours de fermeture corner : dimanche + 4 jours fériés
+function isCornerClosed(d: Date): boolean {
+  const m = d.getMonth() + 1, day = d.getDate(), dow = d.getDay()
+  return dow === 0 ||
+    (m === 1 && day === 1) || (m === 5 && day === 1) ||
+    (m === 8 && day === 15) || (m === 12 && day === 25)
+}
+
+// Dernier jour où le corner était ouvert (avant `from`)
+function getLastOpenDay(from: Date): Date {
+  const d = new Date(from)
+  d.setDate(d.getDate() - 1); d.setHours(0, 0, 0, 0)
+  while (isCornerClosed(d)) d.setDate(d.getDate() - 1)
+  return d
+}
+
+// ISO du dernier jour ouvert (pour requête commandes en window de récupération)
+function getCommandesEffectiveStart(): string {
+  const now = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  if (now.getHours() >= 12) return todayISO()
+  const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1); yesterday.setHours(0, 0, 0, 0)
+  if (!isCornerClosed(yesterday)) return todayISO()
+  const last = getLastOpenDay(now)
+  return `${last.getFullYear()}-${p(last.getMonth()+1)}-${p(last.getDate())}`
+}
+
 function firstDayOfMonthISO() {
   const d = new Date()
   const p = (n: number) => String(n).padStart(2, '0')
@@ -164,12 +191,13 @@ export default function CuisineDashboard() {
         console.error(e)
       }
 
-      // Commandes clients
+      // Commandes clients — fenêtre élargie aux jours fériés/dimanche si avant midi
       try {
+        const cmdStart = getCommandesEffectiveStart()
         const [cmdSnap, moisSnap] = await Promise.all([
           getDocs(query(
             collection(db, 'commandes_externes'),
-            where('dateLivraison', '>=', today),
+            where('dateLivraison', '>=', cmdStart),
             where('dateLivraison', '<=', endWeek),
             orderBy('dateLivraison', 'asc'),
           )),
@@ -184,7 +212,7 @@ export default function CuisineDashboard() {
         const allCmds: CommandeClient[] = cmdSnap.docs
           .map(d => ({ id: d.id, ...(d.data() as any) }))
           .filter(c => STATUTS_ACTIFS.includes((c.statut ?? '').toLowerCase()))
-        setCommandesToday(allCmds.filter(c => c.dateLivraison === today))
+        setCommandesToday(allCmds.filter(c => c.dateLivraison >= cmdStart && c.dateLivraison <= today))
         setCommandesWeek(allCmds.filter(c => c.dateLivraison > today))
         setCommandesMois(moisSnap.docs.map(d => ({ id: d.id, ...(d.data() as any) })))
       } catch (e) {
@@ -219,20 +247,26 @@ export default function CuisineDashboard() {
   }, [])
 
   // Ruptures actives corner — temps réel
-  // Fenêtre : reset à midi chaque jour. Lundi avant midi → depuis samedi 13h (week-end entier cumulé)
+  // Fenêtre : reset à midi. Si hier était fermé (dimanche/férié), remonte au dernier jour ouvert 13h
   useEffect(() => {
     const now2 = new Date()
-    const dow  = now2.getDay() // 0=dim, 1=lun
     const hour = now2.getHours()
     const cutoffStart = new Date(now2)
-    if (dow === 1 && hour < 12) {
-      // Lundi avant midi → depuis samedi 13h (accumule tout le week-end)
-      cutoffStart.setDate(now2.getDate() - 2)
-      cutoffStart.setHours(13, 0, 0, 0)
+    if (hour < 12) {
+      const yesterday = new Date(now2); yesterday.setDate(now2.getDate() - 1); yesterday.setHours(0, 0, 0, 0)
+      if (isCornerClosed(yesterday)) {
+        // Hier fermé → dernier jour ouvert à 13h (couvre dimanche, lundi férié, etc.)
+        const lastOpen = getLastOpenDay(now2)
+        lastOpen.setHours(13, 0, 0, 0)
+        cutoffStart.setTime(lastOpen.getTime())
+      } else {
+        // Jour normal : depuis hier midi
+        cutoffStart.setDate(now2.getDate() - 1)
+        cutoffStart.setHours(12, 0, 0, 0)
+      }
     } else {
-      // Autres jours : depuis le dernier midi (reset à 12h)
+      // Après midi : depuis ce midi
       cutoffStart.setHours(12, 0, 0, 0)
-      if (now2 < cutoffStart) cutoffStart.setDate(cutoffStart.getDate() - 1)
     }
     const q = query(
       collection(db, 'ruptures_actives'),

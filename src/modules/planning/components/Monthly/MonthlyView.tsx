@@ -8,7 +8,7 @@ import { exportMonthlyPDF } from '../../utils/pdfExport'
 import { exportMonthlyExcel } from '../../utils/exports'
 import { PrimesTab } from './PrimesTab'
 import type { PrimeMois, PrimeEmploye } from '../../firebase/primes'
-import { calcPrime, calcCaPrime, hygieneBonus, getBareme, getContractAt, DEFAULT_CA_PALIERS, DEFAULT_CA_MAX_PRIMES } from '../../utils/primes'
+import { calcPrime, calcCaPrime, hygieneBonus, getBareme, getContractAt, DEFAULT_CA_PALIERS, DEFAULT_CA_MAX_PRIMES, EXCLUDED_NAMES } from '../../utils/primes'
 import type { CaPalier, CaMaxPrimes } from '../../utils/primes'
 
 interface Props {
@@ -39,7 +39,7 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
         const [draft, events] = await Promise.all([loadWeek(mon), loadWeekEvents(mon)])
         return { mon, draft, events }
       }))
-      const empStats: MonthlyEmployeeStats[] = employees.map(emp => {
+      const empStats: MonthlyEmployeeStats[] = employees.filter(e => !EXCLUDED_NAMES.includes(e.name) && !e.subStatus).map(emp => {
         const weekCounters = weekData.map(({ mon, draft, events }) => {
           const allowedIndices = weekDaysInMonth(mon, month)
           const isPartialWeek = allowedIndices.length < 7
@@ -130,11 +130,11 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
         <div style={{ flex: 1 }} />
         {tab === 'stats' && (
           <>
-            <button onClick={() => exportMonthlyExcel(month, employees, stats)} disabled={stats.length === 0}
+            <button onClick={() => exportMonthlyExcel(month, employees.filter(e => !EXCLUDED_NAMES.includes(e.name) && !e.subStatus), stats)} disabled={stats.length === 0}
               style={{ background: '#16a34a', border: 'none', color: '#fff', borderRadius: '8px', padding: '5px 12px', cursor: 'pointer', fontSize: '11px', fontWeight: 600, opacity: stats.length === 0 ? 0.5 : 1 }}>
               📊 Excel
             </button>
-            <button onClick={() => exportMonthlyPDF(month, employees, stats)} disabled={stats.length === 0}
+            <button onClick={() => exportMonthlyPDF(month, employees.filter(e => !EXCLUDED_NAMES.includes(e.name) && !e.subStatus), stats)} disabled={stats.length === 0}
               style={{ background: 'var(--primary)', border: 'none', color: '#fff', borderRadius: '8px', padding: '5px 12px', cursor: 'pointer', fontSize: '11px', fontWeight: 600, opacity: stats.length === 0 ? 0.5 : 1 }}>
               📄 PDF
             </button>

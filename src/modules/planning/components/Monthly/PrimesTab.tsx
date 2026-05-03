@@ -4,8 +4,8 @@ import { db } from '../../../../firebase/config'
 import type { Employee, MonthlyEmployeeStats } from '../../types'
 import { loadPrimeMois, savePrimeMois, loadPrimesEmployes, savePrimesEmployes } from '../../firebase/primes'
 import type { PrimeMois, PrimeEmploye } from '../../firebase/primes'
-import { calcPrime, calcCaPrime, getBareme, hygieneBonus, monthKey, HYGIENE_BONUS, EXCLUDED_NAMES, DEFAULT_CA_PALIERS, DEFAULT_CA_MAX_PRIMES, getMaxCaPrime } from '../../utils/primes'
-import type { CaPalier, CaMaxPrimes } from '../../utils/primes'
+import { calcPrime, calcCaPrime, hygieneBonus, monthKey, HYGIENE_BONUS, EXCLUDED_NAMES, DEFAULT_CA_PALIERS, DEFAULT_CA_MAX_PRIMES, DEFAULT_CONTRACTS, getContractForHours } from '../../utils/primes'
+import type { CaPalier, CaMaxPrimes, ContractType } from '../../utils/primes'
 
 interface Props {
   month: Date
@@ -25,6 +25,7 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
   const [empMap, setEmpMap]           = useState<Record<string, PrimeEmploye>>({})
   const [caPaliers, setCaPaliers]     = useState<CaPalier[]>(DEFAULT_CA_PALIERS)
   const [caMaxPrimes, setCaMaxPrimes] = useState<CaMaxPrimes>(DEFAULT_CA_MAX_PRIMES)
+  const [contracts, setContracts]     = useState<ContractType[]>(DEFAULT_CONTRACTS)
   const [showSettings, setShowSettings] = useState(false)
   const [saving, setSaving]           = useState(false)
   const [saved, setSaved]             = useState(false)
@@ -38,12 +39,25 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
       loadPrimesEmployes(month),
       getDoc(doc(db, 'objectifs_ca', mk)),
       getDoc(doc(db, 'settings', 'primes_ca')),
-    ]).then(([mois, emps, caSnap, caSettingsSnap]) => {
+      getDoc(doc(db, 'settings', 'contrats')),
+    ]).then(([mois, emps, caSnap, caSettingsSnap, contratsSnap]) => {
       if (caSettingsSnap.exists()) {
         const d = caSettingsSnap.data() as any
-        // Migration : anciens paliers avec `prime` (€ fixe) → ignorer, utiliser defaults
         if (Array.isArray(d.paliers) && d.paliers.every((p: any) => 'pct' in p)) setCaPaliers(d.paliers)
         if (d.maxPrimes && typeof d.maxPrimes === 'object') setCaMaxPrimes(d.maxPrimes)
+      }
+      if (contratsSnap.exists()) {
+        const d = contratsSnap.data() as any
+        if (Array.isArray(d.types) && d.types.length > 0) {
+          const loaded: ContractType[] = d.types.filter(
+            (c: ContractType, idx: number, arr: ContractType[]) => arr.findIndex(x => x.hours === c.hours) === idx
+          )
+          setContracts(loaded)
+          // Sync caMaxPrimes depuis les contrats chargés
+          const derived: CaMaxPrimes = {}
+          loaded.forEach(c => { derived[c.hours] = c.caMax })
+          setCaMaxPrimes(derived)
+        }
       }
       let loadedCaObjectif: number | null = null
       let loadedCaRealise: number | null = null
@@ -63,10 +77,10 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
       // Build empMap with defaults for employees not yet saved
       const map: Record<string, PrimeEmploye> = {}
       const excludedIds = new Set(
-        employees.filter(e => EXCLUDED_NAMES.includes(e.name)).map(e => e.id)
+        employees.filter(e => EXCLUDED_NAMES.includes(e.name) || !!e.subStatus).map(e => e.id)
       )
       emps.filter(e => !excludedIds.has(e.empId)).forEach(e => { map[e.empId] = e })
-      employees.filter(e => !EXCLUDED_NAMES.includes(e.name)).forEach(emp => {
+      employees.filter(e => !EXCLUDED_NAMES.includes(e.name) && !e.subStatus).forEach(emp => {
         if (!map[emp.id]) {
           const retard = stats.find(s => s.empId === emp.id)?.total.retardMinutes ?? 0
           map[emp.id] = { empId: emp.id, month: mk, comportementOk: true, ponctualiteOk: retard === 0 }
@@ -74,6 +88,8 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
       })
       setEmpMap(map)
       onPrimesChange(pm, Object.values(map), { paliers: DEFAULT_CA_PALIERS, maxPrimes: DEFAULT_CA_MAX_PRIMES })
+      setLoading(false)
+    }).catch(() => {
       setLoading(false)
     })
   }, [month])
@@ -99,9 +115,12 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
 
   async function handleSave() {
     setSaving(true)
+    const derived: CaMaxPrimes = {}
+    contracts.forEach(c => { derived[c.hours] = c.caMax })
     await savePrimeMois(primeMois, uid)
     await savePrimesEmployes(Object.values(empMap), uid)
-    await setDoc(doc(db, 'settings', 'primes_ca'), { paliers: caPaliers, maxPrimes: caMaxPrimes })
+    await setDoc(doc(db, 'settings', 'primes_ca'), { paliers: caPaliers, maxPrimes: derived })
+    await setDoc(doc(db, 'settings', 'contrats'), { types: contracts })
     setSaving(false)
     setSaved(true)
     setTimeout(() => setSaved(false), 2500)
@@ -171,56 +190,138 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
 
       {/* ── Panneau paramètres barème ── */}
       {showSettings && canEdit && (
-        <div style={{ background: 'var(--surface-low)', border: '1px solid var(--border)', borderRadius: 12, padding: '14px', marginBottom: 14 }}>
-          <div style={{ fontWeight: 700, fontSize: 12, color: 'var(--on-surface)', marginBottom: 12 }}>⚙️ Paramètres du barème CA</div>
-          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
-            {/* Paliers % CA → % prime max */}
-            <div style={{ flex: 1, minWidth: 180 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Paliers (seuil CA → % du max)</div>
-              {caPaliers.slice().sort((a, b) => a.seuil - b.seuil).map((p, i) => (
-                <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6 }}>
-                  <span style={{ fontSize: 11, color: 'var(--on-surface-3)' }}>≥</span>
-                  <input type="number" min={50} max={200} step={1} value={Math.round(p.seuil * 100)}
-                    onChange={e => setCaPaliers(prev => prev.map((x, j) => j === i ? { ...x, seuil: (parseInt(e.target.value)||80)/100 } : x))}
-                    style={{ width: 52, border: '1px solid var(--border)', borderRadius: 6, padding: '4px 6px', fontSize: 12, textAlign: 'center', background: 'var(--surface)', color: 'var(--on-surface)' }} />
-                  <span style={{ fontSize: 11, color: 'var(--on-surface-3)' }}>% →</span>
-                  <input type="number" min={0} max={100} step={5} value={p.pct}
-                    onChange={e => setCaPaliers(prev => prev.map((x, j) => j === i ? { ...x, pct: parseInt(e.target.value)||0 } : x))}
-                    style={{ width: 52, border: '1px solid var(--border)', borderRadius: 6, padding: '4px 6px', fontSize: 12, textAlign: 'center', background: 'var(--surface)', color: 'var(--on-surface)' }} />
-                  <span style={{ fontSize: 11, color: 'var(--on-surface-3)' }}>%</span>
-                  <button onClick={() => setCaPaliers(prev => prev.filter((_, j) => j !== i))} style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: 14, padding: '0 4px' }}>✕</button>
-                </div>
-              ))}
-              <button onClick={() => setCaPaliers(prev => [...prev, { seuil: 1.20, pct: 100 }])} style={{ fontSize: 11, padding: '4px 10px', border: '1px dashed var(--border)', borderRadius: 6, background: 'none', cursor: 'pointer', color: 'var(--on-surface-2)' }}>+ Palier</button>
+        <div style={{ background: 'var(--surface-low)', border: '1px solid var(--border)', borderRadius: 12, padding: '14px 16px', marginBottom: 14 }}>
+          <div style={{ fontWeight: 700, fontSize: 12, color: 'var(--on-surface)', marginBottom: 14 }}>⚙️ Barème des primes</div>
+          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+
+            {/* ── Table paliers CA ── */}
+            <div style={{ flex: '0 0 auto' }}>
+              <table style={{ borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    <th colSpan={3} style={{ ...thSt, textAlign: 'left', paddingBottom: 8, fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--on-surface-3)', fontWeight: 700 }}>
+                      Palier CA mensuel
+                    </th>
+                  </tr>
+                  <tr style={{ borderBottom: '2px solid var(--border)' }}>
+                    <th style={{ ...thSt, textAlign: 'center' }}>% CA atteint</th>
+                    <th style={{ ...thSt, textAlign: 'center' }}>% prime accordée</th>
+                    <th style={{ ...thSt }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...caPaliers].sort((a, b) => a.seuil - b.seuil).map((p, i) => {
+                    const origIdx = caPaliers.indexOf(p)
+                    return (
+                      <tr key={origIdx} style={{ borderBottom: '1px solid var(--border-soft)' }}>
+                        <td style={tdSt}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'center' }}>
+                            <span style={{ fontSize: 10, color: 'var(--on-surface-3)' }}>≥</span>
+                            <input type="number" min={50} max={200} step={1} value={Math.round(p.seuil * 100)}
+                              onChange={e => { const v = Number(e.target.value); if (!isNaN(v)) setCaPaliers(prev => prev.map((x, j) => j === origIdx ? { ...x, seuil: v / 100 } : x)) }}
+                              style={cellInputSt} />
+                            <span style={{ fontSize: 10, color: 'var(--on-surface-3)' }}>%</span>
+                          </div>
+                        </td>
+                        <td style={tdSt}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'center' }}>
+                            <input type="number" min={0} max={100} step={5} value={p.pct}
+                              onChange={e => { const v = Number(e.target.value); if (!isNaN(v)) setCaPaliers(prev => prev.map((x, j) => j === origIdx ? { ...x, pct: v } : x)) }}
+                              style={cellInputSt} />
+                            <span style={{ fontSize: 10, color: 'var(--on-surface-3)' }}>%</span>
+                          </div>
+                        </td>
+                        <td style={{ ...tdSt, paddingLeft: 4 }}>
+                          <button onClick={() => setCaPaliers(prev => prev.filter((_, j) => j !== origIdx))}
+                            style={{ background: 'none', border: 'none', color: 'var(--on-surface-3)', cursor: 'pointer', fontSize: 12, padding: '0 2px', lineHeight: 1 }}>✕</button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td colSpan={3} style={{ paddingTop: 8 }}>
+                      <button onClick={() => setCaPaliers(prev => [...prev, { seuil: 1.20, pct: 100 }])}
+                        style={{ fontSize: 10, padding: '3px 10px', border: '1px dashed var(--border)', borderRadius: 6, background: 'none', cursor: 'pointer', color: 'var(--on-surface-2)' }}>
+                        + Ajouter un palier
+                      </button>
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
             </div>
-            {/* Max prime par contrat */}
-            <div style={{ flex: 1, minWidth: 160 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Prime max par contrat</div>
-              {[20, 25, 30, 35].map(h => (
-                <div key={h} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, width: 32, color: 'var(--on-surface)' }}>{h}h</span>
-                  <input type="number" min={0} max={1000} step={10} value={caMaxPrimes[h] ?? 0}
-                    onChange={e => setCaMaxPrimes(prev => ({ ...prev, [h]: parseInt(e.target.value)||0 }))}
-                    style={{ width: 64, border: '1px solid var(--border)', borderRadius: 6, padding: '4px 6px', fontSize: 12, textAlign: 'center', background: 'var(--surface)', color: 'var(--on-surface)' }} />
-                  <span style={{ fontSize: 11, color: 'var(--on-surface-3)' }}>€</span>
-                </div>
-              ))}
+
+            {/* ── Séparateur vertical ── */}
+            <div style={{ width: 1, background: 'var(--border)', alignSelf: 'stretch', flexShrink: 0 }} />
+
+            {/* ── Table contrats ── */}
+            <div style={{ flex: '1 1 auto', minWidth: 220 }}>
+              <table style={{ borderCollapse: 'collapse', fontSize: 12, width: '100%' }}>
+                <thead>
+                  <tr>
+                    <th colSpan={3} style={{ ...thSt, textAlign: 'left', paddingBottom: 8, fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--on-surface-3)', fontWeight: 700 }}>
+                      Montants max par contrat
+                    </th>
+                  </tr>
+                  <tr style={{ borderBottom: '2px solid var(--border)' }}>
+                    <th style={{ ...thSt, textAlign: 'left' }}>Contrat</th>
+                    <th style={{ ...thSt, textAlign: 'center' }}>Comp. + Ponct.</th>
+                    <th style={{ ...thSt, textAlign: 'center' }}>Prime CA max</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...contracts].sort((a, b) => a.hours - b.hours).map((c, i) => {
+                    const idx = contracts.indexOf(c)
+                    return (
+                      <tr key={i} style={{ borderBottom: '1px solid var(--border-soft)' }}>
+                        <td style={{ ...tdSt, fontWeight: 700, color: 'var(--on-surface)', whiteSpace: 'nowrap', paddingRight: 16 }}>
+                          {c.hours}h
+                        </td>
+                        <td style={tdSt}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'center' }}>
+                            <input type="number" min={0} max={500} step={5} value={c.compMax}
+                              onChange={e => setContracts(prev => prev.map((x, j) => j === idx ? { ...x, compMax: parseInt(e.target.value) || 0 } : x))}
+                              style={cellInputSt} />
+                            <span style={{ fontSize: 10, color: 'var(--on-surface-3)' }}>€</span>
+                          </div>
+                        </td>
+                        <td style={tdSt}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'center' }}>
+                            <input type="number" min={0} max={1000} step={10} value={c.caMax}
+                              onChange={e => setContracts(prev => prev.map((x, j) => j === idx ? { ...x, caMax: parseInt(e.target.value) || 0 } : x))}
+                              style={cellInputSt} />
+                            <span style={{ fontSize: 10, color: 'var(--on-surface-3)' }}>€</span>
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+              <div style={{ fontSize: 10, color: 'var(--on-surface-3)', marginTop: 8 }}>
+                Comp. = comportement + ponctualité (partagé 50/50) · CA = prime performance mensuelle
+              </div>
             </div>
           </div>
-          <div style={{ fontSize: 10, color: 'var(--on-surface-3)', marginTop: 8 }}>Enregistré avec le bouton 💾 ci-dessous.</div>
+          <div style={{ fontSize: 10, color: 'var(--on-surface-3)', marginTop: 10, borderTop: '1px solid var(--border-soft)', paddingTop: 8 }}>
+            Modifications enregistrées avec le bouton 💾 ci-dessous.
+          </div>
         </div>
       )}
 
       {/* ── Cards par employé ── */}
-      {employees.filter(e => !EXCLUDED_NAMES.includes(e.name)).map(emp => {
+      {employees.filter(e => !EXCLUDED_NAMES.includes(e.name) && !e.subStatus).map(emp => {
         const ep = empMap[emp.id]
         if (!ep) return null
         const retard = stats.find(s => s.empId === emp.id)?.total.retardMinutes ?? 0
-        const b = getBareme(emp.weeklyCapHours)
-        const compAmt  = emp.primeComportement ?? b.comp / 2
-        const ponctAmt = emp.primePonctualite  ?? b.comp / 2
-        const caPrime = calcCaPrime(caRealise, caObjectif, emp.weeklyCapHours, caPaliers, caMaxPrimes)
-        const maxCa = getMaxCaPrime(emp.weeklyCapHours, caMaxPrimes)
+        const contract = getContractForHours(emp.weeklyCapHours, contracts)
+        const compAmt  = emp.primeComportement ?? contract.compMax / 2
+        const ponctAmt = emp.primePonctualite  ?? contract.compMax / 2
+        const maxCa = contract.caMax
+        const derived: CaMaxPrimes = {}
+        contracts.forEach(c => { derived[c.hours] = c.caMax })
+        const caPrime = calcCaPrime(caRealise, caObjectif, emp.weeklyCapHours, caPaliers, derived)
         const prime = calcPrime(emp.weeklyCapHours, ep.comportementOk, ep.ponctualiteOk, caPrime, hygBonus, emp.primeComportement, emp.primePonctualite)
 
         return (
@@ -231,7 +332,7 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
                 <span style={{ background: emp.color, color: '#fff', borderRadius: '7px', padding: '3px 8px', fontSize: '12px', fontWeight: 800 }}>{emp.initials}</span>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: '13px' }}>{emp.name}</div>
-                  <div style={{ fontSize: '10px', color: 'var(--on-surface-3)' }}>Contrat {emp.weeklyCapHours}h · comp. max {b.comp}€ · CA max {maxCa}€{primeMois.hygieneActif ? ` + ${hygBonus}€ hyg.` : ''}</div>
+                  <div style={{ fontSize: '10px', color: 'var(--on-surface-3)' }}>Contrat {emp.weeklyCapHours}h · comp. max {contract.compMax}€ · CA max {maxCa}€{primeMois.hygieneActif ? ` + ${hygBonus}€ hyg.` : ''}</div>
                 </div>
               </div>
               <div style={{ fontSize: '17px', fontWeight: 800, color: prime > 0 ? 'var(--primary)' : 'var(--on-surface-3)' }}>
@@ -339,3 +440,6 @@ function Toggle({ checked, disabled, onChange }: { checked: boolean; disabled: b
 
 const labelSt: React.CSSProperties = { fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--on-surface-3)', marginBottom: '4px' }
 const inputSt: React.CSSProperties = { background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--on-surface)', borderRadius: '7px', padding: '5px 8px', fontSize: '12px' }
+const thSt: React.CSSProperties = { padding: '4px 10px', fontWeight: 600, fontSize: 11, color: 'var(--on-surface-2)', textAlign: 'center', whiteSpace: 'nowrap' }
+const tdSt: React.CSSProperties = { padding: '6px 10px', verticalAlign: 'middle', textAlign: 'center' }
+const cellInputSt: React.CSSProperties = { width: 52, border: '1px solid var(--border)', borderRadius: 6, padding: '4px 6px', fontSize: 12, textAlign: 'center', background: 'var(--surface)', color: 'var(--on-surface)' }

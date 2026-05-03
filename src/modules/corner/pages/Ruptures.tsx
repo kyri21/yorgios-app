@@ -17,9 +17,9 @@ const NIVEAUX    = ['Plein', 'Trois-quarts', 'Moitié', 'Un quart']
 const BESTSELLERS: string[] = []
 
 const PHOTO_SLOTS_INIT: PhotoSlot[] = [
-  { label: 'Vitrine gauche', required: false, file: null, preview: null },
-  { label: 'Vitrine centre', required: false, file: null, preview: null },
-  { label: 'Vitrine droite', required: false, file: null, preview: null },
+  { label: 'Vitrine gauche', required: true,  file: null, preview: null },
+  { label: 'Vitrine centre', required: true,  file: null, preview: null },
+  { label: 'Vitrine droite', required: true,  file: null, preview: null },
   { label: 'Frigo corner',   required: false, file: null, preview: null },
 ]
 
@@ -57,6 +57,7 @@ export default function Ruptures() {
 
   const [catalogueProduits, setCatalogueProduits] = useState<CatalogueProduit[]>([])
   const [stockProduits, setStockProduits]         = useState<string[]>(BESTSELLERS)
+  const [alreadySentToday, setAlreadySentToday]   = useState<Set<string>>(new Set())
   const [personne, setPersonne]                   = useState('')
   // null = neutre  |  'oui' = ✓ j'ai du stock  |  'urgent' = 🔴 rupture  |  'moins-urgent' = 🟠 presque rupture
   const [stockChecks, setStockChecks]             = useState<Record<string, 'urgent' | 'moins-urgent' | 'oui' | null>>({})
@@ -106,6 +107,23 @@ export default function Ruptures() {
           return c !== 0 ? c : a.name.localeCompare(b.name, 'fr')
         })
         setCatalogueProduits(items)
+      })
+      .catch(() => {})
+
+    // Produits déjà signalés aujourd'hui — bloqués pour éviter les doublons
+    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0)
+    getDocs(query(
+      collection(db, 'ruptures_actives'),
+      where('createdAt', '>=', Timestamp.fromDate(todayStart))
+    ))
+      .then(snap => {
+        const sent = new Set<string>()
+        snap.docs.forEach(d => {
+          const data = d.data() as any
+          ;(data.ruptures || []).forEach((n: string) => sent.add(n))
+          ;(data.presqueRuptures || []).forEach((n: string) => sent.add(n))
+        })
+        setAlreadySentToday(sent)
       })
       .catch(() => {})
   }, [])
@@ -267,6 +285,13 @@ export default function Ruptures() {
         setWaLink(`https://wa.me/33781468107?text=${encodeURIComponent(waMsg)}`)
       }
 
+      // Mémoriser les produits envoyés pour bloquer la re-sélection sur la même journée
+      setAlreadySentToday(prev => {
+        const next = new Set(prev)
+        urgentItems.forEach(n => next.add(n))
+        moinsUrgentItems.forEach(n => next.add(n))
+        return next
+      })
       setStockChecks({})
       setStock([emptyStock()])
       setPhotos(PHOTO_SLOTS_INIT)
@@ -291,10 +316,11 @@ export default function Ruptures() {
   // Articles sélectionnés (urgent ou moins-urgent) — panel entre best-sellers et catalogue
   const selectedEntries = Object.entries(stockChecks).filter(([, v]) => v === 'urgent' || v === 'moins-urgent')
 
-  // Catalogue : exclut les sélectionnés (ils disparaissent de la grille) + filtre recherche
+  // Catalogue : exclut les sélectionnés + déjà envoyés aujourd'hui + filtre recherche
   const selectedSet = new Set(selectedEntries.map(([name]) => name))
   const catalogueFiltered = catalogueProduits
     .filter(p => !selectedSet.has(p.name))
+    .filter(p => !alreadySentToday.has(p.name))
     .filter(p => !catalogueSearch.trim() || p.name.toLowerCase().includes(catalogueSearch.toLowerCase()))
 
   const searchActive = catalogueSearch.trim().length > 0
@@ -308,6 +334,8 @@ export default function Ruptures() {
   const sortedCategories = Object.keys(catalogueByCategory).sort(
     (a, b) => (CAT_ORDER[a] ?? 99) - (CAT_ORDER[b] ?? 99)
   )
+
+  const photosOk = photos.slice(0, 3).every(p => !p.required || p.file !== null)
 
   const { date, time } = nowISO()
 
@@ -360,27 +388,30 @@ export default function Ruptures() {
         {stockProduits.length > 0 ? (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 4 }}>
             {stockProduits.map(name => {
-              const state = stockChecks[name]
-              const isOui    = state === 'oui'
-              const isUrgent = state === 'urgent'
+              const state     = stockChecks[name]
+              const isSent    = alreadySentToday.has(name)
+              const isOui     = state === 'oui'
+              const isUrgent  = state === 'urgent'
               return (
                 <button
                   key={name}
-                  onClick={() => toggleBestSeller(name)}
+                  onClick={isSent ? undefined : () => toggleBestSeller(name)}
+                  disabled={isSent}
                   style={{
-                    background: isOui ? 'rgba(45,122,79,0.09)' : isUrgent ? 'rgba(192,57,43,0.09)' : 'var(--surface-low)',
+                    background: isSent ? 'var(--surface-low)' : isOui ? 'rgba(45,122,79,0.09)' : isUrgent ? 'rgba(192,57,43,0.09)' : 'var(--surface-low)',
                     borderRadius: 10, padding: '11px 10px',
-                    border: isOui ? '1.5px solid rgba(45,122,79,0.30)' : isUrgent ? '1.5px solid rgba(192,57,43,0.28)' : '1.5px solid var(--border-soft)',
-                    cursor: 'pointer', textAlign: 'left', minHeight: 44,
-                    display: 'flex', alignItems: 'center', gap: 6,
+                    border: isSent ? '1.5px solid var(--border-soft)' : isOui ? '1.5px solid rgba(45,122,79,0.30)' : isUrgent ? '1.5px solid rgba(192,57,43,0.28)' : '1.5px solid var(--border-soft)',
+                    cursor: isSent ? 'default' : 'pointer', textAlign: 'left', minHeight: 44,
+                    display: 'flex', alignItems: 'center', gap: 6, opacity: isSent ? 0.45 : 1,
                     transition: 'background 0.12s, border-color 0.12s',
                   }}
                 >
-                  {isOui    && <span style={{ fontSize: 14, flexShrink: 0, color: 'var(--success)', fontWeight: 800 }}>✓</span>}
-                  {isUrgent && <span style={{ fontSize: 14, flexShrink: 0 }}>🔴</span>}
+                  {isSent    && <span style={{ fontSize: 12, flexShrink: 0, color: 'var(--on-surface-3)' }}>✓</span>}
+                  {!isSent && isOui    && <span style={{ fontSize: 14, flexShrink: 0, color: 'var(--success)', fontWeight: 800 }}>✓</span>}
+                  {!isSent && isUrgent && <span style={{ fontSize: 14, flexShrink: 0 }}>🔴</span>}
                   <span style={{
                     fontSize: 13, fontWeight: 600, lineHeight: 1.3, fontFamily: 'Manrope, sans-serif',
-                    color: isOui ? 'var(--success)' : isUrgent ? 'var(--danger)' : 'var(--on-surface)',
+                    color: isSent ? 'var(--on-surface-3)' : isOui ? 'var(--success)' : isUrgent ? 'var(--danger)' : 'var(--on-surface)',
                   }}>
                     {name}
                   </span>
@@ -595,7 +626,7 @@ export default function Ruptures() {
 
       {/* ── 2. Photos vitrine ── */}
       <div className="card">
-        <SectionTitle num="2" label="QUALITÉ &amp; FRAICHEUR (optionnel)" />
+        <SectionTitle num="2" label="QUALITÉ &amp; FRAICHEUR — photos vitrine *" />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           {photos.map((slot, i) => (
             <div key={i}>
@@ -689,8 +720,19 @@ export default function Ruptures() {
         </a>
       )}
 
+      {/* ── Avertissement photos manquantes ── */}
+      {!photosOk && (
+        <div style={{
+          background: 'rgba(180,83,9,0.08)', borderRadius: 12, padding: '10px 14px',
+          fontSize: 12, color: 'var(--warning)', fontWeight: 600, fontFamily: 'Manrope, sans-serif',
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          📷 Les 3 photos vitrine (gauche, centre, droite) sont obligatoires avant l'envoi.
+        </div>
+      )}
+
       {/* ── Bouton envoi messagerie interne ── */}
-      <button onClick={handleSend} disabled={sending} className="btn-primary">
+      <button onClick={handleSend} disabled={sending || !photosOk} className="btn-primary" style={{ opacity: (!photosOk || sending) ? 0.5 : 1 }}>
         {sending
           ? <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
               <div className="spinner" style={{ borderTopColor: '#fff', borderColor: 'rgba(255,255,255,0.3)' }} />

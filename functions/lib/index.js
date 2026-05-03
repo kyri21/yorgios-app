@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.clearRupturesAt13h = exports.incomingSms = exports.createPointage = exports.validatePromoCodePublic = exports.validatePromoCode = exports.syncContactToBrevo = exports.previewNightlyRuptures = exports.sendNightlyRupturesNow = exports.notifNightlyRuptures = exports.gmaoWeeklyReminder = exports.sendGmaoEmail = exports.weeklyHygieneRecap = exports.notifHygieneMensuel = exports.notifHygieneHebdo = exports.notifTemperaturesEvening = exports.notifUrgences = exports.onNonConformiteCreated = exports.onLivraisonReception = exports.onLivraisonTemperature = exports.autoCheckoutSortie = exports.onPointageLate = exports.notifPlatsJour = exports.notifCartonsChambrefroide = exports.notifTooGoodToGo = exports.notifTemperatures = exports.updateUserPassword = exports.deleteUser = exports.createUser = exports.sendPasswordReset = exports.purgeOldMessages = exports.relanceCommandes = exports.updateCommandeStatus = exports.onCommandePrete = exports.notifCommandesJ7 = exports.notifCommandesJJ = exports.notifCommandesJ2 = exports.onCommandeUpdated = exports.onNewCommande = exports.onNewMessage = void 0;
+exports.onCongesDemande = exports.onCongesStatutChange = exports.clearRupturesAt13h = exports.incomingSms = exports.createPointage = exports.validatePromoCodePublic = exports.validatePromoCode = exports.syncContactToBrevo = exports.previewNightlyRuptures = exports.sendNightlyRupturesNow = exports.notifNightlyRuptures = exports.gmaoWeeklyReminder = exports.sendGmaoEmail = exports.weeklyHygieneRecap = exports.notifCostas = exports.notifHygieneMensuel = exports.notifHygieneHebdo = exports.notifTemperaturesEvening = exports.notifUrgences = exports.onNonConformiteCreated = exports.onLivraisonReception = exports.onLivraisonTemperature = exports.autoCheckoutSortie = exports.onPointageLate = exports.notifPlatsJour = exports.notifCartonsChambrefroide = exports.notifTooGoodToGo = exports.notifTemperatures = exports.setUserDisabled = exports.updateUserEmail = exports.updateUserPassword = exports.deleteUser = exports.createUser = exports.sendPasswordReset = exports.purgeOldMessages = exports.relanceCommandes = exports.updateCommandeStatus = exports.onCommandePrete = exports.notifCommandesJ7 = exports.notifCommandesJJ = exports.notifCommandesJ2 = exports.onCommandeUpdated = exports.onNewCommande = exports.onNewMessage = void 0;
 // Node.js 22
 const app_1 = require("firebase-admin/app");
 const firestore_1 = require("firebase-admin/firestore");
@@ -193,7 +193,7 @@ exports.onNewMessage = (0, firestore_2.onDocumentCreated)({ document: 'messages/
 // COMMANDES — Nouvelle commande → notif immédiate (patron + manager + cuisine) + email
 // ─────────────────────────────────────────────────────────────────
 exports.onNewCommande = (0, firestore_2.onDocumentCreated)({ document: 'commandes_externes/{cmdId}', region: 'europe-west1', database: 'test' }, async (event) => {
-    var _a;
+    var _a, _b;
     const cmd = (_a = event.data) === null || _a === void 0 ? void 0 : _a.data();
     if (!cmd)
         return;
@@ -273,10 +273,13 @@ exports.onNewCommande = (0, firestore_2.onDocumentCreated)({ document: 'commande
                 service: 'gmail',
                 auth: { user: gmailUser, pass: gmailPass },
             });
+            const cmdCfgSnap = await db.doc('settings/commandes_emails').get();
+            const cmdCfg = (_b = cmdCfgSnap.data()) !== null && _b !== void 0 ? _b : {};
+            const cmdDest = Array.isArray(cmdCfg.destinataires) && cmdCfg.destinataires.length > 0
+                ? cmdCfg.destinataires : ['a.cozzika@gmail.com'];
             await transporter.sendMail({
                 from: `"Matias" <${gmailUser}>`,
-                to: 'a.cozzika@gmail.com',
-                cc: 'yorgios.system@gmail.com, commande.yorgios@gmail.com',
+                to: cmdDest,
                 subject: `📬 Nouvelle commande — ${cmd.prenom} ${cmd.nom} (${cmd.dateLivraison})`,
                 text: [
                     `Bonjour Alexandre,`,
@@ -636,6 +639,13 @@ a{display:inline-block;background:${color};color:#fff;padding:12px 24px;border-r
 //   Horaires : 6h, 12h, 18h (Europe/Paris) — pas d'envoi entre 20h et 6h
 // ─────────────────────────────────────────────────────────────────
 exports.relanceCommandes = (0, scheduler_1.onSchedule)({ schedule: '0 6,12,18 * * *', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
+    var _a;
+    const cfgSnap = await db.doc('settings/commandes_emails').get();
+    const cfg = (_a = cfgSnap.data()) !== null && _a !== void 0 ? _a : {};
+    if (cfg.relanceEnabled === false) {
+        console.log('[relance] Désactivé dans les paramètres.');
+        return;
+    }
     const gmailUser = process.env.GMAIL_USER;
     const gmailPass = process.env.GMAIL_APP_PASSWORD;
     if (!gmailUser || !gmailPass) {
@@ -714,9 +724,12 @@ exports.relanceCommandes = (0, scheduler_1.onSchedule)({ schedule: '0 6,12,18 * 
         service: 'gmail',
         auth: { user: gmailUser, pass: gmailPass },
     });
+    const destList = Array.isArray(cfg.destinataires) && cfg.destinataires.length > 0
+        ? cfg.destinataires
+        : ['a.cozzika@gmail.com'];
     await transporter.sendMail({
         from: `"Matias" <${gmailUser}>`,
-        to: 'a.cozzika@gmail.com',
+        to: destList,
         subject: `⚠️ ${snap.size} commande(s) En cours — action requise`,
         html: htmlBody,
     });
@@ -830,8 +843,8 @@ exports.updateUserPassword = (0, https_1.onCall)({ region: 'europe-west1' }, asy
     if (!request.auth)
         throw new https_1.HttpsError('unauthenticated', 'Non authentifié');
     const callerSnap = await db.collection('users').doc(request.auth.uid).get();
-    if (!['patron', 'administrateur'].includes((_a = callerSnap.data()) === null || _a === void 0 ? void 0 : _a.role)) {
-        throw new https_1.HttpsError('permission-denied', 'Réservé au patron / administrateur');
+    if (((_a = callerSnap.data()) === null || _a === void 0 ? void 0 : _a.role) !== 'administrateur') {
+        throw new https_1.HttpsError('permission-denied', 'Réservé à l\'administrateur');
     }
     const { uid, password } = request.data;
     if (!uid)
@@ -839,6 +852,52 @@ exports.updateUserPassword = (0, https_1.onCall)({ region: 'europe-west1' }, asy
     if (!password || password.length < 6)
         throw new https_1.HttpsError('invalid-argument', 'Mot de passe minimum 6 caractères');
     await (0, auth_1.getAuth)().updateUser(uid, { password });
+    return { ok: true };
+});
+// ─────────────────────────────────────────────────────────────────
+// ADMIN — Mettre à jour l'email d'un utilisateur
+// ─────────────────────────────────────────────────────────────────
+exports.updateUserEmail = (0, https_1.onCall)({ region: 'europe-west1' }, async (request) => {
+    var _a;
+    if (!request.auth)
+        throw new https_1.HttpsError('unauthenticated', 'Non authentifié');
+    const callerSnap = await db.collection('users').doc(request.auth.uid).get();
+    if (!['patron', 'administrateur'].includes((_a = callerSnap.data()) === null || _a === void 0 ? void 0 : _a.role)) {
+        throw new https_1.HttpsError('permission-denied', 'Réservé au patron / administrateur');
+    }
+    const { uid, email } = request.data;
+    if (!uid)
+        throw new https_1.HttpsError('invalid-argument', 'uid manquant');
+    if (!email || !email.includes('@'))
+        throw new https_1.HttpsError('invalid-argument', 'Email invalide');
+    if (uid === request.auth.uid)
+        throw new https_1.HttpsError('invalid-argument', 'Impossible de modifier son propre email ici');
+    await (0, auth_1.getAuth)().updateUser(uid, { email });
+    await db.collection('users').doc(uid).update({ email, updatedAt: firestore_1.Timestamp.now() });
+    return { ok: true };
+});
+// ─────────────────────────────────────────────────────────────────
+// ADMIN — Désactiver / réactiver un compte utilisateur
+// ─────────────────────────────────────────────────────────────────
+exports.setUserDisabled = (0, https_1.onCall)({ region: 'europe-west1' }, async (request) => {
+    var _a;
+    if (!request.auth)
+        throw new https_1.HttpsError('unauthenticated', 'Non authentifié');
+    const callerSnap = await db.collection('users').doc(request.auth.uid).get();
+    if (!['patron', 'administrateur'].includes((_a = callerSnap.data()) === null || _a === void 0 ? void 0 : _a.role)) {
+        throw new https_1.HttpsError('permission-denied', 'Réservé au patron / administrateur');
+    }
+    const { uid, disabled, disabledUntil } = request.data;
+    if (!uid)
+        throw new https_1.HttpsError('invalid-argument', 'uid manquant');
+    if (uid === request.auth.uid)
+        throw new https_1.HttpsError('invalid-argument', 'Impossible de désactiver son propre compte');
+    await (0, auth_1.getAuth)().updateUser(uid, { disabled });
+    await db.collection('users').doc(uid).update({
+        disabled,
+        disabledUntil: disabledUntil !== null && disabledUntil !== void 0 ? disabledUntil : null,
+        updatedAt: firestore_1.Timestamp.now(),
+    });
     return { ok: true };
 });
 // ─────────────────────────────────────────────────────────────────
@@ -1018,9 +1077,10 @@ exports.onPointageLate = (0, firestore_2.onDocumentCreated)({ document: 'pointag
           <p style="margin:0;font-size:12px;color:#999">Ce retard a été automatiquement enregistré dans le récapitulatif mensuel.</p>
         </div>
       </div>`;
+    const alertTo = await getAlertEmails();
     await transporter.sendMail({
         from: `"Matias" <${gmailUser}>`,
-        to: RESPONSABLES_EMAILS,
+        to: alertTo,
         subject: `⏰ Retard ${data.userName} — ${lateMinutes} min (${dayLabel})`,
         html,
     }).catch((e) => console.error('[retard] Email error:', e));
@@ -1112,7 +1172,13 @@ exports.onLivraisonTemperature = (0, firestore_2.onDocumentCreated)({ document: 
 // Se déclenche à la mise à jour d'un doc livraisons/ quand
 // receptionAt passe de null à une valeur saisie
 // ─────────────────────────────────────────────────────────────────
-const RESPONSABLES_EMAILS = ['a.cozzika@gmail.com', 'kyriazis@outlook.fr', 'sebastien.coenca@gmail.com'];
+const RESPONSABLES_EMAILS_FALLBACK = ['a.cozzika@gmail.com', 'kyriazis@outlook.fr', 'sebastien.coenca@gmail.com'];
+async function getAlertEmails() {
+    var _a, _b;
+    const snap = await db.doc('settings/alert_emails').get();
+    const list = (_b = (_a = snap.data()) === null || _a === void 0 ? void 0 : _a.responsables) !== null && _b !== void 0 ? _b : [];
+    return list.length > 0 ? list : RESPONSABLES_EMAILS_FALLBACK;
+}
 exports.onLivraisonReception = (0, firestore_2.onDocumentUpdated)({ document: 'livraisons/{livId}', region: 'europe-west1', database: 'test' }, async (event) => {
     var _a, _b, _c, _d;
     const before = (_b = (_a = event.data) === null || _a === void 0 ? void 0 : _a.before) === null || _b === void 0 ? void 0 : _b.data();
@@ -1168,9 +1234,10 @@ exports.onLivraisonReception = (0, firestore_2.onDocumentUpdated)({ document: 'l
             <p style="margin:20px 0 0;font-size:11px;color:#999">Un email de confirmation avec la décision du corner sera envoyé dès qu'elle sera enregistrée.</p>
           </div>
         </div>`;
+        const alertTo = await getAlertEmails();
         await transporter.sendMail({
             from: `"Matias" <${gmailUser}>`,
-            to: RESPONSABLES_EMAILS,
+            to: alertTo,
             subject: `❌ ALERTE réception — ${produit} refusé (${tempC != null ? `${tempC}°C` : '?'})`,
             html,
         }).catch((e) => console.error('[livraison-reception] Email error:', e));
@@ -1224,9 +1291,10 @@ exports.onNonConformiteCreated = (0, firestore_2.onDocumentCreated)({ document: 
           <a href="https://cuisine-yorgios.web.app/corner/livraison" style="display:inline-block;background:#004275;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px">Voir dans l'application →</a>
         </div>
       </div>`;
+    const alertTo = await getAlertEmails();
     await transporter.sendMail({
         from: `"Matias" <${gmailUser}>`,
-        to: RESPONSABLES_EMAILS,
+        to: alertTo,
         subject: `📋 NC — ${produit} : ${decision}`,
         html,
     }).catch((e) => console.error('[nc-created] Email error:', e));
@@ -1295,8 +1363,27 @@ exports.notifHygieneMensuel = (0, scheduler_1.onSchedule)({ schedule: '0 18 28-3
     await notifyRoles('🧼 Hygiène mensuelle non faite', "La checklist d'hygiène mensuelle n'a pas encore été complétée ce mois-ci !", '/corner/hygiene', ['corner', 'patron', 'administrateur', 'manager']);
     console.log('[mensuel] Notif hygiène mensuelle envoyée.');
 });
+/** Dimanche 10h00 — Rappel arrosage Costas (corner + patron + admin + manager) */
+exports.notifCostas = (0, scheduler_1.onSchedule)({ schedule: '0 10 * * 0', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
+    var _a, _b;
+    const cfgSnap = await db.doc('settings/notifications').get();
+    const cfg = (_a = cfgSnap.data()) !== null && _a !== void 0 ? _a : {};
+    if (((_b = cfg.costas) === null || _b === void 0 ? void 0 : _b.push) === false) {
+        console.log('[dimanche 10h] notifCostas push désactivé.');
+        return;
+    }
+    await notifyRoles('Costas a soif ! 🌱', "N'oublie pas de donner de l'eau à Costas aujourd'hui.", '/corner', ['corner', 'patron', 'administrateur', 'manager']);
+    console.log('[dimanche 10h] Notif Costas envoyée.');
+});
 /** Lundi 8h00 — Récap hebdo hygiène + températures manquantes (email patron + manager) */
 exports.weeklyHygieneRecap = (0, scheduler_1.onSchedule)({ schedule: '0 8 * * 1', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
+    var _a, _b;
+    const cfgSnap = await db.doc('settings/notifications').get();
+    const cfg = (_a = cfgSnap.data()) !== null && _a !== void 0 ? _a : {};
+    if (((_b = cfg.weeklyHygieneLundi) === null || _b === void 0 ? void 0 : _b.email) === false) {
+        console.log('[lundi 8h] weeklyHygieneRecap email désactivé.');
+        return;
+    }
     const gmailUser = process.env.GMAIL_USER;
     const gmailPass = process.env.GMAIL_APP_PASSWORD;
     if (!gmailUser || !gmailPass) {
@@ -1449,6 +1536,13 @@ exports.gmaoWeeklyReminder = (0, scheduler_1.onSchedule)({
     timeZone: 'Europe/Paris',
     region: 'europe-west1',
 }, async () => {
+    var _a, _b;
+    const cfgSnap = await db.doc('settings/notifications').get();
+    const cfg = (_a = cfgSnap.data()) !== null && _a !== void 0 ? _a : {};
+    if (((_b = cfg.gmaoRappelLundi) === null || _b === void 0 ? void 0 : _b.email) === false) {
+        console.log('[lundi 9h] gmaoWeeklyReminder email désactivé.');
+        return;
+    }
     const snap = await db.collection('gmao_demandes').where('statut', '==', 'en cours').get();
     if (snap.empty)
         return;
@@ -1610,7 +1704,7 @@ exports.notifNightlyRuptures = (0, scheduler_1.onSchedule)({
     timeZone: 'Europe/Paris',
     region: 'europe-west1',
 }, async () => {
-    var _a;
+    var _a, _b;
     // Vérification paramètre on/off + vacances
     const cfgSnap = await db.doc('settings/nightly_ruptures').get();
     const cfg = (_a = cfgSnap.data()) !== null && _a !== void 0 ? _a : {};
@@ -1629,23 +1723,29 @@ exports.notifNightlyRuptures = (0, scheduler_1.onSchedule)({
     const gmailUser = process.env.GMAIL_USER;
     const gmailPass = process.env.GMAIL_APP_PASSWORD;
     const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } });
-    await transporter.sendMail({ from: `"Matias" <${gmailUser}>`, to: 'ytimour86@gmail.com', cc: 'yorgios.system@gmail.com', subject, html });
+    const ccEmails = ((_b = cfg.ccEmails) !== null && _b !== void 0 ? _b : []).filter(Boolean);
+    const ccList = ccEmails.length > 0 ? ccEmails.join(', ') : undefined;
+    await transporter.sendMail({ from: `"Matias" <${gmailUser}>`, to: 'ytimour86@gmail.com', cc: ccList, subject, html });
     console.log('[21h30] Email récap ruptures+commandes envoyé à Timour.');
 });
 /** Callable — test immédiat (patron/admin uniquement) */
 exports.sendNightlyRupturesNow = (0, https_1.onCall)({ region: 'europe-west1' }, async (request) => {
-    var _a;
+    var _a, _b, _c;
     if (!request.auth)
         throw new https_1.HttpsError('unauthenticated', 'Auth required');
     const userDoc = await db.collection('users').doc(request.auth.uid).get();
     const role = (_a = userDoc.data()) === null || _a === void 0 ? void 0 : _a.role;
     if (!['patron', 'administrateur'].includes(role))
         throw new https_1.HttpsError('permission-denied', 'Patron/admin uniquement');
+    const cfgSnap = await db.doc('settings/nightly_ruptures').get();
+    const cfg = (_b = cfgSnap.data()) !== null && _b !== void 0 ? _b : {};
     const { subject, html } = await buildRupturesCommandesEmail();
     const gmailUser = process.env.GMAIL_USER;
     const gmailPass = process.env.GMAIL_APP_PASSWORD;
     const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } });
-    await transporter.sendMail({ from: `"Matias" <${gmailUser}>`, to: 'ytimour86@gmail.com', cc: 'yorgios.system@gmail.com', subject, html });
+    const ccEmails = ((_c = cfg.ccEmails) !== null && _c !== void 0 ? _c : []).filter(Boolean);
+    const ccList = ccEmails.length > 0 ? ccEmails.join(', ') : undefined;
+    await transporter.sendMail({ from: `"Matias" <${gmailUser}>`, to: 'ytimour86@gmail.com', cc: ccList, subject, html });
     return { success: true };
 });
 /** Callable — aperçu sans envoi (patron/admin uniquement) */
@@ -1955,5 +2055,190 @@ exports.clearRupturesAt13h = (0, scheduler_1.onSchedule)({ schedule: '0 13 * * *
     snap.docs.forEach(d => batch.update(d.ref, { viewed: true }));
     await batch.commit();
     console.log(`[13h] ${snap.size} rupture(s) active(s) marquée(s) vues.`);
+});
+// ─────────────────────────────────────────────────────────────────
+// DEMANDE DE CONGÉS — email automatique à la création du doc
+// ─────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+// CONGÉS — helper : écrire/supprimer les events conge dans le planning
+// ─────────────────────────────────────────────────────────────────
+async function applyCongeToPlanning(employeeId, dateDebut, dateFin, remove) {
+    function toISO(d) {
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+    function mondayOf(date) {
+        const d = new Date(date);
+        const day = d.getDay();
+        d.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
+        return d;
+    }
+    // Collecter toutes les dates de la plage
+    const dates = [];
+    const cur = new Date(dateDebut + 'T12:00:00Z');
+    const end = new Date(dateFin + 'T12:00:00Z');
+    while (cur <= end) {
+        dates.push(toISO(cur));
+        cur.setUTCDate(cur.getUTCDate() + 1);
+    }
+    // Grouper par semaine (weekId = lundi ISO)
+    const weekMap = new Map();
+    for (const iso of dates) {
+        const mon = mondayOf(new Date(iso + 'T12:00:00Z'));
+        const wid = toISO(mon);
+        if (!weekMap.has(wid))
+            weekMap.set(wid, { wid, dates: [] });
+        weekMap.get(wid).dates.push(iso);
+    }
+    // Appliquer semaine par semaine
+    for (const { wid, dates: dayDates } of weekMap.values()) {
+        const refs = dayDates.map(iso => db.collection('planningWeeks').doc(wid).collection('events').doc(iso));
+        const snaps = await Promise.all(refs.map(r => r.get()));
+        const batch = db.batch();
+        snaps.forEach((snap, i) => {
+            var _a, _b;
+            const dateISO = dayDates[i];
+            let events = snap.exists ? ((_b = (_a = snap.data()) === null || _a === void 0 ? void 0 : _a.events) !== null && _b !== void 0 ? _b : []) : [];
+            events = events.filter((e) => !(e.empId === employeeId && e.type === 'conge'));
+            if (!remove)
+                events.push({ empId: employeeId, type: 'conge' });
+            batch.set(refs[i], { date: dateISO, events, updatedAt: firestore_1.Timestamp.now(), updatedBy: 'system' });
+        });
+        await batch.commit();
+        console.log(`[conges-planning] Semaine ${wid} — ${remove ? 'supprimé' : 'ajouté'} congé pour emp ${employeeId} (${dayDates.length} jours)`);
+    }
+}
+// ─────────────────────────────────────────────────────────────────
+// CONGÉS — réponse manager : synchro planning + email employé
+// ─────────────────────────────────────────────────────────────────
+exports.onCongesStatutChange = (0, firestore_2.onDocumentUpdated)({ document: 'conges_demandes/{id}', region: 'europe-west1', database: 'test' }, async (event) => {
+    var _a, _b, _c;
+    const before = (_a = event.data) === null || _a === void 0 ? void 0 : _a.before.data();
+    const after = (_b = event.data) === null || _b === void 0 ? void 0 : _b.after.data();
+    if (!before || !after)
+        return;
+    if (before.statut === after.statut)
+        return;
+    const { uid, nom, email, dateDebut, dateFin, statut: newStatut, commentaire, traitePar } = after;
+    const oldStatut = before.statut;
+    // ── Synchro planning ──────────────────────────────────────
+    if (uid && dateDebut && dateFin) {
+        const userSnap = await db.collection('users').doc(uid).get();
+        const employeeId = (_c = userSnap.data()) === null || _c === void 0 ? void 0 : _c.employeeId;
+        if (employeeId) {
+            if (newStatut === 'Acceptée') {
+                await applyCongeToPlanning(employeeId, dateDebut, dateFin, false);
+            }
+            else if (oldStatut === 'Acceptée') {
+                await applyCongeToPlanning(employeeId, dateDebut, dateFin, true);
+            }
+        }
+        else {
+            console.warn(`[conges] Pas d'employeeId pour uid=${uid} — planning non mis à jour`);
+        }
+    }
+    // ── Email à l'employé ─────────────────────────────────────
+    if (newStatut !== 'Acceptée' && newStatut !== 'Refusée')
+        return;
+    if (!email)
+        return;
+    const gmailUser = process.env.GMAIL_USER;
+    const gmailPass = process.env.GMAIL_APP_PASSWORD;
+    if (!gmailUser || !gmailPass)
+        return;
+    const accepted = newStatut === 'Acceptée';
+    const emoji = accepted ? '✅' : '❌';
+    const color = accepted ? '#2d7a4f' : '#c0392b';
+    const traiteParLabel = traitePar || 'La direction';
+    const html = `
+      <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto">
+        <div style="background:${color};padding:20px 24px;border-radius:10px 10px 0 0">
+          <h2 style="color:#fff;margin:0;font-size:20px">${emoji} Demande de congés ${accepted ? 'acceptée' : 'refusée'}</h2>
+        </div>
+        <div style="background:#f9f6ef;padding:24px;border-radius:0 0 10px 10px;border:1px solid #e5e2dc">
+          <p style="margin:0 0 14px;font-size:14px;color:#1c1c18">Bonjour ${nom},</p>
+          <p style="margin:0 0 14px;font-size:14px;color:#1c1c18">
+            Votre demande de congés du <strong>${dateDebut}</strong> au <strong>${dateFin}</strong>
+            a été <strong>${accepted ? 'acceptée ✓' : 'refusée ✗'}</strong> par ${traiteParLabel}.
+          </p>
+          ${commentaire ? `<div style="background:#ede9e1;border-radius:8px;padding:12px 16px;margin:0 0 14px;font-size:13px;color:#1c1c18"><strong>Commentaire :</strong><br>${commentaire}</div>` : ''}
+          ${!accepted ? `<p style="margin:0;font-size:13px;color:#5a5a55">N'hésitez pas à contacter votre manager pour plus d'informations.</p>` : ''}
+          <p style="margin:18px 0 0;font-size:11px;color:#9a9a94">Matias PWA</p>
+        </div>
+      </div>`;
+    const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } });
+    await transporter.sendMail({
+        from: `"Matias App" <${gmailUser}>`,
+        to: email,
+        subject: `${emoji} Congés ${accepted ? 'acceptés' : 'refusés'} — ${dateDebut} → ${dateFin}`,
+        html,
+    });
+    console.log(`[conges] Réponse "${newStatut}" envoyée à ${email} pour ${nom}`);
+});
+// ─────────────────────────────────────────────────────────────────
+// DEMANDE DE CONGÉS — email automatique à la création du doc
+// ─────────────────────────────────────────────────────────────────
+exports.onCongesDemande = (0, firestore_2.onDocumentCreated)({ document: 'conges_demandes/{id}', region: 'europe-west1', database: 'test' }, async (event) => {
+    var _a, _b;
+    const data = (_a = event.data) === null || _a === void 0 ? void 0 : _a.data();
+    if (!data)
+        return;
+    const gmailUser = process.env.GMAIL_USER;
+    const gmailPass = process.env.GMAIL_APP_PASSWORD;
+    if (!gmailUser || !gmailPass) {
+        console.error('[conges] GMAIL_USER / GMAIL_APP_PASSWORD manquants');
+        return;
+    }
+    // Destinataires depuis settings/emails, fallback Alexandre + Arthur
+    const emailsSnap = await db.doc('settings/emails').get();
+    const raw = (_b = emailsSnap.data()) === null || _b === void 0 ? void 0 : _b.congesDestinataires;
+    let dest = [];
+    if (Array.isArray(raw) && raw.length > 0)
+        dest = raw;
+    else if (typeof raw === 'string')
+        dest = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    if (dest.length === 0)
+        dest = ['a.cozzika@gmail.com', 'kyriazis@outlook.fr'];
+    const nom = data.nom || data.email || 'Employé inconnu';
+    const email = data.email || '';
+    const dateDebut = data.dateDebut || '?';
+    const dateFin = data.dateFin || '?';
+    const motif = data.motif || '—';
+    const now = new Date().toLocaleString('fr-FR', { timeZone: 'Europe/Paris' });
+    const html = `
+      <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto">
+        <div style="background:#004275;padding:20px 24px;border-radius:10px 10px 0 0">
+          <h2 style="color:#fff;margin:0;font-size:20px">🏖 Demande de congés — ${nom}</h2>
+        </div>
+        <div style="background:#f9f6ef;padding:24px;border-radius:0 0 10px 10px;border:1px solid #e5e2dc">
+          <table style="width:100%;border-collapse:collapse">
+            <tr>
+              <td style="padding:8px 0;color:#5a5a55;font-size:13px;width:140px">Demandeur</td>
+              <td style="padding:8px 0;font-weight:700;color:#1c1c18;font-size:13px">${nom}${email ? ` &lt;${email}&gt;` : ''}</td>
+            </tr>
+            <tr style="background:#ede9e1">
+              <td style="padding:8px 12px;color:#5a5a55;font-size:13px;border-radius:4px">Du</td>
+              <td style="padding:8px 12px;font-weight:700;color:#1c1c18;font-size:13px">${dateDebut}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 0;color:#5a5a55;font-size:13px">Au</td>
+              <td style="padding:8px 0;font-weight:700;color:#1c1c18;font-size:13px">${dateFin}</td>
+            </tr>
+            <tr style="background:#ede9e1">
+              <td style="padding:8px 12px;color:#5a5a55;font-size:13px;border-radius:4px;vertical-align:top">Motif</td>
+              <td style="padding:8px 12px;color:#1c1c18;font-size:13px">${motif}</td>
+            </tr>
+          </table>
+          <p style="margin:16px 0 0;font-size:11px;color:#9a9a94">Reçu le ${now} — Matias PWA</p>
+        </div>
+      </div>`;
+    const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } });
+    await transporter.sendMail({
+        from: `"Matias App" <${gmailUser}>`,
+        to: dest[0],
+        cc: dest.slice(1).join(',') || undefined,
+        subject: `🏖 Demande de congés — ${nom} (${dateDebut} → ${dateFin})`,
+        html,
+    });
+    console.log(`[conges] Email envoyé à ${dest.join(', ')} pour ${nom}`);
 });
 //# sourceMappingURL=index.js.map
