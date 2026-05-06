@@ -51,7 +51,7 @@ service cloud.firestore {
       allow read:   if isAnyRole();     // corner lit les lots pour la Vitrine
       allow create: if isCuisine();     // seule la cuisine crée des lots
       allow update: if isAnyRole();     // corner archive/renvoie ; cuisine marque sent
-      allow delete: if isCorner();      // corner peut supprimer (Vitrine — gestionnaire lots)
+      allow delete: if isAnyRole();     // cuisine + corner peuvent supprimer leurs lots
     }
     match /lot_counters/{doc} {
       allow read, write: if isCuisine();
@@ -92,7 +92,7 @@ service cloud.firestore {
       // Corner met à jour la réception (receptionTempC, result)
       // Patron/manager peuvent aussi modifier pour les corrections
       allow update: if isCorner();
-      allow delete: if isPatronOrManager();
+      allow delete: if isCuisine();     // cuisine peut supprimer ses propres départs
     }
 
     // ─── Corner ─────────────────────────────────────────────────
@@ -243,6 +243,13 @@ service cloud.firestore {
     match /creta_gel_docs/{id} {
       allow read: if isAnyRole();
       allow create, update, delete: if isPatronOrManager();
+    }
+
+    // ─── Actions correctives HACCP ────────────────────────────────
+    match /actions_correctives/{id} {
+      allow read: if isAnyRole();
+      allow create: if isAnyRole();
+      allow update, delete: if isPatronOrManager();
     }
   }
 }

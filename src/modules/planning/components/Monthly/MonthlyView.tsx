@@ -23,6 +23,7 @@ type Tab = 'stats' | 'primes'
 export function MonthlyView({ month, employees, canEdit, uid }: Props) {
   const [stats, setStats]         = useState<MonthlyEmployeeStats[]>([])
   const [weeks, setWeeks]         = useState<Date[]>([])
+  const [rawWeekData, setRawWeekData] = useState<{ mon: Date; events: WeekEvents }[]>([])
   const [loading, setLoading]     = useState(false)
   const [tab, setTab]             = useState<Tab>('stats')
   const [primeMois, setPrimeMois]   = useState<PrimeMois | null>(null)
@@ -84,6 +85,7 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
         return { empId: emp.id, name: emp.name, weeks: weekCounters, total }
       })
       setStats(empStats)
+      setRawWeekData(weekData.map(({ mon, events }) => ({ mon, events })))
       setLoading(false)
     }
     load()
@@ -130,7 +132,11 @@ export function MonthlyView({ month, employees, canEdit, uid }: Props) {
         <div style={{ flex: 1 }} />
         {tab === 'stats' && (
           <>
-            <button onClick={() => exportMonthlyExcel(month, employees.filter(e => !EXCLUDED_NAMES.includes(e.name) && !e.subStatus), stats)} disabled={stats.length === 0}
+            <button onClick={() => {
+              const primesMap: Record<string, number | null> = {}
+              stats.forEach(s => { primesMap[s.empId] = getPrime(s.empId) })
+              exportMonthlyExcel(month, employees.filter(e => !EXCLUDED_NAMES.includes(e.name) && !e.subStatus), stats, weeks, rawWeekData, primesMap)
+            }} disabled={stats.length === 0}
               style={{ background: '#16a34a', border: 'none', color: '#fff', borderRadius: '8px', padding: '5px 12px', cursor: 'pointer', fontSize: '11px', fontWeight: 600, opacity: stats.length === 0 ? 0.5 : 1 }}>
               📊 Excel
             </button>

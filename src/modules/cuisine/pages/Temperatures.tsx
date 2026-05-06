@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Timestamp, collection, doc, getDoc, getDocs, query, setDoc, where } from 'firebase/firestore'
+import { useEffect, useMemo, useState } from 'react'
+import { Timestamp, addDoc, collection, doc, getDoc, getDocs, query, setDoc, where } from 'firebase/firestore'
 import { db, auth } from '../../../firebase/config'
 import { useToast } from '../../../hooks/useToast'
+import { useAuth } from '../../../auth/useAuth'
+import ActionCorrectiveModal, { type AcPayload } from '../../../components/ActionCorrectiveModal'
 
 const ALERT_MAX = 4
 
@@ -57,10 +59,18 @@ type SlotState = { temp: string; savedTemp?: number; status?: 'OK' | 'ALERTE' }
 type RowState  = Record<Session, SlotState>
 type CellData  = { tempC: number | null; status: 'OK' | 'ALERTE' | null }
 type WeekData  = Record<string, Record<string, Record<Session, CellData>>>
+type AcItem    = { id: string; problem: string; action: string; fridgeId?: string; session?: string; createdByName?: string; createdAt?: any }
 
 export default function Temperatures() {
   const { show } = useToast()
-  const [tab, setTab]           = useState<'saisie' | 'semaine'>('saisie')
+  const { user } = useAuth()
+  const [tab, setTab]           = useState<'saisie' | 'semaine' | 'actions'>('saisie')
+  const [acModal, setAcModal]   = useState<AcPayload | null>(null)
+  const [documented, setDocumented] = useState<Set<string>>(new Set())
+  const [acList, setAcList]     = useState<AcItem[]>([])
+  const [acLoading, setAcLoading] = useState(false)
+  const [editAc, setEditAc]     = useState<AcItem | null>(null)
+  const isManager = ['patron', 'administrateur', 'manager'].includes(user?.role ?? '')
   const [alertMin, setAlertMin] = useState(-3)
 
   const [date, setDate]         = useState(todayISO())
@@ -101,6 +111,21 @@ export default function Temperatures() {
     setRows(next)
   }
 
+  async function loadAcForDate(d: string) {
+    setAcLoading(true)
+    try {
+      const snap = await getDocs(query(
+        collection(db, 'actions_correctives'),
+        where('type', '==', 'temperature_frigo'),
+        where('date', '==', d),
+      ))
+      const items = snap.docs.map(s => ({ id: s.id, ...(s.data() as any) })) as AcItem[]
+      setAcList(items)
+      const keys = new Set(items.map(i => `${i.fridgeId}_${i.session}`).filter(Boolean))
+      setDocumented(keys)
+    } finally { setAcLoading(false) }
+  }
+
   useEffect(() => {
     async function init() {
       try {
@@ -108,6 +133,7 @@ export default function Temperatures() {
         if (snap.exists()) { const v = (snap.data() as any).alertMinC; if (typeof v === 'number') setAlertMin(v) }
       } catch {}
       loadForDate(date).catch(e => setError(e?.message))
+      loadAcForDate(date)
     }
     init()
   }, [])
@@ -206,9 +232,23 @@ export default function Temperatures() {
       </div>
 
       {/* ── Tabs ─────────────────────────────────────────────────── */}
-      <div className="nav-tabs">
-        <button className={`nav-tab${tab === 'saisie' ? ' active' : ''}`} onClick={() => setTab('saisie')}>✏️ Saisie</button>
-        <button className={`nav-tab${tab === 'semaine' ? ' active' : ''}`} onClick={() => setTab('semaine')}>📊 Semaine</button>
+      <div style={{
+        display: 'flex', gap: 4, padding: 4,
+        background: 'var(--surface-mid)', borderRadius: 14,
+      }}>
+        {(['saisie', 'semaine', 'actions'] as const).map(t => (
+          <button key={t} onClick={() => { setTab(t); if (t === 'actions') loadAcForDate(date) }} style={{
+            flex: 1, padding: '9px 0', borderRadius: 10, border: 'none',
+            fontSize: 13, fontWeight: 700, cursor: 'pointer',
+            fontFamily: 'Manrope, sans-serif',
+            background: tab === t ? 'var(--surface)' : 'transparent',
+            color: tab === t ? 'var(--primary)' : 'var(--on-surface-3)',
+            boxShadow: tab === t ? '0 1px 6px rgba(28,28,24,0.08)' : 'none',
+            transition: 'all 0.15s',
+          }}>
+            {t === 'saisie' ? '✏️ Saisie' : t === 'semaine' ? '📊 Semaine' : '📋 Actions'}
+          </button>
+        ))}
       </div>
 
       {/* ── ONGLET SAISIE ─────────────────────────────────────── */}
@@ -303,7 +343,6 @@ export default function Temperatures() {
                             {s === 'matin' ? '☀ Matin (08:00)' : '🌙 Soir (20:00)'}
                           </p>
 
-                          {/* Grand affichage si valeur enregistrée */}
                           {slot.savedTemp != null ? (
                             <div style={{ marginBottom: 6 }}>
                               <span className="temp-display" style={{
@@ -354,6 +393,111 @@ export default function Temperatures() {
             <p style={{ textAlign: 'center', color: 'var(--success)', fontSize: 13, fontWeight: 700, margin: 0 }}>
               ✓ Relevés enregistrés avec succès
             </p>
+          )}
+
+          {/* Actions correctives requises après sauvegarde */}
+          {savedOk && anyAlert && (() => {
+            const alerts = FRIDGES.flatMap(f =>
+              SESSIONS.filter(s => rows[f.id]?.[s]?.status === 'ALERTE').map(s => ({ f, s, tempC: rows[f.id][s].savedTemp ?? 0 }))
+            )
+            return alerts.length === 0 ? null : (
+              <div style={{
+                padding: '14px 16px', borderRadius: 12,
+                background: 'rgba(192,57,43,0.06)', border: '1px solid rgba(192,57,43,0.2)',
+              }}>
+                <p style={{ fontWeight: 700, color: 'var(--danger)', fontSize: 13, margin: '0 0 10px', fontFamily: 'Epilogue, sans-serif' }}>
+                  ⚠️ Actions correctives à documenter
+                </p>
+                {alerts.map(({ f, s, tempC }) => {
+                  const key = `${f.id}_${s}`
+                  const done = documented.has(key)
+                  const problem = `Température hors norme — ${f.name} (${s}) : ${tempC}°C (seuil : ${alertMin}°C — ${ALERT_MAX}°C)`
+                  return (
+                    <div key={key} style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      gap: 10, padding: '8px 0',
+                      borderTop: '1px solid rgba(192,57,43,0.1)',
+                    }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--on-surface)' }}>{f.name} — {s}</div>
+                        <div style={{ fontSize: 11, color: 'var(--danger)' }}>{tempC}°C</div>
+                      </div>
+                      {done ? (
+                        <span style={{
+                          fontSize: 11, fontWeight: 700, padding: '4px 10px', borderRadius: 20,
+                          background: 'rgba(45,122,79,0.1)', color: 'var(--success)',
+                        }}>✓ Documenté</span>
+                      ) : (
+                        <button
+                          onClick={() => setAcModal({
+                            type: 'temperature_frigo', date,
+                            refId: `${date}_${f.id}_${s}`,
+                            fridgeId: f.id, fridgeName: f.name, session: s,
+                            tempC, alertMin, alertMax: ALERT_MAX,
+                            problem,
+                          })}
+                          style={{
+                            padding: '6px 12px', borderRadius: 10, fontSize: 12, fontWeight: 700,
+                            border: '1px solid rgba(192,57,43,0.3)', background: 'rgba(192,57,43,0.08)',
+                            color: 'var(--danger)', cursor: 'pointer', whiteSpace: 'nowrap',
+                            fontFamily: 'Manrope, sans-serif',
+                          }}
+                        >
+                          Documenter
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })()}
+        </>
+      )}
+
+      {/* ── ONGLET ACTIONS CORRECTIVES ─────────────────────────── */}
+      {tab === 'actions' && (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <input type="date" value={date} onChange={e => { setDate(e.target.value); loadAcForDate(e.target.value) }}
+              className="input-filled" style={{ flex: 1 }} />
+            <button
+              onClick={() => setAcModal({ type: 'temperature_frigo', date, refId: `manual_${Date.now()}`, problem: '' })}
+              style={{ padding: '8px 14px', borderRadius: 10, border: 'none', cursor: 'pointer', background: 'var(--primary)', color: '#fff', fontSize: 12, fontWeight: 700, fontFamily: 'Manrope, sans-serif', whiteSpace: 'nowrap' }}
+            >➕ Ajouter</button>
+          </div>
+          {acLoading ? (
+            <div style={{ textAlign: 'center', padding: '30px 0' }}><div className="spinner" style={{ margin: '0 auto' }} /></div>
+          ) : acList.length === 0 ? (
+            <div className="card" style={{ textAlign: 'center', padding: '32px 20px' }}>
+              <div style={{ fontSize: 36, marginBottom: 8 }}>📋</div>
+              <p style={{ fontFamily: 'Epilogue, sans-serif', fontWeight: 700, fontSize: 15, color: 'var(--on-surface)', margin: '0 0 4px' }}>Aucune action corrective</p>
+              <p style={{ fontSize: 13, color: 'var(--on-surface-3)', margin: 0 }}>pour cette date</p>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {acList.map(ac => (
+                <div key={ac.id} className="card" style={{ padding: '14px 16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--danger)', marginBottom: 2 }}>{ac.problem}</div>
+                      <div style={{ fontSize: 11, color: 'var(--on-surface-3)' }}>
+                        par {ac.createdByName || '—'} · {ac.createdAt?.toDate ? ac.createdAt.toDate().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 99, background: 'rgba(45,122,79,0.1)', color: 'var(--success)', whiteSpace: 'nowrap' }}>✓ Documenté</span>
+                      {isManager && (
+                        <button onClick={() => setEditAc(ac)} style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface-low)', cursor: 'pointer', fontSize: 12 }}>✏️</button>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ padding: '10px 12px', borderRadius: 10, background: 'var(--surface-low)', fontSize: 13, color: 'var(--on-surface)', fontFamily: 'Manrope, sans-serif', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+                    {ac.action}
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
         </>
       )}
@@ -486,6 +630,30 @@ export default function Temperatures() {
             </div>
           )}
         </>
+      )}
+
+      {acModal && (
+        <ActionCorrectiveModal
+          payload={acModal}
+          createdByName={user?.displayName || user?.email?.split('@')[0] || ''}
+          onClose={() => setAcModal(null)}
+          onSaved={() => {
+            setDocumented(prev => new Set([...prev, `${acModal.fridgeId}_${acModal.session}`]))
+            loadAcForDate(date)
+          }}
+        />
+      )}
+      {editAc && (
+        <ActionCorrectiveModal
+          payload={{ type: 'temperature_frigo', date, refId: editAc.id, problem: editAc.problem }}
+          createdByName={user?.displayName || user?.email?.split('@')[0] || ''}
+          onClose={() => setEditAc(null)}
+          onSaved={() => { setEditAc(null); loadAcForDate(date) }}
+          editId={editAc.id}
+          initialAction={editAc.action}
+          canDelete={isManager}
+          onDeleted={() => { setEditAc(null); loadAcForDate(date) }}
+        />
       )}
     </div>
   )

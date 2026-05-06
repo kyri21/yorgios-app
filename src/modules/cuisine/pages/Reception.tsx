@@ -1,4 +1,5 @@
 import { lazy, Suspense, useMemo, useState, useEffect } from "react";
+import ActionCorrectiveModal, { type AcPayload } from '../../../components/ActionCorrectiveModal'
 import {
   Timestamp,
   collection,
@@ -211,6 +212,9 @@ export default function Reception() {
 
   const [commentaire, setCommentaire] = useState("");
   const [lastPhotoUrl, setLastPhotoUrl] = useState<string | null>(null);
+  const [savedOk, setSavedOk] = useState(false)
+  const [pendingAcPayload, setPendingAcPayload] = useState<AcPayload | null>(null)
+  const [acModalOpen, setAcModalOpen] = useState(false)
 
   useEffect(() => {
     if (!photoFile) {
@@ -245,6 +249,8 @@ export default function Reception() {
     e.preventDefault();
     setError(null);
     setLastPhotoUrl(null);
+    setSavedOk(false);
+    setPendingAcPayload(null);
 
     const productName = selectedProduit?.name || productNameFree.trim();
     const t = Number(temperatureC);
@@ -331,7 +337,22 @@ export default function Reception() {
       setPhotoFile(null);
       setCommentaire("");
 
-      alert("Réception enregistrée ✅");
+      setSavedOk(true);
+      const resolvedFournisseur = fournisseur === 'Autre' ? fournisseurAutre.trim() : fournisseur.trim();
+      const savedDecision = computeDecisionV1(category, t);
+      if (savedDecision !== 'ACCEPTE') {
+        setPendingAcPayload({
+          type: 'temperature_reception',
+          date: receivedAt.split('T')[0],
+          refId: docRef.id,
+          productName,
+          fournisseur: resolvedFournisseur,
+          category,
+          tempC: t,
+          decision: savedDecision,
+          problem: `Température hors norme à la réception — ${productName} (${resolvedFournisseur}) : ${t}°C — Décision : ${savedDecision}`,
+        });
+      }
     } catch (err: any) {
       console.error(err);
       setError(err?.message || "Erreur lors de l'enregistrement.");
@@ -987,7 +1008,47 @@ export default function Reception() {
         </button>
 
       </form>
+
+      {savedOk && !pendingAcPayload && (
+        <p style={{ textAlign: 'center', color: 'var(--success)', fontSize: 13, fontWeight: 700, margin: '8px 0 0' }}>
+          ✅ Réception enregistrée avec succès
+        </p>
+      )}
+
+      {pendingAcPayload && (
+        <div style={{
+          padding: '14px 16px', borderRadius: 12, marginTop: 8,
+          background: 'rgba(180,83,9,0.07)', border: '1px solid rgba(180,83,9,0.2)',
+        }}>
+          <p style={{ fontWeight: 700, color: 'var(--warning)', fontSize: 13, margin: '0 0 6px', fontFamily: 'Epilogue, sans-serif' }}>
+            📝 Réception enregistrée — action corrective requise
+          </p>
+          <p style={{ fontSize: 12, color: 'var(--on-surface-2)', margin: '0 0 10px', lineHeight: 1.4 }}>
+            {pendingAcPayload.problem}
+          </p>
+          <button
+            type="button"
+            onClick={() => setAcModalOpen(true)}
+            style={{
+              padding: '8px 16px', borderRadius: 10, fontSize: 13, fontWeight: 700,
+              border: '1px solid rgba(180,83,9,0.3)', background: 'rgba(180,83,9,0.1)',
+              color: 'var(--warning)', cursor: 'pointer', fontFamily: 'Manrope, sans-serif',
+            }}
+          >
+            Documenter l'action corrective
+          </button>
+        </div>
+      )}
       </>)}
+
+      {acModalOpen && pendingAcPayload && (
+        <ActionCorrectiveModal
+          payload={pendingAcPayload}
+          createdByName={auth.currentUser?.displayName || auth.currentUser?.email?.split('@')[0] || ''}
+          onClose={() => setAcModalOpen(false)}
+          onSaved={() => { setAcModalOpen(false); setPendingAcPayload(null); }}
+        />
+      )}
     </div>
   );
 }

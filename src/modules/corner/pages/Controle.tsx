@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Timestamp, collection, getDocs, orderBy, query } from 'firebase/firestore'
+import { Timestamp, collection, getDocs, orderBy, query, where } from 'firebase/firestore'
 import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -26,6 +26,11 @@ type HygieneDoc = {
   id: string; type: 'quotidien' | 'hebdo' | 'mensuel'
   items: Record<string, boolean>; createdAt?: any
 }
+type AcDoc = {
+  id: string; type: string; date: string; problem: string; action: string
+  fridgeName?: string; session?: string; tempC?: number
+  productName?: string; fournisseur?: string; createdByName?: string; createdAt?: any
+}
 type Report = {
   temperatures: TempDoc[]
   livraisons: LivraisonDoc[]
@@ -33,6 +38,7 @@ type Report = {
   vitrineEntrees: StockDoc[]
   vitrineSorties: StockDoc[]
   hygiene: HygieneDoc[]
+  actionsCorrectivesReport: AcDoc[]
   dateFrom: string
   dateTo: string
 }
@@ -176,7 +182,20 @@ function buildVitrineTable(report: Report): { head: string[]; rows: string[][] }
   return { head, rows }
 }
 
-// 4. Livraisons — 1 ligne = 1 livraison, colonnes fixes
+// 4. Actions correctives — 1 ligne = 1 action
+function buildActionsCorrectivesTable(report: Report): { head: string[]; rows: string[][] } {
+  const head = ['Date', 'Type', 'Problème', 'Action réalisée', 'Par']
+  const rows = report.actionsCorrectivesReport.map(ac => [
+    fmtDate(ac.date),
+    ac.type === 'temperature_frigo' ? 'Température frigo' : 'Température réception',
+    ac.problem,
+    ac.action,
+    ac.createdByName || '—',
+  ])
+  return { head, rows }
+}
+
+// 5. Livraisons — 1 ligne = 1 livraison, colonnes fixes
 function buildLivraisonsTable(report: Report): { head: string[]; rows: string[][] } {
   const head = ['Produit', 'N° Lot', 'Catégorie', 'T° Départ (°C)', 'Date/Heure départ', 'T° Réception (°C)', 'Date/Heure réception', 'Résultat', 'Action corrective']
   const rows = report.livraisons.map(l => {
@@ -229,6 +248,9 @@ function exportExcel(report: Report) {
 
   const liv = buildLivraisonsTable(report)
   addSheet('Livraisons', liv.head, liv.rows)
+
+  const ac = buildActionsCorrectivesTable(report)
+  if (ac.rows.length > 0) addSheet('Actions correctives', ac.head, ac.rows)
 
   XLSX.writeFile(wb, `controle_hygiene_${report.dateFrom}_${report.dateTo}.xlsx`)
 }
@@ -300,6 +322,9 @@ function exportPDF(report: Report) {
   addTable('✅ Hygiène Mensuel',             hyqM.head, hyqM.rows, false)
   addTable('🫙 Vitrine',                     vit.head,  vit.rows,  false)
   addTable('🚚 Températures livraisons',     liv.head,  liv.rows,  false)
+
+  const acPdf = buildActionsCorrectivesTable(report)
+  if (acPdf.rows.length > 0) addTable('📝 Actions correctives', acPdf.head, acPdf.rows, false)
 
   doc.save(`controle_hygiene_${report.dateFrom}_${report.dateTo}.pdf`)
 }
@@ -397,7 +422,14 @@ export default function Controle() {
           return { id: d.id, ...data, type } as HygieneDoc
         })
 
-      setReport({ temperatures, livraisons, nonConformites, vitrineEntrees, vitrineSorties, hygiene, dateFrom, dateTo })
+      const acSnap = await getDocs(
+        query(collection(db, 'actions_correctives'),
+          where('date', '>=', dateFrom),
+          where('date', '<=', dateTo))
+      )
+      const actionsCorrectivesReport: AcDoc[] = acSnap.docs.map(d => ({ id: d.id, ...(d.data() as any) } as AcDoc))
+
+      setReport({ temperatures, livraisons, nonConformites, vitrineEntrees, vitrineSorties, hygiene, actionsCorrectivesReport, dateFrom, dateTo })
     } catch (e: any) {
       setError(e?.message || 'Erreur lors de la génération')
     } finally {
@@ -459,6 +491,7 @@ export default function Controle() {
               <Stat label="Livraisons" value={report.livraisons.length} />
               <Stat label="Mouvements vitrine" value={report.vitrineEntrees.length + report.vitrineSorties.length} />
               <Stat label="Checklists" value={report.hygiene.length} />
+              <Stat label="Actions correctives" value={report.actionsCorrectivesReport.length} />
             </div>
           </div>
 
@@ -543,6 +576,13 @@ export default function Controle() {
             }
           </ReportSection>
 
+          <ReportSection icon="📝" title="Actions correctives" count={report.actionsCorrectivesReport.length}>
+            {report.actionsCorrectivesReport.length === 0
+              ? <EmptyState text="Aucune action corrective" />
+              : <PreviewTable {...buildActionsCorrectivesTable(report)} maxRows={5} />
+            }
+          </ReportSection>
+
           <div style={{ height: 8 }} />
         </div>
       )}
@@ -581,10 +621,11 @@ function EmptyState({ text }: { text: string }) {
   return <div style={{ fontSize: 13, color: 'var(--on-surface-3)', textAlign: 'center', padding: '12px 0' }}>{text}</div>
 }
 
-// Aperçu tableau tronqué (max N lignes + "... et X de plus")
+// Aperçu tableau tronqué avec toggle "afficher tout / rétracter"
 function PreviewTable({ head, rows, maxRows }: { head: string[]; rows: (string | number)[][]; maxRows: number }) {
-  const shown = rows.slice(0, maxRows)
-  const rest = rows.length - shown.length
+  const [expanded, setExpanded] = useState(false)
+  const shown = expanded ? rows : rows.slice(0, maxRows)
+  const hidden = rows.length - maxRows
   return (
     <div style={{ overflowX: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
@@ -619,10 +660,19 @@ function PreviewTable({ head, rows, maxRows }: { head: string[]; rows: (string |
           ))}
         </tbody>
       </table>
-      {rest > 0 && (
-        <div style={{ fontSize: 11, color: 'var(--on-surface-3)', textAlign: 'center', padding: '8px 0' }}>
-          … et {rest} ligne{rest > 1 ? 's' : ''} de plus (visible dans l'export)
-        </div>
+      {hidden > 0 && (
+        <button
+          onClick={() => setExpanded(v => !v)}
+          style={{
+            display: 'block', width: '100%', padding: '8px 0',
+            fontSize: 11, fontWeight: 600, cursor: 'pointer',
+            color: 'var(--primary)', background: 'rgba(0,66,117,0.05)',
+            border: 'none', borderTop: '1px solid rgba(0,66,117,0.12)',
+            borderRadius: '0 0 8px 8px', textAlign: 'center',
+          }}
+        >
+          {expanded ? '▲ Rétracter' : `▼ Afficher tout (${hidden} ligne${hidden > 1 ? 's' : ''} de plus)`}
+        </button>
       )}
     </div>
   )

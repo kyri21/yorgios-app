@@ -29,6 +29,7 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
   const [showSettings, setShowSettings] = useState(false)
   const [saving, setSaving]           = useState(false)
   const [saved, setSaved]             = useState(false)
+  const [saveError, setSaveError]     = useState(false)
   const [loading, setLoading]         = useState(true)
 
   useEffect(() => {
@@ -41,10 +42,20 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
       getDoc(doc(db, 'settings', 'primes_ca')),
       getDoc(doc(db, 'settings', 'contrats')),
     ]).then(([mois, emps, caSnap, caSettingsSnap, contratsSnap]) => {
+      // Utiliser des variables locales pour onPrimesChange — setState est async
+      let loadedPaliers: CaPalier[] = DEFAULT_CA_PALIERS
+      let loadedMaxPrimes: CaMaxPrimes = DEFAULT_CA_MAX_PRIMES
+
       if (caSettingsSnap.exists()) {
         const d = caSettingsSnap.data() as any
-        if (Array.isArray(d.paliers) && d.paliers.every((p: any) => 'pct' in p)) setCaPaliers(d.paliers)
-        if (d.maxPrimes && typeof d.maxPrimes === 'object') setCaMaxPrimes(d.maxPrimes)
+        if (Array.isArray(d.paliers) && d.paliers.every((p: any) => 'pct' in p)) {
+          loadedPaliers = d.paliers
+          setCaPaliers(d.paliers)
+        }
+        if (d.maxPrimes && typeof d.maxPrimes === 'object') {
+          loadedMaxPrimes = d.maxPrimes
+          setCaMaxPrimes(d.maxPrimes)
+        }
       }
       if (contratsSnap.exists()) {
         const d = contratsSnap.data() as any
@@ -53,9 +64,9 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
             (c: ContractType, idx: number, arr: ContractType[]) => arr.findIndex(x => x.hours === c.hours) === idx
           )
           setContracts(loaded)
-          // Sync caMaxPrimes depuis les contrats chargés
           const derived: CaMaxPrimes = {}
           loaded.forEach(c => { derived[c.hours] = c.caMax })
+          loadedMaxPrimes = derived
           setCaMaxPrimes(derived)
         }
       }
@@ -74,7 +85,7 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
       const base: PrimeMois = { month: mk, caObjectif: null, caRealise: null, hygieneActif: false, hygieneScore: null }
       const pm: PrimeMois = { ...(mois ?? base), caObjectif: loadedCaObjectif, caRealise: loadedCaRealise }
       setPrimeMois(pm)
-      // Build empMap with defaults for employees not yet saved
+      // Build empMap — données Firestore sauvegardées en priorité, defaults pour les nouveaux
       const map: Record<string, PrimeEmploye> = {}
       const excludedIds = new Set(
         employees.filter(e => EXCLUDED_NAMES.includes(e.name) || !!e.subStatus).map(e => e.id)
@@ -87,12 +98,13 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
         }
       })
       setEmpMap(map)
-      onPrimesChange(pm, Object.values(map), { paliers: DEFAULT_CA_PALIERS, maxPrimes: DEFAULT_CA_MAX_PRIMES })
+      // Passer les vraies valeurs chargées (pas les defaults)
+      onPrimesChange(pm, Object.values(map), { paliers: loadedPaliers, maxPrimes: loadedMaxPrimes })
       setLoading(false)
     }).catch(() => {
       setLoading(false)
     })
-  }, [month])
+  }, [month, employees])
 
   const hygBonus = primeMois.hygieneActif ? hygieneBonus(primeMois.hygieneScore) : 0
   const caRatio = caRealise && caObjectif && caObjectif > 0 ? caRealise / caObjectif : null
@@ -115,15 +127,23 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
 
   async function handleSave() {
     setSaving(true)
-    const derived: CaMaxPrimes = {}
-    contracts.forEach(c => { derived[c.hours] = c.caMax })
-    await savePrimeMois(primeMois, uid)
-    await savePrimesEmployes(Object.values(empMap), uid)
-    await setDoc(doc(db, 'settings', 'primes_ca'), { paliers: caPaliers, maxPrimes: derived })
-    await setDoc(doc(db, 'settings', 'contrats'), { types: contracts })
-    setSaving(false)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2500)
+    setSaveError(false)
+    try {
+      const derived: CaMaxPrimes = {}
+      contracts.forEach(c => { derived[c.hours] = c.caMax })
+      await savePrimeMois(primeMois, uid)
+      await savePrimesEmployes(Object.values(empMap), uid)
+      await setDoc(doc(db, 'settings', 'primes_ca'), { paliers: caPaliers, maxPrimes: derived })
+      await setDoc(doc(db, 'settings', 'contrats'), { types: contracts })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2500)
+    } catch (err) {
+      console.error('handleSave primes error:', err)
+      setSaveError(true)
+      setTimeout(() => setSaveError(false), 4000)
+    } finally {
+      setSaving(false)
+    }
   }
 
   if (loading) return (
@@ -386,10 +406,15 @@ export function PrimesTab({ month, employees, stats, canEdit, uid, onPrimesChang
       })}
 
       {canEdit && (
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px', marginBottom: '16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '10px', marginTop: '4px', marginBottom: '16px' }}>
+          {saveError && (
+            <span style={{ fontSize: '11px', color: 'var(--danger)', fontWeight: 600 }}>
+              ⚠ Erreur d'enregistrement — vérifiez votre connexion
+            </span>
+          )}
           <button onClick={handleSave} disabled={saving}
-            style={{ background: saved ? '#2d7a4f' : 'var(--primary)', border: 'none', color: '#fff', borderRadius: '10px', padding: '9px 20px', fontSize: '12px', fontWeight: 700, cursor: saving ? 'wait' : 'pointer' }}>
-            {saving ? 'Enregistrement…' : saved ? '✓ Enregistré' : '💾 Enregistrer les primes'}
+            style={{ background: saveError ? '#c0392b' : saved ? '#2d7a4f' : 'var(--primary)', border: 'none', color: '#fff', borderRadius: '10px', padding: '9px 20px', fontSize: '12px', fontWeight: 700, cursor: saving ? 'wait' : 'pointer' }}>
+            {saving ? 'Enregistrement…' : saved ? '✓ Enregistré' : saveError ? '⚠ Réessayer' : '💾 Enregistrer les primes'}
           </button>
         </div>
       )}

@@ -239,6 +239,7 @@ export default function Livraison() {
   useEffect(() => { load() }, [])
   useEffect(() => { if (tab === 'historique') loadHistorique(histDate) }, [tab, histDate])
   useEffect(() => { if (tab === 'galerie') loadGalerie() }, [tab, galFrom, galTo])
+  useEffect(() => { setAcExpandedId(null) }, [tab])
 
   useEffect(() => {
     if (tab !== 'coursier') return
@@ -386,15 +387,19 @@ export default function Livraison() {
   }
 
   async function loadLivAcs(id: string) {
-    const q = query(
-      collection(db, 'actions_correctives'),
-      where('refId', '==', id)
-    )
-    const snap = await getDocs(q)
-    setLivAcs(prev => ({
-      ...prev,
-      [id]: snap.docs.map(s => ({ id: s.id, ...s.data() })) as AcItem[]
-    }))
+    try {
+      const q = query(
+        collection(db, 'actions_correctives'),
+        where('refId', '==', id)
+      )
+      const snap = await getDocs(q)
+      setLivAcs(prev => ({
+        ...prev,
+        [id]: snap.docs.map(s => ({ id: s.id, ...s.data() })) as AcItem[]
+      }))
+    } catch {
+      setLivAcs(prev => ({ ...prev, [id]: [] }))
+    }
   }
 
   async function markDeliveryDone(id: string) {
@@ -1446,7 +1451,7 @@ export default function Livraison() {
           payload={{
             type: 'temperature_reception',
             date: editAc.date,
-            refId: editAc.id,
+            refId: acExpandedId!,
             problem: editAc.problem,
           }}
           createdByName={user?.displayName ?? ''}

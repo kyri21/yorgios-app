@@ -4,7 +4,20 @@
 
 ---
 
-# CLAUDE.md — Matias PWA (mis à jour 2026-05-03)
+# CLAUDE.md — Matias PWA (mis à jour 2026-05-06)
+
+## À FAIRE — session suivante
+
+### Corner Livraison — section AC inline (NON COMMENCÉ)
+- Ajouter section AC inline sur les cards "Complétées aujourd'hui" ET "Historique"
+- États à ajouter : `acExpandedId: string|null`, `livAcs: Record<string, AcItem[]>`, `livAcModal`
+- Type local : `type AcItem = { id: string; problem: string; action: string; createdByName?: string; createdAt?: any }`
+- Fonction : `loadLivAcs(id)` → query `actions_correctives where refId == id`
+- Toggle expand sur chaque card → liste ACs + bouton ➕ Ajouter (type: `'temperature_reception'`)
+- Bouton ✏️ par AC (isManager) → modal edit/delete
+- S'inspirer exactement du pattern Températures Corner (même composant `ActionCorrectiveModal`)
+
+---
 
 ## Mentions légales & RGPD
 
@@ -16,6 +29,89 @@
 - Pas de société — application personnelle non commercialisée, mise à disposition des employés Yorgios
 - **Ne jamais mettre** de nom de société fictif ou de SIRET dans les documents légaux
 - Si besoin de modifier le contenu légal : éditer uniquement `src/pages/Rgpd.tsx`, constante `LAST_UPDATE` à mettre à jour
+
+## Fonctionnalités déployées session 2026-05-06
+
+### Export Excel mensuel — colonne Prime (M) automatique
+- **`exportMonthlyExcel`** accepte maintenant `primes?: Record<string, number | null>` (6e param optionnel)
+- Colonne "Prime" en M — valeur numérique dans la ligne TOTAL uniquement, style bleu `#004275`
+- Appelé depuis `MonthlyView.tsx` avec `primesMap` calculé via `getPrime(empId)` sur tous les stats
+- **Déployé en prod** ✅
+
+### PrimesTab — bug barème corrigé
+- `onPrimesChange` passait `DEFAULT_CA_PALIERS` au lieu des paliers Firestore chargés
+- **Cause** : React setState est async — dans un `.then()`, les variables d'état locales gardent l'ancienne valeur. Utiliser des variables locales `let loadedPaliers` avant `setCaPaliers`.
+- **Déployé en prod** ✅
+
+### ActionCorrectiveModal — étendu (edit + delete + manual)
+- Nouveau props : `editId?` (mode édition → `updateDoc`), `initialAction?` (pré-remplissage textarea)
+- `canDelete?` + `onDeleted?` → bouton supprimer avec confirmation (réservé patron/manager)
+- `payload.problem === ''` → champ "Problème constaté" libre apparaît (ajout manuel sans alerte)
+- Pour ajout manuel : `setAcModal({ type, date, refId: \`manual_${Date.now()}\`, problem: '' })`
+- **Déployé en prod** ✅
+
+### Températures Corner + Cuisine — AC améliorées
+- Bouton **➕ Ajouter** dans l'onglet "📋 Actions" (ajout manuel sans alerte préalable)
+- Bouton **✏️** sur chaque card AC (patron/admin/manager uniquement) → modal edit/delete
+- `isManager = ['patron', 'administrateur', 'manager'].includes(user?.role ?? '')`
+- État supplémentaire dans chaque composant : `editAc: AcItem | null`
+- **Déployé en prod** ✅
+
+### Permissions Firestore — suppression lots + livraisons ouverte à la cuisine
+- **`lots_cuisine` delete** : `isCorner()` → `isAnyRole()` — les utilisateurs cuisine peuvent désormais supprimer leurs propres lots en Fabrication (avant : réservé au corner)
+- **`livraisons` delete** : `isPatronOrManager()` → `isCuisine()` — les utilisateurs cuisine peuvent désormais supprimer leurs départs en Livraison
+- **Aucun changement UI** — les boutons "Supprimer" étaient déjà visibles, seules les règles Firestore bloquaient
+- **À VENIR** : section dans `/admin/settings` pour gérer les permissions par rôle via l'interface (pas de code)
+- **Déployé en prod** ✅
+
+---
+
+## Fonctionnalités déployées session 2026-05-05 (3e session)
+
+### Contrôle Corner — tableaux dépliables dans le rapport
+- **Fichier** : `src/modules/corner/pages/Controle.tsx` — composant `PreviewTable`
+- **Avant** : texte statique gris `"… et X lignes de plus (visible dans l'export)"` — impossible à lire inline.
+- **Après** : bouton toggle `▼ Afficher tout (X lignes de plus)` / `▲ Rétracter` — state local `expanded` dans `PreviewTable`. Chaque section (températures, hygiène, vitrine, livraisons, actions correctives) a son propre toggle indépendant.
+- **Déployé en prod** ✅
+
+---
+
+## Fonctionnalités déployées session 2026-05-05 (2e session)
+
+### Export Excel mensuel — refonte complète + détails comptable
+- **Fichiers** : `src/modules/planning/utils/exports.ts` + `src/modules/planning/components/Monthly/MonthlyView.tsx`
+- **Problème** : l'ancien export ne montrait que des totaux, sans ventilation hebdomadaire ni dates précises.
+- **Nouveau format** — 2 feuilles :
+  - **Feuille "Planning [mois]"** : tableau semaine par semaine par employé (identique à la vue app), avec sous chaque employé des lignes détail italique :
+    - `↳ Retards` : liste "lun 13 avr (60min) · mer 15 avr (30min)"
+    - `↳ Congés payés` : liste "lun 14 avr · mar 15 avr · …"
+    - `↳ Sans solde` : liste des jours
+    - `↳ Absences` : liste des jours
+  - **Feuille "Événements"** : liste chronologique de tous les événements (date, employé, type, détail) — lisible directement par le comptable
+- **Architecture** : `MonthlyView` stocke désormais `rawWeekData: { mon, events }[]` en state. Passé à `exportMonthlyExcel` avec `weeks: Date[]`. Le `buildEventIndex` reconstruit un index `empId → type → [{dateISO, minutes, hours}]` à partir des `WeekEvents` bruts.
+- **Styles** : en-têtes bleu `#004275`, lignes TOTAL en gras fond gris, lignes détail en italique fond crème.
+
+---
+
+## Fonctionnalités déployées session 2026-05-04
+
+### Bug Vitrine — lots cuisine — CORRIGÉ ET DÉPLOYÉ
+- **Cause** : `addedIds = new Set(toAdd.map(...))` capturait TOUS les lots sélectionnés, y compris ceux sautés par `continue` (doublons). Ces lots gardaient `sent:true` en Firestore → réapparaissaient à la prochaine ouverture du formulaire.
+- **Fix 1** : `processedIds` (Set local dans la boucle) ne collecte que les lots effectivement écrits en Firestore. `setLots` ne filtre que les lots réellement traités.
+- **Fix 2** : `processedLotIdsRef` (useRef<Set<string>>) persiste les IDs traités pour toute la session. Filtre appliqué dans `loadLots()` avant les autres filtres. Protège contre les lag d'index Firestore sur `getDocsFromServer`.
+- **Fichier** : `src/modules/corner/pages/Vitrine.tsx`
+
+### Actions correctives HACCP — DÉPLOYÉ COMPLET (session 2026-05-05)
+
+- **Collection Firestore `actions_correctives`** — règles : read isAnyRole(), create isAnyRole(), update/delete isPatronOrManager()
+- **Structure** : `{ type, date, refId, problem, action, createdAt, createdBy, createdByName, fridgeId?, fridgeName?, session?, tempC?, alertMin?, alertMax?, productName?, fournisseur?, category?, decision? }`
+- **Composant partagé** : `src/components/ActionCorrectiveModal.tsx` — props : `payload: AcPayload`, `createdByName`, `onClose()`, `onSaved()`. Suggestions pills par type + textarea.
+- **Corner Températures** (`src/modules/corner/pages/Temperatures.tsx`) — onglet "📋 Actions", section rouge post-save, `loadAcForDate`, `documented: Set<string>`
+- **Cuisine Températures** (`src/modules/cuisine/pages/Temperatures.tsx`) — MÊME PATTERN : onglet "📋 Actions", section rouge post-save si alertes `CUI_*`, `loadAcForDate` appelé au mount et au changement de date
+- **Réception cuisine** (`src/modules/cuisine/pages/Reception.tsx`) — après save si `decision !== 'ACCEPTE'` : bandeau orange "📝 Action corrective requise" + bouton ouvre `ActionCorrectiveModal` avec `type: 'temperature_reception'`. `alert()` remplacé par message state.
+- **Controle.tsx** (`src/modules/corner/pages/Controle.tsx`) — section "📝 Actions correctives" dans rapport + export Excel (onglet) + export PDF (page). Query : `actions_correctives where date >= from && date <= to`.
+
+---
 
 ## À VÉRIFIER — bugs connus
 
@@ -324,9 +420,9 @@ functions/src/
 | `planningWeeks` | lecture tous, écriture patron/admin/manager | semaines planning |
 | `catalogue` | lecture isAnyRole, écriture isPatronOrManager | 104 produits — `name`, `abrv`, `defaultCategory`, `gepCategory`, `dlcDays`, `priority`, `active`, `inVitrine`, `inReception`, `inFabrication`, `allergenes[]` |
 | `receptions` | cuisine | réceptions HACCP |
-| `lots_cuisine` | lecture isAnyRole, create cuisine, update isAnyRole, delete corner | lots fabrication — `receptionId`, `fournisseur` pour traçabilité |
+| `lots_cuisine` | lecture isAnyRole, create cuisine, update isAnyRole, delete isAnyRole | lots fabrication — `receptionId`, `fournisseur` pour traçabilité |
 | `lot_counters` | cuisine | séquences numéros de lot |
-| `livraisons` | lecture isAnyRole, create cuisine, update isAnyRole | livraisons cuisine — corner |
+| `livraisons` | lecture isAnyRole, create cuisine, update isAnyRole, delete isCuisine | livraisons cuisine — corner |
 | `temperatures` | lecture isAnyRole, create/update isAnyRole, delete patron/manager | relevés frigos — doc ID `{YYYY-MM-DD}_{fridgeId}_{session}` |
 | `archives` | cuisine | archives mensuelles |
 | `hygiene_corner` | corner | checklists — `{date}_quotidien` / `{YYYY-WXX}_hebdo` / `{YYYY-MM}_mensuel` |

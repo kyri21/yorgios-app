@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Timestamp, addDoc, collection, getDocs, getDocsFromServer, query, updateDoc, deleteDoc, doc, where, limit, orderBy, getDoc } from 'firebase/firestore'
 import { db, auth } from '../../../firebase/config'
@@ -57,6 +57,8 @@ export default function Vitrine() {
   const { show } = useToast()
   const { user } = useAuth()
   const canDelete = ['patron', 'administrateur', 'manager'].includes(user?.role || '')
+  // IDs de lots traités avec succès cette session — protège contre les relances Firestore
+  const processedLotIdsRef = useRef<Set<string>>(new Set())
   const [mainTab, setMainTab] = useState<'stock' | 'lots' | 'historique'>('stock')
   const [items, setItems]         = useState<StockItem[]>([])
   const [loading, setLoading]     = useState(false)
@@ -265,9 +267,9 @@ export default function Vitrine() {
       // 2. productName actif en vitrine
       // 3. productName + date fab déjà actif en vitrine (cas sans lotCode)
       setLots(all.filter(l => {
+        if (processedLotIdsRef.current.has(l.id)) return false
         if (l.lotCode && allVitrineLosCodes.has(l.lotCode)) return false
         const nameLower = l.productName?.toLowerCase()?.trim()
-        // Exclure si le produit est explicitement marqué inVitrine: false dans le catalogue
         if (nameLower && catalogueBlocked.has(nameLower)) return false
         if (nameLower && vitrineNamesLower.has(nameLower)) return false
         const fabDay = l.producedAt?.toDate ? localISO(l.producedAt.toDate()) : null
@@ -347,6 +349,7 @@ export default function Vitrine() {
     setSaving(true); setError(null)
     try {
       const uid = auth.currentUser?.uid || ''
+      const processedIds = new Set<string>()
       for (const lot of toAdd) {
         const fabDay = lot.producedAt?.toDate ? localISO(lot.producedAt.toDate()) : null
         if (fabDay) {
@@ -361,15 +364,16 @@ export default function Vitrine() {
           dateAjout: Timestamp.now(), lotCode: lot.lotCode,
           active: true, createdAt: Timestamp.now(), createdBy: uid,
         })
-        // Archiver le lot dans lots_cuisine + sent: false → double protection (filtre serveur + filtre JS)
         await updateDoc(doc(db, 'lots_cuisine', lot.id), {
           archived: true, archivedAt: Timestamp.now(), sent: false,
         })
+        processedIds.add(lot.id)
       }
-      const addedIds = new Set(toAdd.map(l => l.id))
-      setLots(prev => prev.filter(l => !addedIds.has(l.id)))
+      processedIds.forEach(id => processedLotIdsRef.current.add(id))
+      if (processedIds.size === 0) { setSaving(false); return }
+      setLots(prev => prev.filter(l => !processedIds.has(l.id)))
       setSelectedLotIds(new Set()); setShowForm(false)
-      show(`${toAdd.length} produit(s) ajouté(s) en vitrine`)
+      show(`${processedIds.size} produit(s) ajouté(s) en vitrine`)
       await load()
     } catch (e: any) { setError(e?.message) }
     finally { setSaving(false) }
