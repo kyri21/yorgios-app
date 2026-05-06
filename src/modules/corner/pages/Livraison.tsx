@@ -3,6 +3,7 @@ import { Timestamp, addDoc, collection, getDocs, getDoc, doc, deleteDoc, limit, 
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { db, auth, storage } from '../../../firebase/config'
 import { useAuth } from '../../../auth/useAuth'
+import ActionCorrectiveModal, { type AcPayload } from '../../../components/ActionCorrectiveModal'
 
 type LivrDoc = {
   id: string; lotCode: string; productName: string; category: string
@@ -25,6 +26,15 @@ type DeliveryDoc = {
   status: 'in_progress' | 'completed'
   createdAt: any
   updatedAt: any
+}
+
+type AcItem = {
+  id: string
+  problem: string
+  action: string
+  date: string          // YYYY-MM-DD — stocké sur le doc Firestore, nécessaire pour le modal edit
+  createdByName?: string
+  createdAt?: any
 }
 
 function todayStart() { const d = new Date(); d.setHours(0,0,0,0); return d.getTime() }
@@ -76,6 +86,12 @@ export default function Livraison() {
   const [histLivraisons, setHistLivraisons] = useState<LivrDoc[]>([])
   const [histLoading, setHistLoading] = useState(false)
   const [histError, setHistError] = useState<string | null>(null)
+
+  // --- Actions correctives inline ---
+  const [acExpandedId, setAcExpandedId] = useState<string | null>(null)
+  const [livAcs, setLivAcs]             = useState<Record<string, AcItem[]>>({})
+  const [livAcModal, setLivAcModal]     = useState<AcPayload | null>(null)
+  const [editAc, setEditAc]             = useState<AcItem | null>(null)
 
   // --- Galerie photos ---
   function nDaysAgo(n: number) {
