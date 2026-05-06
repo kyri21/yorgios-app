@@ -324,6 +324,18 @@ export default function Livraison() {
     } catch (e: any) { setError(e?.message) }
   }
 
+  async function loadLivAcs(id: string) {
+    const q = query(
+      collection(db, 'actions_correctives'),
+      where('refId', '==', id)
+    )
+    const snap = await getDocs(q)
+    setLivAcs(prev => ({
+      ...prev,
+      [id]: snap.docs.map(s => ({ id: s.id, ...s.data() })) as AcItem[]
+    }))
+  }
+
   async function markDeliveryDone(id: string) {
     try {
       await updateDoc(doc(db, 'deliveries', id), { status: 'completed', updatedAt: Timestamp.now() })
