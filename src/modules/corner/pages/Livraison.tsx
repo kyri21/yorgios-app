@@ -1025,6 +1025,36 @@ export default function Livraison() {
                       )}
                     </div>
                   )}
+
+                  {/* Section AC inline */}
+                  <div style={{ marginTop: 8, borderTop: '1px solid var(--border-soft)', paddingTop: 8 }}>
+                    <button
+                      onClick={() => {
+                        const next = acExpandedId === l.id ? null : l.id
+                        setAcExpandedId(next)
+                        if (next && livAcs[l.id] === undefined) loadLivAcs(l.id)
+                      }}
+                      style={{
+                        fontSize: 11, color: 'var(--primary)', background: 'none', border: 'none',
+                        cursor: 'pointer', fontWeight: 600, fontFamily: 'Manrope, sans-serif',
+                        padding: 0,
+                      }}
+                    >
+                      📋 Actions correctives
+                      {livAcs[l.id]?.length ? ` (${livAcs[l.id].length})` : ''}
+                      {acExpandedId === l.id ? ' ▲' : ' ▶'}
+                    </button>
+                    {acExpandedId === l.id && (
+                      <AcInlineSection
+                        livId={l.id}
+                        receptionAt={l.receptionAt}
+                        acs={livAcs[l.id] ?? []}
+                        isManager={isManagerRole}
+                        onAdd={p => setLivAcModal(p)}
+                        onEdit={ac => setEditAc(ac)}
+                      />
+                    )}
+                  </div>
                 </div>
               )
             })}
