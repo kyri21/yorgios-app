@@ -8,14 +8,12 @@
 
 ## À FAIRE — session suivante
 
-### Corner Livraison — section AC inline (NON COMMENCÉ)
-- Ajouter section AC inline sur les cards "Complétées aujourd'hui" ET "Historique"
-- États à ajouter : `acExpandedId: string|null`, `livAcs: Record<string, AcItem[]>`, `livAcModal`
-- Type local : `type AcItem = { id: string; problem: string; action: string; createdByName?: string; createdAt?: any }`
-- Fonction : `loadLivAcs(id)` → query `actions_correctives where refId == id`
-- Toggle expand sur chaque card → liste ACs + bouton ➕ Ajouter (type: `'temperature_reception'`)
-- Bouton ✏️ par AC (isManager) → modal edit/delete
-- S'inspirer exactement du pattern Températures Corner (même composant `ActionCorrectiveModal`)
+### Corner Livraison — section AC inline (DÉPLOYÉ ✅ session 2026-05-06)
+- Cards "Complétées aujourd'hui" + "Historique" : toggle 📋 AC expandable par card
+- `AcItem` inclut `date: string` (YYYY-MM-DD) — nécessaire pour le payload modal edit
+- `acExpandedId` reset sur changement d'onglet via `useEffect(() => setAcExpandedId(null), [tab])`
+- `refId` dans le modal edit = `acExpandedId!` (ID livraison), PAS `editAc.id` (ID de l'AC)
+- `loadLivAcs` wrappée dans try/catch — fallback `[]` en cas d'erreur Firestore
 
 ---
 
@@ -322,6 +320,11 @@
 12. **Catalogue** — collection `catalogue` (pas `produits`). Noms exacts obligatoires partout (ruptures, best-sellers dans settings, pertes, vitrine). Best-sellers dans `settings/ruptures.produits[]` doivent matcher exactement les noms du catalogue.
 
 13. **Compte `planning@yorgios.fr`** — accès planning lecture seule uniquement. Pas de DailyPointageGate, pas d'autres routes. Bouton "Mon planning" sur Login — connexion automatique sans saisie.
+
+14. **React setState est async** — dans un `.then()` ou callback, les variables d'état capturées gardent l'ancienne valeur. Toujours stocker dans une variable locale `let loaded = value` AVANT `setState`, puis utiliser `loaded` dans la suite du callback.
+
+15. **`actions_correctives` — refId = ID du parent, jamais de l'AC elle-même.** Dans un modal edit, `payload.refId` doit être l'ID de la ressource parente (livraison, frigo…), pas `editAc.id`. `editAc.id` va dans `editId` uniquement. Pattern : `refId: acExpandedId!, editId: editAc.id`.
+    État expand cross-onglets : toujours `useEffect(() => setExpandedId(null), [tab])` pour éviter les cards auto-dépliées en changeant d'onglet.
 
 ---
 
