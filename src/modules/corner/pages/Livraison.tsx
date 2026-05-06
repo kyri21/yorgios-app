@@ -1426,6 +1426,44 @@ export default function Livraison() {
           </div>
         </div>
       )}
+
+      {/* ════════════════ MODAL AC — ajout ════════════════ */}
+      {livAcModal && (
+        <ActionCorrectiveModal
+          payload={livAcModal}
+          createdByName={user?.displayName ?? ''}
+          onClose={() => setLivAcModal(null)}
+          onSaved={() => {
+            loadLivAcs(livAcModal.refId)
+            setLivAcModal(null)
+          }}
+        />
+      )}
+
+      {/* ════════════════ MODAL AC — édition/suppression ════════════════ */}
+      {editAc && acExpandedId && (
+        <ActionCorrectiveModal
+          payload={{
+            type: 'temperature_reception',
+            date: editAc.date,
+            refId: editAc.id,
+            problem: editAc.problem,
+          }}
+          createdByName={user?.displayName ?? ''}
+          onClose={() => setEditAc(null)}
+          onSaved={() => {
+            loadLivAcs(acExpandedId)
+            setEditAc(null)
+          }}
+          editId={editAc.id}
+          initialAction={editAc.action}
+          canDelete={isManagerRole}
+          onDeleted={() => {
+            loadLivAcs(acExpandedId)
+            setEditAc(null)
+          }}
+        />
+      )}
     </div>
   )
 }
