@@ -64,6 +64,67 @@ function playDing() {
 
 const NC_DECISIONS = ['Gardé au corner', 'Renvoyé en cuisine', 'Détruit'] as const
 
+function AcInlineSection({
+  livId, receptionAt, acs, isManager, onAdd, onEdit,
+}: {
+  livId: string
+  receptionAt: any
+  acs: AcItem[]
+  isManager: boolean
+  onAdd: (p: AcPayload) => void
+  onEdit: (ac: AcItem) => void
+}) {
+  const dateISO = receptionAt?.toDate
+    ? receptionAt.toDate().toISOString().slice(0, 10)
+    : new Date().toISOString().slice(0, 10)
+
+  return (
+    <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {acs.map(ac => (
+        <div key={ac.id} style={{
+          background: 'var(--surface-low)', borderRadius: 10,
+          padding: '10px 12px', border: '1px solid var(--border-soft)',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--danger)' }}>{ac.problem || '—'}</div>
+            {isManager && (
+              <button
+                onClick={() => onEdit(ac)}
+                style={{
+                  padding: '3px 7px', borderRadius: 7, border: '1px solid var(--border)',
+                  background: 'var(--surface-mid)', cursor: 'pointer', fontSize: 11,
+                  flexShrink: 0,
+                }}
+              >✏️</button>
+            )}
+          </div>
+          <div style={{
+            fontSize: 12, color: 'var(--on-surface)', lineHeight: 1.5,
+            fontFamily: 'Manrope, sans-serif', whiteSpace: 'pre-wrap',
+          }}>
+            {ac.action}
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--on-surface-3)', marginTop: 4 }}>
+            par {ac.createdByName || '—'} ·{' '}
+            {ac.createdAt?.toDate
+              ? ac.createdAt.toDate().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+              : ''}
+          </div>
+        </div>
+      ))}
+      <button
+        onClick={() => onAdd({ type: 'temperature_reception', date: dateISO, refId: livId, problem: '' })}
+        style={{
+          fontSize: 11, color: 'var(--primary)', background: 'none',
+          border: '1px dashed rgba(0,66,117,0.4)', borderRadius: 8,
+          padding: '5px 10px', cursor: 'pointer', fontWeight: 600,
+          fontFamily: 'Manrope, sans-serif', alignSelf: 'flex-start',
+        }}
+      >➕ Ajouter une action corrective</button>
+    </div>
+  )
+}
+
 export default function Livraison() {
   const { user } = useAuth()
   const [tab, setTab] = useState<'today' | 'historique' | 'galerie' | 'coursier'>('today')
