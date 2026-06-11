@@ -1,0 +1,34 @@
+# Audit Matias — Phase 2 (volet WEB) — 2026-06-12, app live cuisine-yorgios.web.app
+
+> Smoke test live **en lecture seule** (compte Arthur, admin). Aucune action à effet réel déclenchée.
+> Volet MOBILE (MobAI/iPhone) NON fait — voir prompt de reprise.
+
+## Ce qui a été testé
+Login → /planning (home admin) → /corner, en desktop 1280px puis mobile 390×844.
+
+## Résultats
+
+### ✅ Points sains (infirment des craintes Phase 0/1)
+| Vérif | Résultat |
+|-------|----------|
+| Chargement app | 200, redirige /login, **0 erreur console** |
+| Login `kyriazis@outlook.fr` | ✅ fonctionne → /planning |
+| Console /planning et /corner | **0 erreur, 0 warning** |
+| Requêtes Firestore en échec / index manquants | **aucune détectée** dans cette session → l'hypothèse « index composites manquants » (Phase 1 §F) est **dégradée** : rien ne casse avec les données actuelles. À reconfirmer si une requête date+statut est exercée. |
+| Rendu Aegean (planning + corner) | propre, cohérent, light theme OK desktop ET mobile |
+
+### ⚠️ Trouvailles dynamiques
+| # | Trouvaille | Gravité | Détail |
+|---|-----------|---------|--------|
+| W1 | **Bundle JS principal ≈ 1,0 Mo** (`index-0ai7TV2_.js` = 1 005 083 B) | 🟠 perf | Rapide en filaire (load 221-435 ms) mais c'est LE coût ressenti sur iPhone en 4G. Piste : analyser le bundle (`vite build --mode analyze` / rollup-plugin-visualizer), code-split les gros modules (XLSX, jspdf, html5-qrcode déjà lazy ?), vérifier que les exports Excel/PDF ne sont pas dans le bundle initial. |
+| W2 | **Double navigation en desktop** : à 1280px la sidebar gauche ET la bottom-nav mobile s'affichent ensemble | 🟡 UX | Le breakpoint d'affichage de la bottom-nav ne masque pas à partir du desktop. Vérifier la media-query dans Layout.tsx. |
+| W3 | Bottom-nav mobile : vérifier qu'elle ne recouvre pas le contenu scrollé (carte « Températures NON SAISIS » passait sous la barre) | 🟡 UX | Ajouter `padding-bottom` au conteneur scroll = hauteur bottom-nav. À confirmer sur device réel. |
+| W4 | **Signal métier** (pas un bug) : corner a 37 alertes DLC dont 12 produits **périmés** encore en vitrine | ℹ️ | Soit l'équipe ne retire pas les produits périmés, soit le flux de retrait DLC a une friction. À creuser en Phase 3 (UX retrait vitrine). |
+
+### Non testé ce tour (à faire)
+- Autres rôles (corner, cuisine, manager, planning@) — vérifier que chaque rôle voit bien ses écrans et **rien de plus** (croisement avec Phase 1 §B/C).
+- Parcours d'écriture (création employé, saisie température, etc.) — délicat en prod : risque emails/FCM réels. **À faire sur device avec MobAI**, ou en lecture stricte.
+- **Mobile/PWA** : planning éditable iPhone (jamais testé sur device réel — cf. CLAUDE.md), FCM, géoloc pointage, bannière « Nouvelle version » service worker.
+
+## Statut
+Phase 2-web : **partielle/DONE_WITH_CONCERNS**. Socle sain (pas d'erreurs runtime), 1 vraie cible perf (bundle 1 Mo) + 2 retouches UX responsive. Le gros du dynamique restant est **mobile** → MobAI.
