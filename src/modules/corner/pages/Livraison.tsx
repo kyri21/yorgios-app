@@ -127,7 +127,7 @@ function AcInlineSection({
 
 export default function Livraison() {
   const { user } = useAuth()
-  const [tab, setTab] = useState<'today' | 'historique' | 'galerie' | 'coursier'>('today')
+  const [tab, setTab] = useState<'today' | 'historique' | 'galerie' | 'coursier' | 'ac_tab'>('today')
 
   // --- Aujourd'hui ---
   const [livraisons, setLivraisons] = useState<LivrDoc[]>([])
@@ -159,6 +159,13 @@ export default function Livraison() {
     const d = new Date(); d.setDate(d.getDate() - n); return toLocalDateValue(d)
   }
   const [galFrom, setGalFrom] = useState(() => nDaysAgo(30))
+
+  // --- Onglet Actions correctives ---
+  const [acTabFrom, setAcTabFrom] = useState(() => nDaysAgo(30))
+  const [acTabTo, setAcTabTo]     = useState(toLocalDateValue(new Date()))
+  const [acTabLivraisons, setAcTabLivraisons] = useState<LivrDoc[]>([])
+  const [acTabLoading, setAcTabLoading]       = useState(false)
+  const [acTabError, setAcTabError]           = useState<string | null>(null)
 
   useEffect(() => {
     getDoc(doc(db, 'settings', 'history_limits'))
@@ -230,6 +237,43 @@ export default function Livraison() {
     finally { setGalLoading(false) }
   }
 
+  async function loadAcTab() {
+    setAcTabLoading(true)
+    setAcTabError(null)
+    try {
+      const [y1, m1, d1] = acTabFrom.split('-').map(Number)
+      const [y2, m2, d2] = acTabTo.split('-').map(Number)
+      const start = new Date(y1, m1-1, d1, 0, 0, 0)
+      const end   = new Date(y2, m2-1, d2, 23, 59, 59)
+      // Livraisons avec anomalie de température (client-side filter pour éviter index composite)
+      const livQ = query(
+        collection(db, 'livraisons'),
+        where('departAt', '>=', Timestamp.fromDate(start)),
+        where('departAt', '<=', Timestamp.fromDate(end)),
+        orderBy('departAt', 'desc'),
+      )
+      const livSnap = await getDocs(livQ)
+      const livs = livSnap.docs
+        .map(d => ({ id: d.id, ...(d.data() as any) }) as LivrDoc)
+        .filter(l => (l.result === 'REFUSE' || l.result === 'A_VERIFIER') && l.departTempC != null)
+      setAcTabLivraisons(livs)
+      // Charger les ACs par lots en parallèle
+      const acsResults = await Promise.all(
+        livs.map(async l => {
+          const q = query(collection(db, 'actions_correctives'), where('refId', '==', l.id))
+          const snap = await getDocs(q)
+          return { id: l.id, acs: snap.docs.map(s => ({ id: s.id, ...s.data() } as AcItem)) }
+        })
+      )
+      setLivAcs(prev => {
+        const next = { ...prev }
+        acsResults.forEach(({ id, acs }) => { next[id] = acs })
+        return next
+      })
+    } catch (e: any) { setAcTabError(e?.message) }
+    finally { setAcTabLoading(false) }
+  }
+
   useEffect(() => {
     getDoc(doc(db, 'settings', 'alert_emails'))
       .then(snap => { if (snap.exists()) setCanOverrideEmails((snap.data() as any).canOverrideEmails ?? []) })
@@ -239,7 +283,19 @@ export default function Livraison() {
   useEffect(() => { load() }, [])
   useEffect(() => { if (tab === 'historique') loadHistorique(histDate) }, [tab, histDate])
   useEffect(() => { if (tab === 'galerie') loadGalerie() }, [tab, galFrom, galTo])
+  useEffect(() => { if (tab === 'ac_tab') loadAcTab() }, [tab, acTabFrom, acTabTo]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { setAcExpandedId(null) }, [tab])
+
+  useEffect(() => {
+    const t0 = todayStart()
+    livraisons
+      .filter(l => {
+        if (l.returned || l.result !== 'REFUSE') return false
+        const recAt = l.receptionAt?.toDate ? l.receptionAt.toDate().getTime() : null
+        return recAt !== null && recAt >= t0
+      })
+      .forEach(l => { if (livAcs[l.id] === undefined) loadLivAcs(l.id) })
+  }, [livraisons]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (tab !== 'coursier') return
@@ -413,6 +469,9 @@ export default function Livraison() {
   async function handleNonConformite(decision: string) {
     if (!ncModal) return
     setNcLoading(true)
+    const livrId = ncModal.l.id
+    const tempDisplay = `${ncModal.t}°C`
+    const dateISO = new Date().toISOString().slice(0, 10)
     try {
       const uid = auth.currentUser?.uid || ''
       const now = Timestamp.now()
@@ -430,7 +489,12 @@ export default function Livraison() {
         photoUrl: null, createdAt: now, expiresAt,
       })
       setNcSuccess(true)
-      setTimeout(() => { setNcModal(null); setNcSuccess(false) }, 1800)
+      setTimeout(() => {
+        setNcModal(null)
+        setNcSuccess(false)
+        setAcExpandedId(livrId)
+        setLivAcModal({ type: 'temperature_reception', date: dateISO, refId: livrId, problem: `Température élevée : ${tempDisplay}` })
+      }, 1800)
     } catch (e: any) { setError(e?.message) }
     finally { setNcLoading(false) }
   }
@@ -489,6 +553,7 @@ export default function Livraison() {
           { key: 'historique', label: 'Historique' },
           { key: 'galerie', label: 'Galerie' },
           { key: 'coursier', label: '🚚 Coursier' },
+          { key: 'ac_tab', label: '⚠️ AC' },
         ] as const).map(({ key, label }) => (
           <button key={key} onClick={() => setTab(key)} style={{
             flex: 1, padding: '9px 0', borderRadius: 10, border: 'none', cursor: 'pointer',
@@ -825,6 +890,19 @@ export default function Livraison() {
                           ↩ Retour cuisine
                         </button>
                       </div>
+                      {/* Bandeau AC requis si REFUSÉ sans action corrective */}
+                      {isRefuse && livAcs[l.id] !== undefined && livAcs[l.id].length === 0 && (
+                        <div style={{
+                          marginTop: 8,
+                          background: 'rgba(180,83,9,0.08)', border: '1px solid rgba(180,83,9,0.25)',
+                          borderRadius: 8, padding: '8px 12px',
+                          fontSize: 12, color: 'var(--warning)', fontWeight: 700,
+                          display: 'flex', alignItems: 'center', gap: 6,
+                        }}>
+                          ⚠️ Action corrective requise — Température hors norme
+                        </div>
+                      )}
+
                       {/* Section AC inline */}
                       <div style={{ marginTop: 8, borderTop: '1px solid var(--border-soft)', paddingTop: 8 }}>
                         <button
@@ -834,7 +912,8 @@ export default function Livraison() {
                             if (next && livAcs[l.id] === undefined) loadLivAcs(l.id)
                           }}
                           style={{
-                            fontSize: 11, color: 'var(--primary)', background: 'none', border: 'none',
+                            fontSize: 11, color: isRefuse && livAcs[l.id] !== undefined && livAcs[l.id].length === 0 ? 'var(--warning)' : 'var(--primary)',
+                            background: 'none', border: 'none',
                             cursor: 'pointer', fontWeight: 600, fontFamily: 'Manrope, sans-serif',
                             padding: 0,
                           }}
@@ -1281,6 +1360,222 @@ export default function Livraison() {
                       onClick={() => markDeliveryDone(d.id)}
                     >
                       Livraison terminée
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </>
+      )}
+
+      {/* ════════════════ ONGLET ACTIONS CORRECTIVES ════════════════ */}
+      {tab === 'ac_tab' && (
+        <>
+          {/* Sélecteur de période */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div>
+              <p className="section-label" style={{ marginBottom: 5 }}>Du</p>
+              <input
+                type="date" className="input-filled" value={acTabFrom} max={acTabTo}
+                onChange={e => setAcTabFrom(e.target.value)}
+              />
+            </div>
+            <div>
+              <p className="section-label" style={{ marginBottom: 5 }}>Au</p>
+              <input
+                type="date" className="input-filled" value={acTabTo} max={toLocalDateValue(new Date())}
+                onChange={e => setAcTabTo(e.target.value)}
+              />
+            </div>
+          </div>
+
+          {acTabLoading && (
+            <div style={{ textAlign: 'center', padding: '40px 0' }}>
+              <div className="spinner" style={{ margin: '0 auto' }} />
+            </div>
+          )}
+
+          {acTabError && (
+            <div style={{
+              padding: '10px 14px', background: 'rgba(192,57,43,0.06)',
+              border: '1px solid rgba(192,57,43,0.18)', borderRadius: 10,
+              fontSize: 13, color: 'var(--danger)',
+            }}>
+              {acTabError}
+            </div>
+          )}
+
+          {/* Résumé */}
+          {!acTabLoading && !acTabError && (
+            <div style={{
+              display: 'flex', gap: 10,
+            }}>
+              <div style={{
+                flex: 1, background: 'rgba(192,57,43,0.06)', borderRadius: 10,
+                padding: '10px 14px', border: '1px solid rgba(192,57,43,0.15)',
+                textAlign: 'center',
+              }}>
+                <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--danger)', fontFamily: 'Epilogue, sans-serif' }}>
+                  {acTabLivraisons.length}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--on-surface-3)', fontWeight: 600 }}>anomalie{acTabLivraisons.length > 1 ? 's' : ''}</div>
+              </div>
+              <div style={{
+                flex: 1, background: 'rgba(0,66,117,0.05)', borderRadius: 10,
+                padding: '10px 14px', border: '1px solid rgba(0,66,117,0.12)',
+                textAlign: 'center',
+              }}>
+                <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--primary)', fontFamily: 'Epilogue, sans-serif' }}>
+                  {acTabLivraisons.reduce((acc, l) => acc + (livAcs[l.id]?.length ?? 0), 0)}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--on-surface-3)', fontWeight: 600 }}>action{acTabLivraisons.reduce((a, l) => a + (livAcs[l.id]?.length ?? 0), 0) > 1 ? 's' : ''} corrective{acTabLivraisons.reduce((a, l) => a + (livAcs[l.id]?.length ?? 0), 0) > 1 ? 's' : ''}</div>
+              </div>
+            </div>
+          )}
+
+          {/* Empty state */}
+          {!acTabLoading && !acTabError && acTabLivraisons.length === 0 && (
+            <div className="card" style={{ textAlign: 'center', padding: '40px 20px' }}>
+              <div style={{ fontSize: 36, marginBottom: 10 }}>✅</div>
+              <p style={{
+                fontFamily: 'Epilogue, sans-serif', fontWeight: 700, fontSize: 15,
+                color: 'var(--on-surface)', margin: '0 0 6px',
+              }}>
+                Aucune anomalie sur cette période
+              </p>
+              <p style={{ fontSize: 13, color: 'var(--on-surface-3)', margin: 0 }}>
+                Toutes les livraisons ont été acceptées
+              </p>
+            </div>
+          )}
+
+          {/* Liste des anomalies */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {acTabLivraisons.map(l => {
+              const depDate = l.departAt?.toDate ? l.departAt.toDate() : null
+              const dateLabel = depDate
+                ? depDate.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })
+                : '—'
+              const depTime = depDate ? depDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+              const acs = livAcs[l.id]
+              const hasNoAc = acs !== undefined && acs.length === 0
+              return (
+                <div key={l.id} style={{
+                  borderRadius: 14, overflow: 'hidden',
+                  border: l.result === 'REFUSE' ? '1.5px solid rgba(192,57,43,0.25)' : '1.5px solid rgba(180,83,9,0.25)',
+                  background: 'var(--surface)',
+                }}>
+                  {/* En-tête anomalie */}
+                  <div style={{
+                    padding: '12px 14px',
+                    background: l.result === 'REFUSE' ? 'rgba(192,57,43,0.05)' : 'rgba(180,83,9,0.05)',
+                    borderBottom: '1px solid var(--border-soft)',
+                    display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8,
+                  }}>
+                    <div>
+                      <div style={{
+                        fontFamily: 'Epilogue, sans-serif', fontWeight: 700, fontSize: 14,
+                        color: 'var(--on-surface)',
+                      }}>
+                        {l.productName}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 2 }}>
+                        Lot {l.lotCode} · {dateLabel} {depTime}
+                      </div>
+                    </div>
+                    {resultChip(l.result)}
+                  </div>
+
+                  {/* Températures */}
+                  <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border-soft)' }}>
+                    <div style={{ flex: 1, padding: '10px 14px', borderRight: '1px solid var(--border-soft)' }}>
+                      <div style={{ fontSize: 10, color: 'var(--on-surface-3)', fontWeight: 600, marginBottom: 2 }}>DÉPART</div>
+                      <div style={{ fontSize: 18, fontWeight: 800, fontFamily: 'Epilogue, sans-serif', color: 'var(--on-surface)' }}>
+                        {l.departTempC != null ? `${l.departTempC}°C` : '—'}
+                      </div>
+                    </div>
+                    <div style={{ flex: 1, padding: '10px 14px' }}>
+                      <div style={{ fontSize: 10, color: 'var(--on-surface-3)', fontWeight: 600, marginBottom: 2 }}>RÉCEPTION</div>
+                      <div style={{
+                        fontSize: 18, fontWeight: 800, fontFamily: 'Epilogue, sans-serif',
+                        color: l.result === 'REFUSE' ? 'var(--danger)' : 'var(--warning)',
+                      }}>
+                        {l.receptionTempC != null ? `${l.receptionTempC}°C` : '—'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Zone actions correctives */}
+                  <div style={{ padding: '12px 14px' }}>
+                    {/* Pas d'AC saisie */}
+                    {hasNoAc && (
+                      <div style={{
+                        marginBottom: 10, background: 'rgba(180,83,9,0.08)',
+                        border: '1px solid rgba(180,83,9,0.2)', borderRadius: 8,
+                        padding: '8px 12px', fontSize: 12, color: 'var(--warning)', fontWeight: 700,
+                      }}>
+                        ⚠️ Aucune action corrective saisie
+                      </div>
+                    )}
+
+                    {/* Liste des ACs */}
+                    {acs === undefined && (
+                      <div style={{ fontSize: 12, color: 'var(--on-surface-3)' }}>Chargement…</div>
+                    )}
+                    {acs && acs.length > 0 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
+                        {acs.map(ac => (
+                          <div key={ac.id} style={{
+                            background: 'var(--surface-low)', borderRadius: 10,
+                            padding: '10px 12px', border: '1px solid var(--border-soft)',
+                          }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
+                              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--danger)' }}>
+                                {ac.problem || '—'}
+                              </div>
+                              {isManagerRole && (
+                                <button
+                                  onClick={() => { setEditAc(ac); setAcExpandedId(l.id) }}
+                                  style={{
+                                    padding: '3px 7px', borderRadius: 7, border: '1px solid var(--border)',
+                                    background: 'var(--surface-mid)', cursor: 'pointer', fontSize: 11, flexShrink: 0,
+                                  }}
+                                >✏️</button>
+                              )}
+                            </div>
+                            <div style={{
+                              fontSize: 12, color: 'var(--on-surface)', lineHeight: 1.5,
+                              fontFamily: 'Manrope, sans-serif', whiteSpace: 'pre-wrap',
+                            }}>
+                              {ac.action}
+                            </div>
+                            <div style={{ fontSize: 10, color: 'var(--on-surface-3)', marginTop: 4 }}>
+                              par {ac.createdByName || '—'} ·{' '}
+                              {ac.createdAt?.toDate
+                                ? ac.createdAt.toDate().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+                                : ''}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Bouton ajouter */}
+                    <button
+                      onClick={() => {
+                        const dateISO = depDate ? depDate.toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10)
+                        setLivAcModal({ type: 'temperature_reception', date: dateISO, refId: l.id, problem: '' })
+                        setAcExpandedId(l.id)
+                      }}
+                      style={{
+                        fontSize: 11, color: 'var(--primary)', background: 'none',
+                        border: '1px dashed rgba(0,66,117,0.4)', borderRadius: 8,
+                        padding: '5px 10px', cursor: 'pointer', fontWeight: 600,
+                        fontFamily: 'Manrope, sans-serif',
+                      }}
+                    >
+                      ➕ Ajouter une action corrective
                     </button>
                   </div>
                 </div>

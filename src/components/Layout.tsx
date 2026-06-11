@@ -15,6 +15,7 @@ import { useToastState } from '../hooks/useToast'
 import Toast from './Toast'
 import { usePointageSortie } from '../hooks/usePointageSortie'
 import { registerFCMToken, onForegroundMessage } from '../firebase/messaging'
+import { usePermissions } from '../contexts/PermissionsContext'
 
 function playNotifSound() {
   try {
@@ -334,6 +335,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const initials = (user?.displayName || user?.email || '?')
     .split(/[\s@]/).filter(Boolean).slice(0, 2).map(s => s[0].toUpperCase()).join('')
 
+  const { can } = usePermissions()
   const isAdmin = user && ['patron', 'administrateur'].includes(user.role)
   const isSuperUser = user && ['patron', 'administrateur', 'manager'].includes(user.role)
 
@@ -507,7 +509,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <span>Allergènes</span>
               </NavLink>
             )}
-            {isSuperUser && (
+            {isSuperUser && can(user!.role, 'page_annonces') && (
               <NavLink to="/admin/annonces"
                 style={({ isActive }) => sidebarItemStyle(isActive)}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--surface-low)'; (e.currentTarget as HTMLElement).style.color = 'var(--on-surface)' }}
@@ -517,7 +519,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <span>Annonces</span>
               </NavLink>
             )}
-            {isSuperUser && (
+            {isSuperUser && can(user!.role, 'page_conges') && (
               <NavLink to="/admin/conges"
                 style={({ isActive }) => sidebarItemStyle(isActive)}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--surface-low)'; (e.currentTarget as HTMLElement).style.color = 'var(--on-surface)' }}
@@ -539,7 +541,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 )}
               </NavLink>
             )}
-            {isAdmin && (
+            {isSuperUser && can(user!.role, 'page_settings') && (
               <NavLink to="/admin/settings"
                 style={({ isActive }) => sidebarItemStyle(isActive)}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--surface-low)'; (e.currentTarget as HTMLElement).style.color = 'var(--on-surface)' }}
@@ -625,7 +627,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 </button>
               )}
               {/* Annonces — patron/admin/manager, mobile */}
-              {isSuperUser && (
+              {isSuperUser && can(user!.role, 'page_annonces') && (
                 <button onClick={() => navigate('/admin/annonces')} style={{
                   background: location.pathname === '/admin/annonces' ? 'rgba(0,66,117,0.1)' : 'var(--surface-low)',
                   border: 'none', borderRadius: 8, padding: '6px 8px', cursor: 'pointer',
@@ -636,7 +638,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 </button>
               )}
               {/* Congés — patron/admin/manager, mobile */}
-              {isSuperUser && (
+              {isSuperUser && can(user!.role, 'page_conges') && (
                 <button onClick={() => navigate('/admin/conges')} style={{
                   background: location.pathname === '/admin/conges' ? 'rgba(0,66,117,0.1)' : 'var(--surface-low)',
                   border: 'none', borderRadius: 8, padding: '6px 8px', cursor: 'pointer',
@@ -651,8 +653,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   )}
                 </button>
               )}
-              {/* Paramètres — admin uniquement, mobile */}
-              {isAdmin && (
+              {/* Paramètres — patron/admin/manager, mobile */}
+              {isSuperUser && can(user!.role, 'page_settings') && (
                 <button onClick={() => navigate('/admin/settings')} style={{
                   background: location.pathname === '/admin/settings' ? 'rgba(0,66,117,0.1)' : 'var(--surface-low)',
                   border: 'none', borderRadius: 8, padding: '6px 8px', cursor: 'pointer',

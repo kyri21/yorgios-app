@@ -1,5 +1,7 @@
 import { useLocation, useNavigate } from 'react-router-dom'
 import type { Role } from '../types'
+import { usePermissions } from '../contexts/PermissionsContext'
+import type { PermKey } from '../contexts/PermissionsContext'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface GridItem {
@@ -9,6 +11,7 @@ interface GridItem {
   color: string
   end?: boolean
   roles?: Role[]
+  permKey?: PermKey
 }
 
 interface Props {
@@ -147,11 +150,11 @@ const CORNER_ITEMS: GridItem[] = [
   { path: '/corner/vitrine',      label: 'Vitrine',     color: '#AF52DE', icon: <IconVitrine /> },
   { path: '/corner/frigo',        label: 'Frigo',       color: '#5AC8FA', icon: <IconSnowflake /> },
   { path: '/corner/ruptures',     label: 'Ruptures',    color: '#FF9500', icon: <IconAlert /> },
-  { path: '/corner/commandes',    label: 'Commandes clients', color: '#FF2D55', icon: <IconClipboard /> },
+  { path: '/commandes',           label: 'Commandes clients', color: '#FF2D55', icon: <IconClipboard /> },
   { path: '/corner/controle',     label: 'Contrôle',    color: '#30B0C7', icon: <IconShield /> },
   { path: '/corner/pertes',       label: 'Pertes',      color: '#FF6B35', icon: <IconPertes /> },
   { path: '/livraisons',          label: 'Coursier',    color: '#FF9500', icon: <IconTruck /> },
-  { path: '/corner/ca',           label: 'CA',          color: '#30D158', icon: <IconChart />, roles: ['patron', 'administrateur', 'manager'] },
+  { path: '/corner/ca',           label: 'CA',          color: '#30D158', icon: <IconChart />, roles: ['patron', 'administrateur', 'manager'], permKey: 'page_ca' },
   { path: '/corner/planning',     label: 'Planning',    color: '#5E5CE6', icon: <IconCalendar /> },
   { path: '/crm/captation',       label: 'CRM',         color: '#FF6B35', icon: <IconCRM /> },
 ]
@@ -164,6 +167,7 @@ const CUISINE_ITEMS: GridItem[] = [
   { path: '/cuisine/controle',     label: 'Contrôle',    color: '#AF52DE', icon: <IconShield /> },
   { path: '/livraisons',          label: 'Coursier',    color: '#FF9500', icon: <IconTruck /> },
   { path: '/cuisine/reception-historique', label: 'Photos réception', color: '#5AC8FA', icon: <IconPhoto /> },
+  { path: '/commandes',             label: 'Commandes clients', color: '#FF2D55', icon: <IconClipboard /> },
   { path: '/crm/captation',        label: 'CRM',         color: '#FF6B35', icon: <IconCRM /> },
 ]
 
@@ -171,9 +175,14 @@ const CUISINE_ITEMS: GridItem[] = [
 export default function ModuleGridPanel({ module, userRole, onClose }: Props) {
   const location = useLocation()
   const navigate = useNavigate()
+  const { can } = usePermissions()
 
   const allItems = module === 'corner' ? CORNER_ITEMS : CUISINE_ITEMS
-  const items = allItems.filter(item => !item.roles || item.roles.includes(userRole))
+  const items = allItems.filter(item => {
+    if (item.roles && !item.roles.includes(userRole)) return false
+    if (item.permKey && !can(userRole, item.permKey)) return false
+    return true
+  })
 
   function isActive(item: GridItem) {
     if (item.end) return location.pathname === item.path

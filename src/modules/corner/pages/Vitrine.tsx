@@ -210,10 +210,8 @@ export default function Vitrine() {
           where('sent', '==', true),
           limit(100),
         )),
-        // getDocsFromServer : toujours données fraîches — évite les faux positifs
-        // quand un lot vient d'être ajouté en vitrine via un autre chemin (frigo, manuel)
-        getDocsFromServer(query(collection(db, 'corner_stock'), limit(300))),
-        // Catalogue actif pour filtrer les produits non vendables en vitrine
+        // active==true uniquement : évite que l'historique (>300 docs) noie les items actifs
+        getDocsFromServer(query(collection(db, 'corner_stock'), where('active', '==', true), limit(300))),
         getDocs(query(collection(db, 'catalogue'), where('active', '==', true))),
       ])
 
@@ -258,6 +256,19 @@ export default function Vitrine() {
       const lotsOrphelins = all.filter(l => l.lotCode && allVitrineLosCodes.has(l.lotCode))
       if (lotsOrphelins.length > 0) {
         Promise.all(lotsOrphelins.map(l =>
+          updateDoc(doc(db, 'lots_cuisine', l.id), { sent: false, archived: true })
+        )).catch(() => {})
+      }
+
+      // Auto-réparer les lots dont le productName est déjà actif en vitrine (sans lotCode en vitrine)
+      const orphelinIds = new Set(lotsOrphelins.map(l => l.id))
+      const nameOrphelins = all.filter(l => {
+        if (orphelinIds.has(l.id)) return false
+        const nl = l.productName?.toLowerCase()?.trim()
+        return nl ? vitrineNamesLower.has(nl) : false
+      })
+      if (nameOrphelins.length > 0) {
+        Promise.all(nameOrphelins.map(l =>
           updateDoc(doc(db, 'lots_cuisine', l.id), { sent: false, archived: true })
         )).catch(() => {})
       }
@@ -350,12 +361,15 @@ export default function Vitrine() {
     try {
       const uid = auth.currentUser?.uid || ''
       const processedIds = new Set<string>()
+      const skippedIds = new Set<string>()
       for (const lot of toAdd) {
         const fabDay = lot.producedAt?.toDate ? localISO(lot.producedAt.toDate()) : null
         if (fabDay) {
           const dup = items.find(i => i.productName === lot.productName && i.fabricationAt?.toDate && localISO(i.fabricationAt.toDate()) === fabDay)
           if (dup) {
             show(`"${lot.productName}" du ${fabDay} est déjà en vitrine — lot ignoré`, 'error')
+            skippedIds.add(lot.id)
+            updateDoc(doc(db, 'lots_cuisine', lot.id), { archived: true, archivedAt: Timestamp.now(), sent: false }).catch(() => {})
             continue
           }
         }
@@ -370,11 +384,15 @@ export default function Vitrine() {
         processedIds.add(lot.id)
       }
       processedIds.forEach(id => processedLotIdsRef.current.add(id))
-      if (processedIds.size === 0) { setSaving(false); return }
-      setLots(prev => prev.filter(l => !processedIds.has(l.id)))
-      setSelectedLotIds(new Set()); setShowForm(false)
-      show(`${processedIds.size} produit(s) ajouté(s) en vitrine`)
-      await load()
+      const allHandled = new Set([...processedIds, ...skippedIds])
+      if (allHandled.size === 0) { setSaving(false); return }
+      setLots(prev => prev.filter(l => !allHandled.has(l.id)))
+      setSelectedLotIds(new Set())
+      if (processedIds.size > 0) {
+        setShowForm(false)
+        show(`${processedIds.size} produit(s) ajouté(s) en vitrine`)
+        await load()
+      }
     } catch (e: any) { setError(e?.message) }
     finally { setSaving(false) }
   }

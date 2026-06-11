@@ -313,6 +313,7 @@ type IpadInfo = { uid: string; email: string; displayName: string; tag: string }
 export default function AdminSettings() {
   const navigate = useNavigate()
   const { user: currentUser } = useAuth()
+  const isPatronOrAdmin = ['patron', 'administrateur'].includes(currentUser?.role ?? '')
   const [notifs, setNotifs] = useState<NotificationsSettings>(DEFAULT_NOTIFS)
   const [emails, setEmails] = useState<EmailsSettings>(DEFAULT_EMAILS)
   const [exports, setExports] = useState<ExportsSettings>(DEFAULT_EXPORTS)
@@ -899,8 +900,13 @@ export default function AdminSettings() {
       <div>
         <p className="section-label" style={{ marginBottom: 8 }}>Administration</p>
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-          <NavRow label="Gérer les utilisateurs" sub="Créer, modifier, lier au planning, supprimer" onClick={() => navigate('/admin/users')} />
-          <NavRow label="Catalogue produits" sub="Ajouter, catégoriser, DLC — fabrication & réception" onClick={() => navigate('/admin/produits')} last />
+          {isPatronOrAdmin && (
+            <NavRow label="Gérer les utilisateurs" sub="Créer, modifier, lier au planning, supprimer" onClick={() => navigate('/admin/users')} />
+          )}
+          <NavRow label="Catalogue produits" sub="Ajouter, catégoriser, DLC — fabrication & réception" onClick={() => navigate('/admin/produits')} />
+          {isPatronOrAdmin && (
+            <NavRow label="Permissions" sub="Gérer les accès par rôle — pages, actions, champs" onClick={() => navigate('/admin/permissions')} last />
+          )}
         </div>
       </div>
 

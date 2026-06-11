@@ -4,16 +4,60 @@
 
 ---
 
-# CLAUDE.md — Matias PWA (mis à jour 2026-05-06)
+# CLAUDE.md — Matias PWA (mis à jour 2026-06-04)
+
+## Fonctionnalités déployées session 2026-06-04
+
+### Planning — création d'employé corrigée (bug "le bouton ne marche pas")
+- **Fichiers** : `src/modules/planning/firebase/employees.ts` + `src/modules/planning/components/Employees/EmployeeManager.tsx`
+- **Cause racine** : `src/firebase/config.ts` utilise `getFirestore(app, 'test')` SANS `ignoreUndefinedProperties`. À la création d'un employé via 👥 → « + Ajouter un employé » avec Statut=défaut et primes vides, `handleSave` envoyait `primeComportement/primePonctualite/subStatus: undefined` → `addDoc` levait `Unsupported field value: undefined`. Le `try/finally` SANS `catch` avalait l'erreur → rien ne se passait. `QuickExtraModal` (⚡ Extra) marchait car il n'envoie que des champs définis.
+- **Fix 1** : helper `stripUndefined()` dans `employees.ts`, appliqué dans `createEmployee`/`updateEmployee` (les sentinelles `deleteField()` sont des objets → préservées).
+- **Fix 2** : `handleSave` a maintenant un `catch` + bandeau rouge ⚠️ qui affiche l'erreur (plus d'échec silencieux). Reset de l'erreur dans `openNew()`.
+- ⚠️ **Règle générale** : ne JAMAIS passer `undefined` à Firestore (addDoc/setDoc/updateDoc) → omettre la clé ou `stripUndefined`. Toujours un `catch` qui surface l'erreur sur les écritures.
+- **Vérifié sur iPhone via MobAI** : échec silencieux reproduit sur l'ancien bundle, création OK sur le bundle corrigé. ⚠️ Le service worker PWA garde l'ancien bundle jusqu'au relancement de l'app (bannière « Nouvelle version disponible »).
+- **Rappel** : utilisateur (`users`) ≠ employé (`employees`). Créer un user ne crée pas l'employé planning. Lier via `/admin/users` → dropdown « lier au planning » (`users.employeeId`).
+- **Déployé en prod** ✅
+
+## Fonctionnalités déployées session 2026-06-01
+
+### Planning — type `Arrêt maladie` (🤒) dans EventModal
+- **Fichier** : `src/modules/planning/components/Events/EventModal.tsx`
+- `malade` existait déjà partout (type `AbsenceType`, compteur `maladesHeures` dans `usePlanning`, rendu `EVENT_META` grille + mobile) — manquait UNIQUEMENT dans `EVENT_TYPES` du modal.
+- Ajouté avec flag `hasHours` → champ « Heures manquées (par jour) », step 0.5. `malade`/`parti_tot` utilisent le champ `hours` (pas `minutes` comme `retard`).
+- `onConfirm`/`onReplace` étendus avec un 5e param `hours?` ; `index.tsx` forwarde vers `setEventRange(..., minutes, hours)`.
+- **Déployé en prod** ✅
+
+### Planning desktop — bouton « 🤒 Absence / événement »
+- **Fichier** : `src/modules/planning/index.tsx` (barre d'outils, ~ligne 325)
+- Visible quand `isEditor && view==='week' && selectedEmpId`. Ouvre `EventModal` sur aujourd'hui (date locale calculée inline).
+- Remplace le clic droit (non découvrable, zéro support tactile). **Le clic droit reste actif** comme raccourci expert.
+- **Déployé en prod** ✅
+
+### Planning mobile (iPhone/Android) — ÉDITABLE
+- **Fichier** : `src/modules/planning/components/Mobile/MobilePlanningView.tsx` (réécrit) + `usePlanning.ts` + `index.tsx`
+- Avant : 100% lecture seule. Maintenant éditable pour patron/admin/manager (lecture seule conservée pour `corner`).
+- **Tap sur la carte d'un employé** (ou chip « En repos ») → bottom sheet :
+  - **Horaires** : deux `<select>` Début → Fin (**bloc continu uniquement**, pas de service coupé). Bouton Appliquer + bouton Repos (efface).
+  - **Absence / événement** : réutilise le `EventModal` desktop (même moteur, zéro divergence) + liste des events du jour avec ✕ pour retirer.
+- **Barre « 💾 Enregistrer » explicite** (pas d'auto-save) → `planning.save` (persiste `draft` + `weekEvents` en parallèle).
+- **Hook `usePlanning`** : nouveau `setEmpDayHours(dayIndex, empId, startHour|null, endHour)` — règle un bloc continu atomiquement sur `HOURS` (8→20) ; `startHour=null` = repos.
+- Décisions UX validées par Arthur : bloc continu + save explicite (cf. règle ci-dessous).
+- ⚠️ **Non testé sur device réel** — MobAI bloqué par limite offre gratuite (`device_limit_reached`).
+- **Déployé en prod** ✅
+
+---
 
 ## À FAIRE — session suivante
 
-### Corner Livraison — section AC inline (DÉPLOYÉ ✅ session 2026-05-06)
-- Cards "Complétées aujourd'hui" + "Historique" : toggle 📋 AC expandable par card
-- `AcItem` inclut `date: string` (YYYY-MM-DD) — nécessaire pour le payload modal edit
-- `acExpandedId` reset sur changement d'onglet via `useEffect(() => setAcExpandedId(null), [tab])`
-- `refId` dans le modal edit = `acExpandedId!` (ID livraison), PAS `editAc.id` (ID de l'AC)
-- `loadLivAcs` wrappée dans try/catch — fallback `[]` en cas d'erreur Firestore
+### Optimisation performances (signalé 2026-05-07)
+- L'application est perçue comme lente — audit des requêtes Firestore, re-renders React, bundle size
+- Pistes identifiées : requêtes sans index, getDocsFromServer systématiques, état non mémoïsé
+
+### Fonctionnalités NON commencées
+1. **AdminSettings** — section "Contrats de travail" CRUD (`settings/contrats`)
+2. **EmployeeManager** — dropdown heures contrat (depuis `settings/contrats`)
+3. **Lien employé ↔ utilisateur** (pour planning + primes)
+4. **AdminSettings** — gestion permissions par rôle via l'interface (pas de code)
 
 ---
 
@@ -27,6 +71,47 @@
 - Pas de société — application personnelle non commercialisée, mise à disposition des employés Yorgios
 - **Ne jamais mettre** de nom de société fictif ou de SIRET dans les documents légaux
 - Si besoin de modifier le contenu légal : éditer uniquement `src/pages/Rgpd.tsx`, constante `LAST_UPDATE` à mettre à jour
+
+## Fonctionnalités déployées session 2026-05-07 (suite)
+
+### Corner Livraison — AC automatique après REFUSE température
+- **Fichier** : `src/modules/corner/pages/Livraison.tsx`
+- Après NC decision + 1.8s : `ActionCorrectiveModal` s'ouvre automatiquement avec `problem: "Température élevée : X°C"` pré-rempli
+- Variables `livrId` et `tempDisplay` capturées AVANT `setTimeout` (règle 14 — setState async)
+- Bandeau orange sur cartes REFUSÉES sans AC dans "Complétées aujourd'hui"
+- `useEffect` sur `livraisons` : auto-charge les ACs des livraisons REFUSE du jour
+- **Déployé en prod** ✅
+
+### Corner Livraison — onglet ⚠️ AC
+- 5e onglet après Coursier — agrège toutes les anomalies de température sur une période
+- Filtre : `(result === 'REFUSE' || result === 'A_VERIFIER') && departTempC != null` — sans température de départ = pas d'anomalie
+- Chargement ACs en parallèle (`Promise.all`), compteurs, bandeau orange si aucune AC, ajout/édition inline
+- **Déployé en prod** ✅
+
+### Documents — permissions élargies
+- `isSuperUser` = patron/admin/manager → tous les onglets admin (Modifier charte, Livret PDF, Gérer docs, Signatures)
+- `canGmao` = isSuperUser OU `email === 'ipad@yorgios.fr'` → onglets GMAO et CRETA GEL
+- iPad corner identifié par **email**, pas par rôle — rôle `corner` inchangé partout ailleurs
+- **Déployé en prod** ✅
+
+---
+
+## Fonctionnalités déployées session 2026-05-07
+
+### Vitrine corner — bug lots déjà présents corrigé
+- **Cause racine** : query `corner_stock` dans `loadLots()` utilisait `limit(300)` sans filtre `active==true` — l'historique (actif + retiré) remplissait le limit et les items actifs récents pouvaient être absents de `vitrineNamesLower`
+- **Fix 1** : query changée en `where('active', '==', true)` — seuls les items actuellement en vitrine sont chargés
+- **Fix 2** : auto-repair name-based — si `productName` d'un lot cuisine est déjà actif en vitrine, `lots_cuisine` est marqué `sent:false, archived:true` en background
+- **Fix 3** : `saveLotCuisine()` — lots "ignorés" (déjà en vitrine) trackés dans `skippedIds`, auto-réparés Firestore + supprimés de l'UI sans clic "✓ déjà là"
+- **Déployé en prod** ✅
+
+### Manager — accès aux Paramètres
+- Route `/admin/settings` ouverte à `manager` (router/index.tsx)
+- Sidebar desktop + mobile : `isAdmin` → `isSuperUser` pour le lien Paramètres (Layout.tsx)
+- Dans AdminSettings : "Gérer les utilisateurs" masqué aux managers (`isPatronOrAdmin`), Catalogue visible
+- **Déployé en prod** ✅
+
+---
 
 ## Fonctionnalités déployées session 2026-05-06
 
@@ -345,7 +430,7 @@
 |------|-------|-------------------|
 | `patron` | Tout | `/planning` |
 | `administrateur` | Tout (= patron) | `/planning` |
-| `manager` | Planning + Corner + CA + Commandes + Pointages | `/planning` |
+| `manager` | Planning + Corner + CA + Commandes + Pointages + Paramètres + Annonces + Congés | `/planning` |
 | `corner` | `/corner` + CA lecture + `/messages` + `/planning` lecture + `/pointage` | `/corner` |
 | `cuisine` | `/cuisine` + `/messages` + `/pointage` + `/crm/captation` | `/cuisine` |
 
@@ -532,7 +617,7 @@ functions/src/
 | `/livraisons` | tous |
 | `/commandes` | tous |
 | `/admin/users` | patron, admin |
-| `/admin/settings` | patron, admin |
+| `/admin/settings` | patron, admin, manager |
 | `/admin/pointages` | patron, admin, manager |
 | `/admin/produits` | patron, admin |
 | `/admin/allergenes` | patron, admin, manager |

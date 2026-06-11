@@ -354,7 +354,10 @@ function renderCharteContent(text: string): React.ReactNode[] {
 export default function Documents() {
   const { user } = useAuth()
   const { show } = useToast()
-  const isAdmin = user && ['patron', 'administrateur'].includes(user.role)
+  const isAdmin     = user && ['patron', 'administrateur'].includes(user.role)
+  const isSuperUser = user && ['patron', 'administrateur', 'manager'].includes(user.role)
+  const isIpadCorner = user?.email === 'ipad@yorgios.fr'
+  const canGmao     = isSuperUser || isIpadCorner
 
   // ── Tabs ──
   const [tab, setTab] = useState<Tab>('charte')
@@ -482,7 +485,7 @@ export default function Documents() {
       const snap = await getDocs(query(collection(db, 'documents_a_signer'), orderBy('createdAt', 'desc')))
       const all = snap.docs.map(d => ({ id: d.id, ...d.data() } as DocASigner))
       setMyDocs(all.filter(d => d.active && d.targetUids?.includes(user!.uid)))
-      if (isAdmin) setAllDocs(all)
+      if (isSuperUser) setAllDocs(all)
     } catch {}
   }
 
@@ -793,11 +796,13 @@ export default function Documents() {
     { key: 'charte', label: '📋 Charte' },
     { key: 'livret', label: '📖 Livret' },
     ...(myDocs.length > 0 ? [{ key: 'mes_docs' as Tab, label: '📝 À signer', badge: pendingMyDocs.length || undefined }] : []),
-    ...(isAdmin ? [
+    ...(isSuperUser ? [
       { key: 'admin_charte' as Tab, label: '✏️ Modifier charte' },
       { key: 'admin_livret' as Tab, label: '⬆️ Livret PDF' },
       { key: 'admin_docs' as Tab, label: '📄 Gérer docs' },
       { key: 'signatures' as Tab, label: '✅ Signatures' },
+    ] : []),
+    ...(canGmao ? [
       { key: 'gmao' as Tab, label: '🔧 GMAO' },
       { key: 'creta' as Tab, label: '🧊 CRETA GEL' },
     ] : []),
@@ -959,7 +964,7 @@ export default function Documents() {
               <div style={{ fontSize: 40, marginBottom: 12 }}>📋</div>
               <div style={{ fontFamily: 'Manrope', fontSize: 15 }}>
                 Le livret d'accueil n'est pas encore importé.
-                {isAdmin && <><br /><span style={{ fontSize: 13 }}>Utilisez l'onglet "Livret PDF" pour l'importer.</span></>}
+                {isSuperUser && <><br /><span style={{ fontSize: 13 }}>Utilisez l'onglet "Livret PDF" pour l'importer.</span></>}
               </div>
             </div>
           )}
@@ -967,7 +972,7 @@ export default function Documents() {
       )}
 
       {/* ── Admin — Modifier charte ── */}
-      {tab === 'admin_charte' && isAdmin && (
+      {tab === 'admin_charte' && isSuperUser && (
         <div>
           <div style={{ fontFamily: 'Epilogue', fontWeight: 700, fontSize: 17, color: 'var(--on-surface)', marginBottom: 6 }}>
             Modifier la charte interne
@@ -1044,7 +1049,7 @@ export default function Documents() {
       )}
 
       {/* ── Admin — Mettre à jour livret ── */}
-      {tab === 'admin_livret' && isAdmin && (
+      {tab === 'admin_livret' && isSuperUser && (
         <div>
           <div style={{ fontFamily: 'Epilogue', fontWeight: 700, fontSize: 17, color: 'var(--on-surface)', marginBottom: 6 }}>
             Mettre à jour le livret d'accueil
@@ -1094,7 +1099,7 @@ export default function Documents() {
       )}
 
       {/* ── Admin — Signatures ── */}
-      {tab === 'signatures' && isAdmin && (
+      {tab === 'signatures' && isSuperUser && (
         <div>
           <div style={{ fontFamily: 'Epilogue', fontWeight: 700, fontSize: 17, color: 'var(--on-surface)', marginBottom: 6 }}>
             Signatures de la charte (version {charteVersion})
@@ -1125,7 +1130,7 @@ export default function Documents() {
       )}
 
       {/* ── GMAO ── */}
-      {tab === 'gmao' && isAdmin && (
+      {tab === 'gmao' && canGmao && (
         <>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <p className="section-label">Demandes de réparation</p>
@@ -1325,7 +1330,7 @@ export default function Documents() {
       )}
 
       {/* ── CRETA GEL ── */}
-      {tab === 'creta' && isAdmin && (
+      {tab === 'creta' && canGmao && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div className="card" style={{ border: '1.5px solid rgba(0,66,117,0.12)' }}>
             <p style={{ fontFamily: 'Epilogue, sans-serif', fontWeight: 800, fontSize: 14, color: 'var(--on-surface)', margin: '0 0 14px' }}>
@@ -1554,7 +1559,7 @@ export default function Documents() {
       )}
 
       {/* ── Admin — Gérer docs à signer ── */}
-      {tab === 'admin_docs' && isAdmin && (
+      {tab === 'admin_docs' && isSuperUser && (
         <div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
             <div style={{ fontFamily: 'Epilogue', fontWeight: 700, fontSize: 17, color: 'var(--on-surface)' }}>Documents à signer</div>

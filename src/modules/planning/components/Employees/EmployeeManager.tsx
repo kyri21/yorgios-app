@@ -37,8 +37,10 @@ export function EmployeeManager({ onClose }: Props) {
   const [avenants, setAvenants] = useState<Avenant[]>([])
   const [subStatus, setSubStatus] = useState<SubStatus | ''>('')
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   function openNew() {
+    setError(null)
     setEditing(null); setName(''); setInitials(''); setColor(PRESET_COLORS[0]); setCap(35); setRestrictions([]); setPrimeComp(''); setPrimePonct(''); setAvenants([]); setSubStatus(''); setMode('edit')
   }
 
@@ -73,6 +75,7 @@ export function EmployeeManager({ onClose }: Props) {
   async function handleSave() {
     if (!name.trim()) return
     setSaving(true)
+    setError(null)
     const inits = initials.trim() || name.slice(0, 2).toUpperCase()
     const data: Omit<Employee, 'id'> = {
       name: name.trim(), initials: inits, color, weeklyCapHours: cap, active: true,
@@ -85,6 +88,9 @@ export function EmployeeManager({ onClose }: Props) {
     try {
       editing ? await updateEmployee(editing.id, data) : await createEmployee(data)
       setMode('list')
+    } catch (e: any) {
+      console.error('Erreur enregistrement employé:', e)
+      setError(e?.message ?? 'Échec de l\'enregistrement. Réessayez.')
     } finally { setSaving(false) }
   }
 
@@ -512,6 +518,15 @@ export function EmployeeManager({ onClose }: Props) {
               </div>
 
               {/* Save */}
+              {error && (
+                <div style={{
+                  background: 'rgba(192,57,43,0.08)', border: '1px solid var(--danger)',
+                  color: 'var(--danger)', borderRadius: 8, padding: '8px 12px',
+                  fontSize: '0.78rem', fontWeight: 500,
+                }}>
+                  ⚠️ {error}
+                </div>
+              )}
               <button
                 onClick={handleSave}
                 disabled={saving || !name.trim()}

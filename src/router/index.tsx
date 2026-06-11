@@ -24,7 +24,8 @@ const AllergeneMenu   = lazy(() => import('../pages/AllergeneMenu'));
 const CaptationPage   = lazy(() => import('../modules/crm/CaptationPage'));
 const Livraisons      = lazy(() => import('../pages/Livraisons'))
 const Commandes       = lazy(() => import('../modules/corner/pages/Commandes'));
-const AdminAnnonces   = lazy(() => import('../pages/AdminAnnonces'));
+const AdminAnnonces     = lazy(() => import('../pages/AdminAnnonces'));
+const AdminPermissions  = lazy(() => import('../pages/AdminPermissions'));
 const AdminConges     = lazy(() => import('../pages/AdminConges'));
 const Documents       = lazy(() => import('../pages/Documents'));
 
@@ -132,12 +133,22 @@ export default function AppRouter() {
           }
         />
 
-        {/* Admin paramètres — patron + administrateur */}
+        {/* Admin paramètres — patron + administrateur + manager */}
         <Route
           path="/admin/settings"
           element={
-            <AuthGuard allowedRoles={['patron', 'administrateur']}>
+            <AuthGuard allowedRoles={['patron', 'administrateur', 'manager']}>
               <Layout><AdminSettings /></Layout>
+            </AuthGuard>
+          }
+        />
+
+        {/* Permissions — patron + administrateur */}
+        <Route
+          path="/admin/permissions"
+          element={
+            <AuthGuard allowedRoles={['patron', 'administrateur']}>
+              <Layout><AdminPermissions /></Layout>
             </AuthGuard>
           }
         />

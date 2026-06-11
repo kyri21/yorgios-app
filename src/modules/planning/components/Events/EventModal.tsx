@@ -6,13 +6,13 @@ interface Props {
   initialDateISO: string
   weekEvents: WeekEvents
   userRole?: string
-  onConfirm: (startISO: string, endISO: string, type: AbsenceType, minutes?: number) => void
+  onConfirm: (startISO: string, endISO: string, type: AbsenceType, minutes?: number, hours?: number) => void
   onRemove: (startISO: string, endISO: string) => void
-  onReplace: (startISO: string, endISO: string, type: AbsenceType, minutes?: number) => void
+  onReplace: (startISO: string, endISO: string, type: AbsenceType, minutes?: number, hours?: number) => void
   onClose: () => void
 }
 
-type EventTypeMeta = { label: string; emoji: string; color: string; hasMinutes?: boolean }
+type EventTypeMeta = { label: string; emoji: string; color: string; hasMinutes?: boolean; hasHours?: boolean }
 
 const EVENT_TYPES: { type: AbsenceType; meta: EventTypeMeta }[] = [
   { type: 'jour_off',   meta: { label: 'Jour off',   emoji: '🌙', color: '#6366f1' } },
@@ -20,6 +20,7 @@ const EVENT_TYPES: { type: AbsenceType; meta: EventTypeMeta }[] = [
   { type: 'sans_solde', meta: { label: 'Sans solde', emoji: '📋', color: '#f59e0b' } },
   { type: 'absence',    meta: { label: 'Absence',    emoji: '⚠️', color: '#ef4444' } },
   { type: 'retard',     meta: { label: 'Retard',     emoji: '⏰', color: '#f97316', hasMinutes: true } },
+  { type: 'malade',     meta: { label: 'Arrêt maladie', emoji: '🤒', color: '#dc2626', hasHours: true } },
 ]
 
 function isStartWithinOneMonth(dateISO: string): boolean {
@@ -34,11 +35,13 @@ export function EventModal({ emp, initialDateISO, weekEvents, userRole, onConfir
   const [startISO, setStartISO]           = useState(initialDateISO)
   const [endISO, setEndISO]               = useState(initialDateISO)
   const [minutes, setMinutes]             = useState(15)
+  const [hoursLost, setHoursLost]         = useState(7)
   const [tab, setTab]                     = useState<'add' | 'modify'>('add')
   const [congeInfoPending, setCongeInfoPending] = useState(false)
 
   const currentTypeMeta = EVENT_TYPES.find(e => e.type === selectedType)!.meta
   const needsMinutes = selectedType === 'retard'
+  const needsHours = currentTypeMeta.hasHours === true
 
   // Événements détectés pour cet employé dans la plage sélectionnée (semaine courante seulement)
   const existingInRange = useMemo(() => {
@@ -64,7 +67,7 @@ export function EventModal({ emp, initialDateISO, weekEvents, userRole, onConfir
       setCongeInfoPending(true)
       return
     }
-    onConfirm(startISO, endISO, selectedType, needsMinutes ? minutes : undefined)
+    onConfirm(startISO, endISO, selectedType, needsMinutes ? minutes : undefined, needsHours ? hoursLost : undefined)
   }
 
   function handleCongeConfirmed() {
@@ -74,7 +77,7 @@ export function EventModal({ emp, initialDateISO, weekEvents, userRole, onConfir
 
   function handleReplace() {
     if (!startISO || !endISO || endISO < startISO) return
-    onReplace(startISO, endISO, selectedType, needsMinutes ? minutes : undefined)
+    onReplace(startISO, endISO, selectedType, needsMinutes ? minutes : undefined, needsHours ? hoursLost : undefined)
   }
 
   function handleRemove() {
@@ -174,12 +177,24 @@ export function EventModal({ emp, initialDateISO, weekEvents, userRole, onConfir
               </div>
             )}
 
+            {needsHours && (
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ ...labelStyle, display: 'block', marginBottom: '6px' }}>Heures manquées (par jour)</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <input type="number" value={hoursLost} onChange={e => setHoursLost(Math.max(0, Number(e.target.value)))} min={0} step={0.5}
+                    style={{ width: '80px', background: 'var(--surface-low)', border: '1px solid var(--border)', color: 'var(--on-surface)', borderRadius: '8px', padding: '6px 10px', fontSize: '13px' }} />
+                  <span style={{ color: 'var(--on-surface-2)', fontSize: '12px' }}>heures</span>
+                </div>
+              </div>
+            )}
+
             <DateRangePicker startISO={startISO} endISO={endISO} onStartChange={v => { setStartISO(v); if (v > endISO) setEndISO(v) }} onEndChange={setEndISO} />
 
             <div style={{ background: 'var(--surface-low)', borderRadius: '8px', padding: '8px 12px', marginBottom: '14px', fontSize: '11px', color: 'var(--on-surface-2)' }}>
               {currentTypeMeta.emoji}{' '}
               <span style={{ color: currentTypeMeta.color, fontWeight: 600 }}>{currentTypeMeta.label}</span>
               {needsMinutes && <span> — {minutes} min</span>}
+              {needsHours && <span> — {hoursLost}h/jour</span>}
               {' '}du{' '}<span style={{ color: 'var(--on-surface)', fontWeight: 600 }}>{formatDate(startISO)}</span>
               {' '}au{' '}<span style={{ color: 'var(--on-surface)', fontWeight: 600 }}>{formatDate(endISO)}</span>
             </div>
@@ -252,6 +267,14 @@ export function EventModal({ emp, initialDateISO, weekEvents, userRole, onConfir
                   <input type="number" value={minutes} onChange={e => setMinutes(Math.max(1, Number(e.target.value)))} min={1}
                     style={{ width: '80px', background: 'var(--surface-low)', border: '1px solid var(--border)', color: 'var(--on-surface)', borderRadius: '8px', padding: '6px 10px', fontSize: '13px' }} />
                   <span style={{ color: 'var(--on-surface-2)', fontSize: '12px' }}>minutes</span>
+                </div>
+              )}
+
+              {needsHours && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: 10 }}>
+                  <input type="number" value={hoursLost} onChange={e => setHoursLost(Math.max(0, Number(e.target.value)))} min={0} step={0.5}
+                    style={{ width: '80px', background: 'var(--surface-low)', border: '1px solid var(--border)', color: 'var(--on-surface)', borderRadius: '8px', padding: '6px 10px', fontSize: '13px' }} />
+                  <span style={{ color: 'var(--on-surface-2)', fontSize: '12px' }}>heures manquées / jour</span>
                 </div>
               )}
             </div>

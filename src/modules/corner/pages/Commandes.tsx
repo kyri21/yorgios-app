@@ -6,6 +6,7 @@ import {
 import { getFunctions, httpsCallable } from 'firebase/functions'
 import { db } from '../../../firebase/config'
 import { useAuth } from '../../../auth/useAuth'
+import { usePermissions } from '../../../contexts/PermissionsContext'
 
 // ─── Types ────────────────────────────────────────────────────────
 type ProduitLigne = { id: number; produit: string; quantite: string; unite: string }
@@ -109,24 +110,25 @@ export default function Commandes() {
     <div className="page">
       {/* Header */}
       <div>
-        <p className="section-label" style={{ marginBottom: 2 }}>Corner</p>
+        <p className="section-label" style={{ marginBottom: 2 }}>Commandes</p>
         <h1 style={{ fontFamily: 'Epilogue, sans-serif', fontSize: 24, fontWeight: 800, color: 'var(--on-surface)', letterSpacing: '-0.03em', margin: 0 }}>
           Commandes clients
         </h1>
       </div>
 
-      {/* Tabs */}
+      {/* Tabs — "Nouvelle" masqué pour la cuisine */}
       <div style={{ display: 'flex', gap: 4, padding: 4, background: 'var(--surface-mid)', borderRadius: 14 }}>
-        {([['form', 'Nouvelle'], ['gestion', 'Gestion']] as const).map(([key, label]) => (
-          <button key={key} onClick={() => setTab(key)} style={{
-            flex: 1, padding: '9px 0', borderRadius: 10, border: 'none', cursor: 'pointer',
-            background: tab === key ? 'var(--surface)' : 'transparent',
-            color: tab === key ? 'var(--primary)' : 'var(--on-surface-3)',
-            fontWeight: 700, fontFamily: 'Manrope, sans-serif', fontSize: 13,
-            boxShadow: tab === key ? '0 1px 6px rgba(28,28,24,0.08)' : 'none',
-            transition: 'all 0.15s',
-          }}>{label}</button>
-        ))}
+        {([['form', 'Nouvelle'], ['gestion', 'Gestion']] as const)
+          .map(([key, label]) => (
+            <button key={key} onClick={() => setTab(key)} style={{
+              flex: 1, padding: '9px 0', borderRadius: 10, border: 'none', cursor: 'pointer',
+              background: tab === key ? 'var(--surface)' : 'transparent',
+              color: tab === key ? 'var(--primary)' : 'var(--on-surface-3)',
+              fontWeight: 700, fontFamily: 'Manrope, sans-serif', fontSize: 13,
+              boxShadow: tab === key ? '0 1px 6px rgba(28,28,24,0.08)' : 'none',
+              transition: 'all 0.15s',
+            }}>{label}</button>
+          ))}
       </div>
 
       {tab === 'form'    && <NouvelleCommande user={user} />}
@@ -362,6 +364,8 @@ function NouvelleCommande({ user }: { user: any }) {
 
 // ─── Onglet 2 : Gestion ───────────────────────────────────────────
 function GestionCommandes({ user }: { user: any }) {
+  const { can } = usePermissions()
+  const canManageCommandes = can(user?.role, 'action_update_statut_commande')
   const [commandes, setCommandes] = useState<Commande[]>([])
   const [loading, setLoading]     = useState(true)
   const [filtreStatuts, setFiltreStatuts] = useState<string[]>([])
@@ -488,7 +492,7 @@ function GestionCommandes({ user }: { user: any }) {
           {filtered.map(c => (
             <CommandeCard key={c.docId} commande={c} expanded={expanded === c.docId}
               onToggle={() => setExpanded(expanded === c.docId ? null : c.docId)}
-              onUpdated={load} isPatron={user?.role === 'patron' || user?.role === 'manager' || user?.role === 'administrateur'} />
+              onUpdated={load} isPatron={canManageCommandes} />
           ))}
         </div>
       )}

@@ -328,6 +328,24 @@ export default function PlanningModule() {
           </span>
         )}
 
+        {isEditor && view === 'week' && selectedEmpId && (
+          <button
+            onClick={() => {
+              const t = new Date()
+              const iso = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`
+              setEventModalDate(iso)
+            }}
+            style={{
+              background: 'var(--surface-low)', border: '1px solid var(--border)',
+              color: 'var(--on-surface)', borderRadius: '8px', padding: '5px 12px',
+              cursor: 'pointer', fontSize: '12px', fontWeight: 600, whiteSpace: 'nowrap',
+            }}
+            title="Ajouter une absence ou un événement pour l'employé sélectionné"
+          >
+            🤒 Absence / événement
+          </button>
+        )}
+
         {isEditor && view === 'week' && (
           <button
             onClick={planning.save}
@@ -455,8 +473,17 @@ export default function PlanningModule() {
               employees={employees}
               weekEvents={planning.weekEvents}
               loading={planning.loading}
+              canEdit={isEditor}
+              userRole={user.role}
+              dirty={planning.dirty}
+              saving={planning.saving}
               onPrevWeek={() => planning.goToWeek(prevMonday(planning.monday))}
               onNextWeek={() => planning.goToWeek(nextMonday(planning.monday))}
+              onSetEmpDayHours={planning.setEmpDayHours}
+              onSetEventRange={planning.setEventRange}
+              onRemoveEventRange={planning.removeEventRange}
+              onRemoveDayEvent={planning.removeDayEvent}
+              onSave={planning.save}
             />
           ) : planning.loading ? (
             <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--on-surface-3)', fontSize: '13px' }}>
@@ -537,17 +564,17 @@ export default function PlanningModule() {
           initialDateISO={eventModalDate}
           weekEvents={planning.weekEvents}
           userRole={user.role}
-          onConfirm={(startISO, endISO, type, minutes) => {
-            planning.setEventRange(startISO, endISO, selectedEmpId, type, minutes)
+          onConfirm={(startISO, endISO, type, minutes, hours) => {
+            planning.setEventRange(startISO, endISO, selectedEmpId, type, minutes, hours)
             setEventModalDate(null)
           }}
           onRemove={(startISO, endISO) => {
             planning.removeEventRange(startISO, endISO, selectedEmpId)
             setEventModalDate(null)
           }}
-          onReplace={async (startISO, endISO, type, minutes) => {
+          onReplace={async (startISO, endISO, type, minutes, hours) => {
             await planning.removeEventRange(startISO, endISO, selectedEmpId)
-            planning.setEventRange(startISO, endISO, selectedEmpId, type, minutes)
+            planning.setEventRange(startISO, endISO, selectedEmpId, type, minutes, hours)
             setEventModalDate(null)
           }}
           onClose={() => setEventModalDate(null)}

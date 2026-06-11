@@ -4,6 +4,7 @@ import {
   loadWeekEvents, saveWeekEvents, addDays, clearWeek
 } from '../firebase/planning'
 import type { WeekDraft, WeekEvents, DayEvent, EmpWeekCounter, AbsenceType, Employee } from '../types'
+import { HOURS } from '../types'
 
 /** Calcule la date de Pâques (algorithme de Gauss) */
 function easterDate(year: number): Date {
@@ -195,6 +196,27 @@ export function usePlanning(user: { uid: string } | null) {
     setDirty(true)
   }, [])
 
+  /** Règle les horaires d'un employé sur un jour comme un bloc continu [startHour, endHour[.
+   *  startHour null → efface tous les créneaux de l'employé ce jour-là. */
+  const setEmpDayHours = useCallback((dayIndex: number, empId: string, startHour: number | null, endHour: number) => {
+    setDraft(prev => {
+      const day = prev[dayIndex] ?? { dayIndex, hours: {} }
+      const nextHours: Record<string, string[]> = { ...day.hours }
+      HOURS.forEach(h => {
+        const key = String(h)
+        const current = nextHours[key] ?? []
+        const shouldWork = startHour !== null && h >= startHour && h < endHour
+        if (shouldWork) {
+          nextHours[key] = current.includes(empId) ? current : [...current, empId]
+        } else {
+          nextHours[key] = current.filter(id => id !== empId)
+        }
+      })
+      return { ...prev, [dayIndex]: { dayIndex, hours: nextHours } }
+    })
+    setDirty(true)
+  }, [])
+
   const setDayEvent = useCallback((dateISO: string, event: DayEvent) => {
     setWeekEvents(prev => {
       const dayEvents = prev[dateISO] ?? []
@@ -375,7 +397,7 @@ export function usePlanning(user: { uid: string } | null) {
     draft,
     weekEvents, setDayEvent, removeDayEvent, setEventRange, removeEventRange,
     loading, saving, dirty,
-    toggleCell, paintCell,
+    toggleCell, paintCell, setEmpDayHours,
     save, history, undoTo,
     weeklyHours,
     clearDay, copyDay,
