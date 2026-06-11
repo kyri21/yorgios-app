@@ -4,7 +4,17 @@
 
 ---
 
-# CLAUDE.md — Matias PWA (mis à jour 2026-06-04)
+# CLAUDE.md — Matias PWA (mis à jour 2026-06-12)
+
+## 🔍 AUDIT COMPLET EN COURS (démarré 2026-06-12) — RIEN NE SE CORRIGE SANS ACCORD D'ARTHUR
+
+- **Plan en 5 phases** : 0-Cartographie ✅ FAIT · 1-Statique (permissions×rules, silent failures, perf) · 2-QA dynamique (qa-only prod + MobAI iPhone) · 3-UX/architecture (impeccable, créer PRODUCT.md d'abord) · 4-Synthèse avec GO/NO-GO item par item
+- **Livrables Phase 0** : `docs/audit/00-SYNTHESE-CARTOGRAPHIE.md` (28 anomalies pré-classées P0→P3) + 5 fichiers `docs/audit/cartographie-*.md`
+- **Base auditée** : commit `9cc9137` (snapshot incluant le chantier permissions inachevé AdminPermissions/PermissionsContext)
+- **Confirmés P0 sécurité** : secret fallback `'matias-fallback-secret'` (functions/src/index.ts:52) ; `sendPasswordReset` sans check auth/rôle (index.ts:877)
+- **Faux positifs déjà écartés** : ActionCorrectiveModal existe ; PermissionsProvider est branché (App.tsx:9)
+- **Prochaine session** : lancer la Phase 1 (voir prompt de reprise dans docs/audit/00-SYNTHESE-CARTOGRAPHIE.md)
+- ⚠️ Phase 2 : ne JAMAIS cliquer « On s'en occupe », pas de viewed:true ruptures, attention aux actions qui envoient de vrais emails (REFUSE, NC, congés)
 
 ## Fonctionnalités déployées session 2026-06-04
 
@@ -928,3 +938,47 @@ Pastilles DLC : AUJ. = orange, DEMAIN = violet.
 - CF `incomingSms` — parse SMS — écrit dans `deliveries`.
 - Page `/livraisons` : `onSnapshot deliveries where status=='in_progress'`.
 - iPad Corner : enregistre `devices/{uid}` au login, son + WakeLock sur nouvelle livraison.
+
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+This project is indexed by GitNexus as **yorgios-app** (5332 symbols, 8232 relationships, 205 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+
+> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
+
+## Always Do
+
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
+
+## Never Do
+
+- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
+- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+
+## Resources
+
+| Resource | Use for |
+|----------|---------|
+| `gitnexus://repo/yorgios-app/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/yorgios-app/clusters` | All functional areas |
+| `gitnexus://repo/yorgios-app/processes` | All execution flows |
+| `gitnexus://repo/yorgios-app/process/{name}` | Step-by-step execution trace |
+
+## CLI
+
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+
+<!-- gitnexus:end -->
