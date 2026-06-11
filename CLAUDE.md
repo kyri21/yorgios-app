@@ -8,13 +8,15 @@
 
 ## 🔍 AUDIT COMPLET EN COURS (démarré 2026-06-12) — RIEN NE SE CORRIGE SANS ACCORD D'ARTHUR
 
-- **Plan en 5 phases** : 0-Cartographie ✅ FAIT · 1-Statique (permissions×rules, silent failures, perf) · 2-QA dynamique (qa-only prod + MobAI iPhone) · 3-UX/architecture (impeccable, créer PRODUCT.md d'abord) · 4-Synthèse avec GO/NO-GO item par item
-- **Livrables Phase 0** : `docs/audit/00-SYNTHESE-CARTOGRAPHIE.md` (28 anomalies pré-classées P0→P3) + 5 fichiers `docs/audit/cartographie-*.md`
-- **Base auditée** : commit `9cc9137` (snapshot incluant le chantier permissions inachevé AdminPermissions/PermissionsContext)
-- **Confirmés P0 sécurité** : secret fallback `'matias-fallback-secret'` (functions/src/index.ts:52) ; `sendPasswordReset` sans check auth/rôle (index.ts:877)
-- **Faux positifs déjà écartés** : ActionCorrectiveModal existe ; PermissionsProvider est branché (App.tsx:9)
-- **Prochaine session** : lancer la Phase 1 (voir prompt de reprise dans docs/audit/00-SYNTHESE-CARTOGRAPHIE.md)
-- ⚠️ Phase 2 : ne JAMAIS cliquer « On s'en occupe », pas de viewed:true ruptures, attention aux actions qui envoient de vrais emails (REFUSE, NC, congés)
+- **Plan en 5 phases** : 0-Cartographie ✅ · 1-Statique ✅ · 2-Web ✅ / 2-Mobile ⬜ · 3-UX ⬜ · 4-Synthèse GO/NO-GO ⬜
+- **Livrables** : `docs/audit/` → `00-SYNTHESE` (28 anomalies + prompt de reprise) · `01-statique.md` · `02-dynamique-web.md` · 5 `cartographie-*.md`
+- **Base auditée** : commit `9cc9137` ; docs aux commits e8efaa8/a07e768/f6abd13
+- **Confirmés P0 sécurité** : secret fallback `'matias-fallback-secret'` (functions/src/index.ts:52) ; `sendPasswordReset` sans auth/rôle (index.ts:877) ; token HMAC tronqué 32c (53) ; anti-spam commandes contournable tél. vide (189) ; RGPD /commande sans consentement (CommandePublique:158)
+- **Découverte clé** : permissions cosmétiques — les rules Firestore ne lisent pas `settings/permissions`, les permKeys action_*/field_* ne sont câblées nulle part
+- **Phase 2-web** : socle sain (0 erreur console login/planning/corner), bundle JS ≈ 1 Mo (cible perf), bottom-nav visible en desktop 1280px
+- **Faux positifs écartés** : ActionCorrectiveModal existe ; PermissionsProvider branché (App.tsx:9) ; `/pointage` concorde
+- **Reprise** : prompt complet en bas de `docs/audit/00-SYNTHESE-CARTOGRAPHIE.md` → Phase 2-mobile (MobAI iPhone)
+- ⚠️ Prod : jamais « On s'en occupe », pas de viewed:true ruptures, pas d'action qui envoie emails/FCM réels (REFUSE, NC, congés, commande)
 
 ## Fonctionnalités déployées session 2026-06-04
 

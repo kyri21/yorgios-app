@@ -64,8 +64,13 @@ Les affirmations à fort impact ont été contre-vérifiées manuellement.
 | 27 | Chantier permissions (AdminPermissions + PermissionsContext) : fonctionnel mais partiel — perms appliquées sidebar+grid, pas dans les pages elles-mêmes | src/contexts/, src/pages/AdminPermissions.tsx |
 | 28 | 3 notions de « livraison » dans la nav (coursier /livraisons, corner/livraison, cuisine/livraisons) — confusion UX | Phase 3 |
 
-## Prochaines étapes
-- **Phase 1** : audit statique croisé (vérifier chaque item « à vérifier » ci-dessus, croiser UI×rules, silent failures systématiques) → `01-statique.md`
-- **Phase 2** : QA dynamique (/qa-only sur prod + MobAI iPhone — planning mobile jamais testé sur device)
-- **Phase 3** : UX/architecture (impeccable, nécessite PRODUCT.md)
-- **Phase 4** : SYNTHESE.md finale avec GO/NO-GO d'Arthur item par item
+## Avancement des phases (MAJ 2026-06-12)
+- ✅ **Phase 0** — cartographie : `00-SYNTHESE` + 5 `cartographie-*.md`
+- ✅ **Phase 1** — statique : `01-statique.md` (cluster sécurité P0 confirmé ; découverte clé : permissions cosmétiques ; 1 faux positif Phase 0 corrigé)
+- 🟡 **Phase 2 volet WEB** — `02-dynamique-web.md` : smoke test live fait (socle sain 0 erreur console, bundle 1 Mo, 2 retouches UX). **Volet MOBILE non fait.**
+- ⬜ **Phase 2 volet MOBILE** — MobAI/iPhone : planning éditable, FCM, géoloc pointage, service worker. + autres rôles (corner/cuisine/manager) en lecture.
+- ⬜ **Phase 3** — UX/architecture (impeccable, créer PRODUCT.md d'abord) : flux retrait DLC vitrine (12 périmés en prod), 3 « livraisons » dans la nav, bottom-nav responsive
+- ⬜ **Phase 4** — SYNTHESE finale avec GO/NO-GO d'Arthur item par item, puis exécution des correctifs validés
+
+### Prompt de reprise (nouvelle session)
+> Audit Matias — reprendre à la Phase 2-mobile. Lis docs/audit/00-SYNTHESE-CARTOGRAPHIE.md + 01-statique.md + 02-dynamique-web.md. Branche MobAI sur l'iPhone d'Arthur (il a MobAI Pro) : teste le planning éditable mobile (bloc continu + absences), le pointage géoloc, la bannière service-worker « nouvelle version », et connecte-toi en corner/cuisine/manager pour vérifier que chaque rôle ne voit QUE ses écrans (croiser §B/C de 01-statique). Puis Phase 3 (créer PRODUCT.md, lancer /impeccable sur le flux retrait DLC vitrine) et Phase 4 (synthèse GO/NO-GO). RIEN ne se corrige sans l'accord d'Arthur. Précautions prod : jamais « On s'en occupe », pas de viewed:true ruptures, pas d'action qui envoie emails/FCM réels (REFUSE, NC, congés, nouvelle commande).
