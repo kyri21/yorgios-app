@@ -49,8 +49,9 @@ async function notifyRoles(
 
 /** Génère un token HMAC-SHA256 pour les boutons d'action dans les emails */
 function makeActionToken(cmdId: string, statut: string): string {
-  const secret = process.env.YORGIOS_WP_SECRET || 'matias-fallback-secret'
-  return crypto.createHmac('sha256', secret).update(`${cmdId}:${statut}`).digest('hex').slice(0, 32)
+  const secret = process.env.YORGIOS_WP_SECRET
+  if (!secret) throw new Error('YORGIOS_WP_SECRET non configuré — génération de token refusée')
+  return crypto.createHmac('sha256', secret).update(`${cmdId}:${statut}`).digest('hex')
 }
 
 function verifyActionToken(cmdId: string, statut: string, token: string): boolean {
@@ -877,6 +878,14 @@ export const purgeOldMessages = onSchedule(
 export const sendPasswordReset = onCall(
   { region: 'europe-west1' },
   async (request) => {
+    // Garde : réservé patron/administrateur (le "mot de passe oublié" public du login
+    // utilise sendPasswordResetEmail côté client, PAS cette fonction).
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Non authentifié')
+    const callerSnap = await db.collection('users').doc(request.auth.uid).get()
+    if (!['patron', 'administrateur'].includes(callerSnap.data()?.role)) {
+      throw new HttpsError('permission-denied', 'Réservé au patron / administrateur')
+    }
+
     const { email } = request.data as { email: string }
     if (!email) throw new HttpsError('invalid-argument', 'Email manquant')
 

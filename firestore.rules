@@ -145,7 +145,10 @@ service cloud.firestore {
     // create : public (formulaire client sans auth)
     // read/update : corner + patron + manager
     match /commandes_externes/{doc} {
-      allow create: if true;
+      // Création publique mais téléphone non vide obligatoire (anti-spam : la CF
+      // onNewCommande déduplique par téléphone ; un tél. vide contournait le contrôle).
+      allow create: if request.resource.data.telephone is string
+                    && request.resource.data.telephone.size() > 0;
       allow read, update: if isCorner();
     }
 
@@ -177,7 +180,8 @@ service cloud.firestore {
     }
     match /settings/{doc} {
       allow read:  if isAnyRole();
-      allow write: if isAuth() && role() in ['patron', 'administrateur'];
+      // B4 : managers peuvent écrire les réglages (ils ont déjà accès à /admin/settings)
+      allow write: if isPatronOrManager();
     }
 
     // ─── Annonces obligatoires ────────────────────────────────────
