@@ -984,6 +984,12 @@ export const deleteUser = onCall(
     if (!uid) throw new HttpsError('invalid-argument', 'uid manquant')
     if (uid === request.auth.uid) throw new HttpsError('invalid-argument', 'Impossible de supprimer son propre compte')
 
+    // Anti-escalade : seul un administrateur peut agir sur un compte administrateur.
+    const targetSnap = await db.collection('users').doc(uid).get()
+    if (targetSnap.data()?.role === 'administrateur' && callerSnap.data()?.role !== 'administrateur') {
+      throw new HttpsError('permission-denied', 'Seul un administrateur peut agir sur un compte administrateur')
+    }
+
     await getAuth().deleteUser(uid)
     await db.collection('users').doc(uid).delete()
 
@@ -1031,6 +1037,12 @@ export const updateUserEmail = onCall(
     if (!email || !email.includes('@')) throw new HttpsError('invalid-argument', 'Email invalide')
     if (uid === request.auth.uid) throw new HttpsError('invalid-argument', 'Impossible de modifier son propre email ici')
 
+    // Anti-escalade : seul un administrateur peut agir sur un compte administrateur.
+    const targetSnap = await db.collection('users').doc(uid).get()
+    if (targetSnap.data()?.role === 'administrateur' && callerSnap.data()?.role !== 'administrateur') {
+      throw new HttpsError('permission-denied', 'Seul un administrateur peut agir sur un compte administrateur')
+    }
+
     await getAuth().updateUser(uid, { email })
     await db.collection('users').doc(uid).update({ email, updatedAt: Timestamp.now() })
 
@@ -1057,6 +1069,12 @@ export const setUserDisabled = onCall(
     }
     if (!uid) throw new HttpsError('invalid-argument', 'uid manquant')
     if (uid === request.auth.uid) throw new HttpsError('invalid-argument', 'Impossible de désactiver son propre compte')
+
+    // Anti-escalade : seul un administrateur peut agir sur un compte administrateur.
+    const targetSnap = await db.collection('users').doc(uid).get()
+    if (targetSnap.data()?.role === 'administrateur' && callerSnap.data()?.role !== 'administrateur') {
+      throw new HttpsError('permission-denied', 'Seul un administrateur peut agir sur un compte administrateur')
+    }
 
     await getAuth().updateUser(uid, { disabled })
     await db.collection('users').doc(uid).update({
