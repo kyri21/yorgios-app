@@ -68,9 +68,12 @@ Les affirmations à fort impact ont été contre-vérifiées manuellement.
 - ✅ **Phase 0** — cartographie : `00-SYNTHESE` + 5 `cartographie-*.md`
 - ✅ **Phase 1** — statique : `01-statique.md` (cluster sécurité P0 confirmé ; découverte clé : permissions cosmétiques ; 1 faux positif Phase 0 corrigé)
 - ✅ **Phase 2 volet WEB** — `02-dynamique-web.md` : socle sain (0 erreur console), bundle 1 Mo, 2 retouches UX responsive. 2 comptes test créés + cloisonnement corner validé.
-- 🟡 **Phase 2 volet MOBILE** — `02-dynamique-mobile.md` : planning éditable iPhone **VALIDÉ** (clôt l'inconnue du CLAUDE.md), 0 écriture. Findings M1 (skeleton 30s sur cellulaire = perçu lent), M2 (boutons sans aria-label). **Reste : pointage géoloc, service worker, FCM, isolation cuisine/manager, ajout absence mobile.**
-- ⬜ **Phase 3** — UX/architecture (impeccable, créer PRODUCT.md d'abord) : flux retrait DLC vitrine (12 périmés en prod), 3 « livraisons » dans la nav, bottom-nav responsive
-- ⬜ **Phase 4** — SYNTHESE finale avec GO/NO-GO d'Arthur item par item, puis exécution des correctifs validés
+- ✅ **Phase 2 volet MOBILE** — `02-dynamique-mobile.md` : planning éditable iPhone VALIDÉ, isolation corner+cuisine+**manager** OK (W5: manager+settings=échec silencieux), GdprConsentModal + DailyPointageGate confirmés. Reste optionnel : compléter un pointage, service worker, FCM, ajout absence mobile, reproduire M4.
+- 🟡 **Phase 3** — `03-ux-architecture.md` + `PRODUCT.md` créés : 17 items UX/archi priorisés (U1-U17). **Reste : passe visuelle fine /impeccable écran par écran (session dédiée, navigateur + captures).**
+- ⬜ **Phase 4** — SYNTHESE finale avec GO/NO-GO d'Arthur item par item, puis exécution des correctifs validés. **C'est l'étape où Arthur tranche chaque ☐.**
+
+### Comptes test (à supprimer en fin d'audit)
+`audit.corner@yorgios.fr`, `audit.cuisine@yorgios.fr`, `audit.manager@yorgios.fr` — mots de passe communiqués à Arthur en privé.
 
 ### Comptes test (à supprimer en fin d'audit)
 `audit.corner@yorgios.fr` (corner) et `audit.cuisine@yorgios.fr` (cuisine). Mots de passe communiqués à Arthur en privé.
