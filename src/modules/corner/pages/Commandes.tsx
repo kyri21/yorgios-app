@@ -139,6 +139,10 @@ export default function Commandes() {
 
 // ─── Onglet 1 : Nouvelle commande ────────────────────────────────
 function NouvelleCommande({ user }: { user: any }) {
+  const { can } = usePermissions()
+  const canCreate = can(user?.role, 'action_create_commande')
+  const canPrixEstime = can(user?.role, 'field_prix_estime')
+  const canNotesCuisine = can(user?.role, 'field_notes_cuisine')
   const [form, setForm]       = useState({ ...INIT_FORM, saisiPar: user?.displayName || user?.email?.split('@')[0] || '' })
   const [produits, setProduits] = useState<ProduitLigne[]>([emptyProduit()])
   const [errors, setErrors]   = useState<Record<string, string>>({})
@@ -310,6 +314,7 @@ function NouvelleCommande({ user }: { user: any }) {
         form={form} set={set} produits={produits}
         addProduit={addProduit} removeProduit={removeProduit} updateProduit={updateProduit}
         errors={errors} mode="interne"
+        canPrixEstime={canPrixEstime} canNotesCuisine={canNotesCuisine}
       />
 
       {/* Code fidélité */}
@@ -355,9 +360,15 @@ function NouvelleCommande({ user }: { user: any }) {
         </div>
       )}
 
-      <button onClick={handleSubmit} disabled={saving} className="btn-primary">
-        {saving ? 'Enregistrement…' : '💾 Enregistrer la commande'}
-      </button>
+      {canCreate ? (
+        <button onClick={handleSubmit} disabled={saving} className="btn-primary">
+          {saving ? 'Enregistrement…' : '💾 Enregistrer la commande'}
+        </button>
+      ) : (
+        <div style={{ background: 'var(--surface-mid)', border: '1px solid var(--border)', borderRadius: 12, padding: '12px 16px', fontSize: 13, color: 'var(--on-surface-2)', textAlign: 'center' }}>
+          🔒 Votre rôle ne permet pas d'enregistrer une commande
+        </div>
+      )}
     </>
   )
 }
@@ -492,7 +503,7 @@ function GestionCommandes({ user }: { user: any }) {
           {filtered.map(c => (
             <CommandeCard key={c.docId} commande={c} expanded={expanded === c.docId}
               onToggle={() => setExpanded(expanded === c.docId ? null : c.docId)}
-              onUpdated={load} isPatron={canManageCommandes} />
+              onUpdated={load} isPatron={canManageCommandes} role={user?.role} />
           ))}
         </div>
       )}
@@ -501,10 +512,14 @@ function GestionCommandes({ user }: { user: any }) {
 }
 
 // ─── Card commande ────────────────────────────────────────────────
-function CommandeCard({ commande: c, expanded, onToggle, onUpdated, isPatron }: {
+function CommandeCard({ commande: c, expanded, onToggle, onUpdated, isPatron, role }: {
   commande: Commande; expanded: boolean
-  onToggle: () => void; onUpdated: () => void; isPatron: boolean
+  onToggle: () => void; onUpdated: () => void; isPatron: boolean; role?: string
 }) {
+  const { can } = usePermissions()
+  const canPrixEstime = can(role, 'field_prix_estime')
+  const canNotesCuisine = can(role, 'field_notes_cuisine')
+  const canNotesManager = can(role, 'field_notes_manager')
   const [statut, setStatut]           = useState(c.statut)
   const [notesCuisine, setNotesCuisine] = useState(c.notesCuisine || '')
   const [notesManager, setNotesManager] = useState(c.notesManager || '')
@@ -760,15 +775,21 @@ function CommandeCard({ commande: c, expanded, onToggle, onUpdated, isPatron }: 
                     {STATUTS.map(s => <option key={s}>{s}</option>)}
                   </select>
                 </EditField>
-                <EditField label="Prix estimé (€)">
-                  <input type="number" className="input" style={{ fontSize: 13 }} value={prixEstime} onChange={e => setPrixEstime(e.target.value)} placeholder="0.00" />
-                </EditField>
-                <EditField label="Notes cuisine">
-                  <textarea className="input" rows={2} style={{ resize: 'none', fontSize: 13 }} value={notesCuisine} onChange={e => setNotesCuisine(e.target.value)} />
-                </EditField>
-                <EditField label="Notes manager">
-                  <textarea className="input" rows={2} style={{ resize: 'none', fontSize: 13 }} value={notesManager} onChange={e => setNotesManager(e.target.value)} />
-                </EditField>
+                {canPrixEstime && (
+                  <EditField label="Prix estimé (€)">
+                    <input type="number" className="input" style={{ fontSize: 13 }} value={prixEstime} onChange={e => setPrixEstime(e.target.value)} placeholder="0.00" />
+                  </EditField>
+                )}
+                {canNotesCuisine && (
+                  <EditField label="Notes cuisine">
+                    <textarea className="input" rows={2} style={{ resize: 'none', fontSize: 13 }} value={notesCuisine} onChange={e => setNotesCuisine(e.target.value)} />
+                  </EditField>
+                )}
+                {canNotesManager && (
+                  <EditField label="Notes manager">
+                    <textarea className="input" rows={2} style={{ resize: 'none', fontSize: 13 }} value={notesManager} onChange={e => setNotesManager(e.target.value)} />
+                  </EditField>
+                )}
               </div>
 
               <button onClick={handleSaveFullEdit} disabled={saving} className="btn-primary" style={{ fontSize: 14 }}>
@@ -957,18 +978,24 @@ function CommandeCard({ commande: c, expanded, onToggle, onUpdated, isPatron }: 
                         {STATUTS.map(s => <option key={s}>{s}</option>)}
                       </select>
                     </div>
-                    <div>
-                      <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Prix estimé (€)</label>
-                      <input type="number" className="input" style={{ fontSize: 13 }} value={prixEstime} onChange={e => setPrixEstime(e.target.value)} placeholder="0.00" />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Notes cuisine</label>
-                      <textarea className="input" rows={2} style={{ resize: 'none', fontSize: 13 }} value={notesCuisine} onChange={e => setNotesCuisine(e.target.value)} placeholder="Instructions spéciales pour la brigade…" />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Notes manager</label>
-                      <textarea className="input" rows={2} style={{ resize: 'none', fontSize: 13 }} value={notesManager} onChange={e => setNotesManager(e.target.value)} />
-                    </div>
+                    {canPrixEstime && (
+                      <div>
+                        <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Prix estimé (€)</label>
+                        <input type="number" className="input" style={{ fontSize: 13 }} value={prixEstime} onChange={e => setPrixEstime(e.target.value)} placeholder="0.00" />
+                      </div>
+                    )}
+                    {canNotesCuisine && (
+                      <div>
+                        <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Notes cuisine</label>
+                        <textarea className="input" rows={2} style={{ resize: 'none', fontSize: 13 }} value={notesCuisine} onChange={e => setNotesCuisine(e.target.value)} placeholder="Instructions spéciales pour la brigade…" />
+                      </div>
+                    )}
+                    {canNotesManager && (
+                      <div>
+                        <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Notes manager</label>
+                        <textarea className="input" rows={2} style={{ resize: 'none', fontSize: 13 }} value={notesManager} onChange={e => setNotesManager(e.target.value)} />
+                      </div>
+                    )}
                     <button onClick={handleUpdate} disabled={saving} className="btn-primary" style={{ fontSize: 14 }}>
                       {saved ? '✅ Sauvegardé !' : saving ? 'Sauvegarde…' : 'Enregistrer'}
                     </button>
@@ -1086,7 +1113,7 @@ function AutocompleteProduit({ value, onChange, catalogue }: {
 }
 
 // ─── Formulaire partagé (interne + public) ────────────────────────
-export function CommandeFormBody({ form, set, produits, addProduit, removeProduit, updateProduit, errors, mode }: {
+export function CommandeFormBody({ form, set, produits, addProduit, removeProduit, updateProduit, errors, mode, canPrixEstime = true, canNotesCuisine = true }: {
   form: typeof INIT_FORM
   set: (field: string, val: string) => void
   produits: ProduitLigne[]
@@ -1095,6 +1122,8 @@ export function CommandeFormBody({ form, set, produits, addProduit, removeProdui
   updateProduit: (id: number, field: keyof ProduitLigne, val: string) => void
   errors: Record<string, string>
   mode: 'interne' | 'public'
+  canPrixEstime?: boolean
+  canNotesCuisine?: boolean
 }) {
   const [catalogue, setCatalogue] = useState<CatalogueProduit[]>([])
 
@@ -1198,7 +1227,7 @@ export function CommandeFormBody({ form, set, produits, addProduit, removeProdui
               </div>
               <div style={{ fontSize: 11, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', marginTop: 2 }}>Indicatif — non contractuel</div>
             </div>
-            {mode === 'interne' && (
+            {mode === 'interne' && canPrixEstime && (
               <button
                 onClick={() => set('prixEstime', estimation.toFixed(2))}
                 style={{
@@ -1266,12 +1295,16 @@ export function CommandeFormBody({ form, set, produits, addProduit, removeProdui
       {mode === 'interne' && (
         <div style={{ background: 'var(--surface)', borderRadius: 14, padding: 16, border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>🔒 Informations internes</div>
-          <Field label="Prix estimé (€)">
-            <input className="input" type="number" min="0" step="0.01" value={form.prixEstime} onChange={e => set('prixEstime', e.target.value)} placeholder="0.00" />
-          </Field>
-          <Field label="Notes pour la cuisine">
-            <textarea className="input" rows={2} style={{ resize: 'none' }} value={form.notesCuisine} onChange={e => set('notesCuisine', e.target.value)} placeholder="Optionnel" />
-          </Field>
+          {canPrixEstime && (
+            <Field label="Prix estimé (€)">
+              <input className="input" type="number" min="0" step="0.01" value={form.prixEstime} onChange={e => set('prixEstime', e.target.value)} placeholder="0.00" />
+            </Field>
+          )}
+          {canNotesCuisine && (
+            <Field label="Notes pour la cuisine">
+              <textarea className="input" rows={2} style={{ resize: 'none' }} value={form.notesCuisine} onChange={e => set('notesCuisine', e.target.value)} placeholder="Optionnel" />
+            </Field>
+          )}
           <Field label="Saisi par">
             <input className="input" value={form.saisiPar} onChange={e => set('saisiPar', e.target.value)} />
           </Field>

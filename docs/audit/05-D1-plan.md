@@ -1,4 +1,28 @@
-# D1 — Brancher les permissions pour de vrai (UI + rules) — PLAN — 2026-06-12
+# D1 — Brancher les permissions pour de vrai (UI + rules) — ✅ EXÉCUTÉ ET DÉPLOYÉ — 2026-06-12
+
+> **EXÉCUTION 2026-06-12 (soir)** — les 2 tranches sont déployées en prod.
+> - **Tranche 1 (UI)** : 6 fichiers câblés sur `usePermissions().can(role, key)` — Commandes.tsx
+>   (action_create_commande + field_prix_estime/notes_cuisine/notes_manager, form + gestion),
+>   Livraison.tsx (action_derogation_temp en fallback de canOverrideEmails, action_delete_livraison ×2,
+>   action_delete_ac), Fabrication.tsx (action_delete_lot, field_createur_lot), Livraisons.tsx cuisine
+>   (action_delete_livraison), Temperatures corner+cuisine (action_delete_ac).
+> - **Tranche 2 (rules)** : `permAllows(key)` fail-open + `&&` sur les 4 delete. Le chemin en dur
+>   `/databases/test/...` est passé au wildcard standard `{database}` (sémantique identique en prod,
+>   firebase.json cible la DB `test` ; requis pour l'émulateur).
+> - **Tests émulateur : 36/36 ✓** (`tests/rules/d1-permissions.test.mjs`, scénarios A doc absent /
+>   B false explicite / C true / D doc partiel — anti-lockout patron/admin vérifié).
+>   Lancement : `firebase emulators:exec --only firestore --project demo-d1 "node tests/rules/d1-permissions.test.mjs"`
+>   (nécessite Java 21 : `export PATH=~/.local/jdk/jdk-21.0.11+10-jre/bin:$PATH`).
+> - **Écarts vs plan, à connaître** :
+>   1. `action_delete_commande` : AUCUN bouton supprimer commande n'existe dans l'UI → permKey non câblée (rien à gater).
+>   2. `non_conformites.delete` (rules) : gouverné par la clé `action_delete_ac` (NC+AC = registre qualité HACCP) — pas de clé dédiée NC.
+>   3. `action_update_statut_commande` était déjà câblé (GestionCommandes, session antérieure).
+>   4. Deltas par défaut si `settings/permissions` reflète DEFAULT_PERMISSIONS : corner perd le champ
+>      « Prix estimé » du formulaire interne (défaut false) ; manager VOIT désormais « Créé par » en
+>      Fabrication (défaut true, avant patron/admin only). Ajustables dans /admin/permissions.
+> - **Reste à faire (manuel)** : vérifier en prod avec les 3 comptes audit (corner/cuisine/manager) :
+>   décocher une perm dans AdminPermissions → UI masquée ET delete refusé serveur. Vérifier l'état du
+>   doc `settings/permissions` dans AdminPermissions (lecture directe prod non faite en session).
 
 > Décision Arthur : « Brancher vraiment (UI + rules) ». Chantier en 2 tranches.
 > ⚠️ La tranche 2 (rules) touche les `delete` Firestore → **risque de lockout** → à exécuter en session dédiée avec test par rôle.

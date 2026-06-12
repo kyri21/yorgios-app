@@ -81,10 +81,15 @@ Les affirmations à fort impact ont été contre-vérifiées manuellement.
 ### Correctifs DÉPLOYÉS en prod (2026-06-12)
 Lot A (sécurité P0 : secret HMAC, sendPasswordReset admin-only, token 64c, anti-spam tél.), A6 (anti-escalade users), B4 (settings écriture managers), G1 (consentement RGPD /commande, vérifié prod). Voir `04-SYNTHESE-DECISIONS.md`. Reste : A5 (Arthur change son mot de passe), et tous les items NO-GO/PLUS TARD non tranchés.
 
-### Chantier D1 (permissions UI+rules) — PLANIFIÉ, décision fail-open prise
-Voir `05-D1-plan.md`. Tranche 1 (UI, ~5 fichiers, sûr) + Tranche 2 (rules fail-open, **émulateur Firestore + test par rôle avant prod**). À exécuter en session dédiée.
+### Chantier D1 (permissions UI+rules) — ✅ EXÉCUTÉ ET DÉPLOYÉ (2026-06-12 soir)
+Voir `05-D1-plan.md` (bloc EXÉCUTION en tête). Tranche 1 UI (6 fichiers) + Tranche 2 rules fail-open
+déployées en prod après **36/36 tests émulateur** (`tests/rules/d1-permissions.test.mjs`).
+Reste manuel : vérification prod avec les 3 comptes audit + état du doc dans /admin/permissions.
 
 ### Prompt de reprise (nouvelle session)
-> Audit Matias — exécuter le chantier D1 (permissions UI + rules). Lis `docs/audit/05-D1-plan.md` (décision fail-open déjà prise) + `04-SYNTHESE-DECISIONS.md`. **Tranche 1 (UI)** : câbler `usePermissions().can(user.role, key)` sur les 7 action_* et 4 field_* aux points listés (Commandes, Livraison, Fabrication, ActionCorrectiveModal), build + deploy hosting. **Tranche 2 (rules, fail-open)** : appliquer le pattern `permAllows()` du plan aux delete (lots_cuisine, livraisons, non_conformites, actions_correctives) ; **tester avec l'émulateur Firestore (`firebase emulators:start`) chaque rôle × chaque delete AVANT prod**, puis avec les 3 comptes audit (corner/cuisine/manager). RIEN d'autre ne se corrige sans accord d'Arthur.
+> Audit Matias — D1 est DÉPLOYÉ (voir `05-D1-plan.md`). Reste : (1) vérifier D1 en prod avec les
+> 3 comptes audit (corner/cuisine/manager) — décocher une perm dans /admin/permissions → UI masquée
+> ET delete refusé serveur ; (2) Phase 3 passe visuelle /impeccable ; (3) A5 (Arthur change son mdp).
+> RIEN d'autre ne se corrige sans accord d'Arthur.
 >
 > Autres restes possibles (registre 04, lots C/E/F) : vitesse perçue (bundle 1 Mo + skeleton, items C1-C3/U1-U2), retrait groupé DLC vitrine (E1/V3), aria-labels (E2/M2), renommage 3 « livraisons » (E4/U8), nettoyage AdminDocuments + rules orphelines (F1/F2). + Phase 2-mobile non finie : pointage géoloc, service worker, FCM (MobAI device id 00008110-000E44E814DB801E ; rebrancher l'iPhone, le bridge avait sauté). **Supprimer les 3 comptes test audit.* en fin d'audit.** Précautions prod habituelles (pas d'emails/FCM réels, jamais « On s'en occupe »).

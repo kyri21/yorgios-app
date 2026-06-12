@@ -9,7 +9,7 @@
 ## 🔍 AUDIT COMPLET EN COURS (démarré 2026-06-12) — RIEN NE SE CORRIGE SANS ACCORD D'ARTHUR
 
 - **Correctifs DÉPLOYÉS 2026-06-12** : Lot A sécurité (secret HMAC, sendPasswordReset admin-only, token 64c, anti-spam tél.), A6 anti-escalade users, B4 settings écriture managers, G1 consentement RGPD /commande. Reste A5 (Arthur change son mdp). Détails `docs/audit/04-SYNTHESE-DECISIONS.md`.
-- **D1 (permissions UI+rules)** : planifié `docs/audit/05-D1-plan.md`, décision **fail-open**, à faire en session dédiée (émulateur + test par rôle). Prompt de reprise en bas de `00-SYNTHESE-CARTOGRAPHIE.md`.
+- **D1 (permissions UI+rules)** : ✅ **DÉPLOYÉ 2026-06-12 soir** — UI câblée (`can(role,key)` dans Commandes/Livraison/Fabrication/Livraisons cuisine/Temperatures ×2) + rules `permAllows()` **fail-open** sur les 4 delete (lots_cuisine, livraisons, non_conformites→clé `action_delete_ac`, actions_correctives). 36/36 tests émulateur (`tests/rules/d1-permissions.test.mjs`, Java 21 requis : `~/.local/jdk`). `firestore.rules` passé au wildcard `{database}` (équivalent, déploiement cible DB `test`). Reste : vérif prod 3 comptes audit + état doc `settings/permissions` dans /admin/permissions. Détails `docs/audit/05-D1-plan.md`.
 - **Plan en 5 phases** : 0-Cartographie ✅ · 1-Statique ✅ · 2-Web+Mobile ✅ (3 rôles testés) · 3-UX 🟡 (analyse faite, reste passe visuelle /impeccable) · 4-Synthèse ✅ (registre A-G ; GO exécutés)
 - **Livrables** : `docs/audit/` → `00-SYNTHESE` · `01-statique.md` · `02-dynamique-web.md` · `02-dynamique-mobile.md` · `03-ux-architecture.md` · 5 `cartographie-*.md` + `PRODUCT.md` (racine)
 - **Comptes test** (à supprimer en fin d'audit) : `audit.corner@`, `audit.cuisine@`, `audit.manager@yorgios.fr`

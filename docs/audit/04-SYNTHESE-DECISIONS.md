@@ -37,7 +37,7 @@ App **saine sur le fond** : 0 erreur console en prod, design Aegean uniforme, cl
 ## LOT D — Permissions / architecture (P1) — DÉCISION STRUCTURANTE
 | # | Décision | Reco | Statut |
 |---|----------|------|--------|
-| D1 | **Permissions cosmétiques (U7)** : (a) brancher vraiment action_*/field_* + refléter dans les rules Firestore, (b) garder « affichage only » et le documenter clairement, (c) abandonner le chantier AdminPermissions | À TRANCHER (voir question) | ☐ |
+| D1 | **Permissions cosmétiques (U7)** : (a) brancher vraiment action_*/field_* + refléter dans les rules Firestore, (b) garder « affichage only » et le documenter clairement, (c) abandonner le chantier AdminPermissions | (a) retenue — fail-open décidé par Arthur 2026-06-12 | ✅ DÉPLOYÉ 2026-06-12 soir (UI + rules, 36/36 tests émulateur — voir `05-D1-plan.md`) |
 
 ## LOT E — UX / polish (P2) — recommandation : GO sélectif
 | # | Décision | Reco | Statut |

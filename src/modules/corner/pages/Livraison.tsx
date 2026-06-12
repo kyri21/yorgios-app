@@ -3,6 +3,7 @@ import { Timestamp, addDoc, collection, getDocs, getDoc, doc, deleteDoc, limit, 
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { db, auth, storage } from '../../../firebase/config'
 import { useAuth } from '../../../auth/useAuth'
+import { usePermissions } from '../../../contexts/PermissionsContext'
 import ActionCorrectiveModal, { type AcPayload } from '../../../components/ActionCorrectiveModal'
 
 type LivrDoc = {
@@ -127,6 +128,7 @@ function AcInlineSection({
 
 export default function Livraison() {
   const { user } = useAuth()
+  const { can } = usePermissions()
   const [tab, setTab] = useState<'today' | 'historique' | 'galerie' | 'coursier' | 'ac_tab'>('today')
 
   // --- Aujourd'hui ---
@@ -522,9 +524,11 @@ export default function Livraison() {
   }
 
   const isManagerRole = ['patron', 'administrateur', 'manager'].includes(user?.role ?? '')
+  const canDeleteLivraison = can(user?.role, 'action_delete_livraison')
+  const canDeleteAc = can(user?.role, 'action_delete_ac')
   const canOverride = canOverrideEmails.length > 0
     ? canOverrideEmails.includes(user?.email ?? '')
-    : isManagerRole
+    : can(user?.role, 'action_derogation_temp')
 
   function resultChip(result: string) {
     if (result === 'ACCEPTE') return <span className="chip-ok">ACCEPTÉ</span>
@@ -677,7 +681,7 @@ export default function Livraison() {
                     }}>
                       ↩ Retour cuisine
                     </button>
-                    {['patron', 'administrateur', 'manager'].includes(user?.role ?? '') && (
+                    {canDeleteLivraison && (
                       <button onClick={() => supprimerLivraison(l.id)} style={{
                         fontSize: 12, padding: '6px 12px', borderRadius: 8, border: 'none', cursor: 'pointer',
                         background: 'rgba(192,57,43,0.08)', color: 'var(--danger)', fontWeight: 600,
@@ -777,7 +781,7 @@ export default function Livraison() {
                       }}>
                         ↩ Retour cuisine
                       </button>
-                      {['patron', 'administrateur', 'manager'].includes(user?.role ?? '') && (
+                      {canDeleteLivraison && (
                         <button onClick={() => supprimerLivraison(l.id)} style={{
                           fontSize: 11, padding: '5px 10px', borderRadius: 7, border: 'none', cursor: 'pointer',
                           background: 'rgba(192,57,43,0.08)', color: 'var(--danger)', fontWeight: 600,
@@ -1757,7 +1761,7 @@ export default function Livraison() {
           }}
           editId={editAc.id}
           initialAction={editAc.action}
-          canDelete={isManagerRole}
+          canDelete={canDeleteAc}
           onDeleted={() => {
             loadLivAcs(acExpandedId)
             setEditAc(null)

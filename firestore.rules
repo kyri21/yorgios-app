@@ -1,13 +1,23 @@
 rules_version = '2';
 service cloud.firestore {
-  match /databases/test/documents {
+  match /databases/{database}/documents {
 
     // ─── Helpers ────────────────────────────────────────────────
     function isAuth() {
       return request.auth != null;
     }
     function role() {
-      return get(/databases/test/documents/users/$(request.auth.uid)).data.role;
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+    // D1 — permissions configurables (settings/permissions, éditées via AdminPermissions).
+    // FAIL-OPEN (décision Arthur 2026-06-12) : une permission n'est bloquante que si elle
+    // est explicitement présente ET false. Doc absent / rôle absent / clé absente ⇒ autorisé.
+    // patron/administrateur ne figurent pas dans le doc ⇒ toujours autorisés.
+    function permAllows(key) {
+      return !exists(/databases/$(database)/documents/settings/permissions)
+          || !(role() in get(/databases/$(database)/documents/settings/permissions).data)
+          || !(key in get(/databases/$(database)/documents/settings/permissions).data[role()])
+          || get(/databases/$(database)/documents/settings/permissions).data[role()][key] == true;
     }
     function isPatronOrManager() {
       return isAuth() && role() in ['patron', 'administrateur', 'manager'];
@@ -51,7 +61,8 @@ service cloud.firestore {
       allow read:   if isAnyRole();     // corner lit les lots pour la Vitrine
       allow create: if isCuisine();     // seule la cuisine crée des lots
       allow update: if isAnyRole();     // corner archive/renvoie ; cuisine marque sent
-      allow delete: if isAnyRole();     // cuisine + corner peuvent supprimer leurs lots
+      // D1 : configurable via settings/permissions (fail-open)
+      allow delete: if isAnyRole() && permAllows('action_delete_lot');
     }
     match /lot_counters/{doc} {
       allow read, write: if isCuisine();
@@ -92,7 +103,8 @@ service cloud.firestore {
       // Corner met à jour la réception (receptionTempC, result)
       // Patron/manager peuvent aussi modifier pour les corrections
       allow update: if isCorner();
-      allow delete: if isCuisine();     // cuisine peut supprimer ses propres départs
+      // D1 : configurable via settings/permissions (fail-open)
+      allow delete: if isCuisine() && permAllows('action_delete_livraison');
     }
 
     // ─── Corner ─────────────────────────────────────────────────
@@ -110,7 +122,8 @@ service cloud.firestore {
       allow read:         if isAnyRole();
       allow create:       if isCorner();
       allow update:       if isCorner();
-      allow delete:       if isPatronOrManager();
+      // D1 : NC = registre qualité HACCP, gouverné par la même clé que les AC (fail-open)
+      allow delete:       if isPatronOrManager() && permAllows('action_delete_ac');
     }
     // Stockage frigo corner : géré exclusivement par corner
     match /stockage_frigo/{doc} {
@@ -256,7 +269,9 @@ service cloud.firestore {
     match /actions_correctives/{id} {
       allow read: if isAnyRole();
       allow create: if isAnyRole();
-      allow update, delete: if isPatronOrManager();
+      allow update: if isPatronOrManager();
+      // D1 : configurable via settings/permissions (fail-open)
+      allow delete: if isPatronOrManager() && permAllows('action_delete_ac');
     }
   }
 }

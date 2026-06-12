@@ -19,6 +19,8 @@ import {
 import { deleteObject, getDownloadURL, ref, uploadBytes } from "firebase/storage";
 
 import { db, storage, ensureAnonAuth } from "../firebase/firebase";
+import { useAuth } from "../../../auth/useAuth";
+import { usePermissions } from "../../../contexts/PermissionsContext";
 
 // Règles GEP — seuils de tolérance max en °C (nomenclature GEP officielle)
 type Rule = { maxTol: number };
@@ -201,6 +203,9 @@ type LivrDoc = {
 };
 
 export default function Livraisons() {
+  const { user } = useAuth();
+  const { can } = usePermissions();
+  const canDeleteLivraison = can(user?.role, "action_delete_livraison");
   const [searchParams, setSearchParams] = useSearchParams();
   const monthParam = searchParams.get("month");
   const monthInfo = parseMonthParam(monthParam);
@@ -979,9 +984,11 @@ export default function Livraisons() {
                       <button className="btn-secondary" type="button" disabled={loading || !needsReception} onClick={() => startEdit(l)}>
                         Modifier
                       </button>
-                      <button className="btn-secondary" type="button" disabled={loading} onClick={() => removeDepart(l)}>
-                        Supprimer
-                      </button>
+                      {canDeleteLivraison && (
+                        <button className="btn-secondary" type="button" disabled={loading} onClick={() => removeDepart(l)}>
+                          Supprimer
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

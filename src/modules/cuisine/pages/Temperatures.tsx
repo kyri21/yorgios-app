@@ -3,6 +3,7 @@ import { Timestamp, addDoc, collection, doc, getDoc, getDocs, query, setDoc, whe
 import { db, auth } from '../../../firebase/config'
 import { useToast } from '../../../hooks/useToast'
 import { useAuth } from '../../../auth/useAuth'
+import { usePermissions } from '../../../contexts/PermissionsContext'
 import ActionCorrectiveModal, { type AcPayload } from '../../../components/ActionCorrectiveModal'
 
 const ALERT_MAX = 4
@@ -71,6 +72,8 @@ export default function Temperatures() {
   const [acLoading, setAcLoading] = useState(false)
   const [editAc, setEditAc]     = useState<AcItem | null>(null)
   const isManager = ['patron', 'administrateur', 'manager'].includes(user?.role ?? '')
+  const { can } = usePermissions()
+  const canDeleteAc = can(user?.role, 'action_delete_ac')
   const [alertMin, setAlertMin] = useState(-3)
 
   const [date, setDate]         = useState(todayISO())
@@ -651,7 +654,7 @@ export default function Temperatures() {
           onSaved={() => { setEditAc(null); loadAcForDate(date) }}
           editId={editAc.id}
           initialAction={editAc.action}
-          canDelete={isManager}
+          canDelete={canDeleteAc}
           onDeleted={() => { setEditAc(null); loadAcForDate(date) }}
         />
       )}

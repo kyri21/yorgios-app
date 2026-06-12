@@ -7,6 +7,7 @@ import {
 } from 'firebase/firestore'
 import { db, auth } from '../../../firebase/config'
 import { useAuth } from '../../../auth/useAuth'
+import { usePermissions } from '../../../contexts/PermissionsContext'
 import { useToast } from '../../../hooks/useToast'
 import type { HaccpCategory } from '../lib/haccpRules'
 
@@ -107,7 +108,10 @@ const labelStyle: React.CSSProperties = {
 export default function Fabrication() {
   const { show } = useToast()
   const { user } = useAuth()
+  const { can } = usePermissions()
   const isAdmin = user?.role === 'patron' || user?.role === 'administrateur'
+  const canDeleteLot = can(user?.role, 'action_delete_lot')
+  const canSeeCreator = can(user?.role, 'field_createur_lot')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [savedOk, setSavedOk] = useState(false)
@@ -986,7 +990,7 @@ export default function Fabrication() {
                         {isExpired && ' ⚠ expirée'}
                       </span>
                     </div>
-                    {isAdmin && lot.creatorName && (
+                    {canSeeCreator && lot.creatorName && (
                       <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 4 }}>
                         Créé par <b style={{ color: 'var(--on-surface-2)' }}>{lot.creatorName}</b>
                       </div>
@@ -1017,18 +1021,20 @@ export default function Fabrication() {
                         }}
                       >✏️</button>
                       {/* Supprimer */}
-                      <button
-                        onClick={() => deleteLot(lot)}
-                        title="Supprimer"
-                        style={{
-                          width: 34, height: 34, borderRadius: 10,
-                          border: '1.5px solid rgba(136,0,20,0.2)',
-                          background: 'rgba(136,0,20,0.06)',
-                          color: 'var(--tertiary)',
-                          cursor: 'pointer', fontSize: 15,
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        }}
-                      >🗑</button>
+                      {canDeleteLot && (
+                        <button
+                          onClick={() => deleteLot(lot)}
+                          title="Supprimer"
+                          style={{
+                            width: 34, height: 34, borderRadius: 10,
+                            border: '1.5px solid rgba(136,0,20,0.2)',
+                            background: 'rgba(136,0,20,0.06)',
+                            color: 'var(--tertiary)',
+                            cursor: 'pointer', fontSize: 15,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          }}
+                        >🗑</button>
+                      )}
                       {/* QR */}
                       <button
                         onClick={() => setQrLot(lot)}
