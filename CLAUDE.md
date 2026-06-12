@@ -8,10 +8,11 @@
 
 ## 🔍 AUDIT COMPLET EN COURS (démarré 2026-06-12) — RIEN NE SE CORRIGE SANS ACCORD D'ARTHUR
 
-- **Plan en 5 phases** : 0-Cartographie ✅ · 1-Statique ✅ · 2-Web ✅ / 2-Mobile 🟡 (planning éditable validé, reste pointage/FCM/isolation cuisine) · 3-UX ⬜ · 4-Synthèse GO/NO-GO ⬜
-- **Livrables** : `docs/audit/` → `00-SYNTHESE` (28 anomalies + prompt de reprise + device id MobAI) · `01-statique.md` · `02-dynamique-web.md` · `02-dynamique-mobile.md` · 5 `cartographie-*.md`
-- **Comptes test** (à supprimer en fin d'audit) : `audit.corner@yorgios.fr`, `audit.cuisine@yorgios.fr`
-- **Phase 2-mobile** : planning éditable iPhone OK (clôt l'inconnue), M1 skeleton 30s sur cellulaire + bundle 1 Mo = lenteur perçue, M2 boutons header sans aria-label
+- **Plan en 5 phases** : 0-Cartographie ✅ · 1-Statique ✅ · 2-Web+Mobile ✅ (3 rôles testés) · 3-UX 🟡 (analyse faite, reste passe visuelle /impeccable) · 4-Synthèse GO/NO-GO ⬜ (Arthur tranche chaque item)
+- **Livrables** : `docs/audit/` → `00-SYNTHESE` · `01-statique.md` · `02-dynamique-web.md` · `02-dynamique-mobile.md` · `03-ux-architecture.md` · 5 `cartographie-*.md` + `PRODUCT.md` (racine)
+- **Comptes test** (à supprimer en fin d'audit) : `audit.corner@`, `audit.cuisine@`, `audit.manager@yorgios.fr`
+- **Isolation rôles** : routing OK pour corner/cuisine/manager. **W5/U4** : manager peut ouvrir /admin/settings mais les rules bloquent l'écriture settings → échec silencieux.
+- **Phase 3** : 17 items UX/archi priorisés (U1-U17), top = vitesse perçue (bundle 1 Mo + skeleton 30s), échecs silencieux, permissions cosmétiques, RGPD à deux vitesses, 12 produits périmés en vitrine en prod
 - **Base auditée** : commit `9cc9137` ; docs aux commits e8efaa8/a07e768/f6abd13
 - **Confirmés P0 sécurité** : secret fallback `'matias-fallback-secret'` (functions/src/index.ts:52) ; `sendPasswordReset` sans auth/rôle (index.ts:877) ; token HMAC tronqué 32c (53) ; anti-spam commandes contournable tél. vide (189) ; RGPD /commande sans consentement (CommandePublique:158)
 - **Découverte clé** : permissions cosmétiques — les rules Firestore ne lisent pas `settings/permissions`, les permKeys action_*/field_* ne sont câblées nulle part
