@@ -43,7 +43,17 @@ Problèmes à résoudre avant d'écrire :
 3. Chaque `delete` concerné (lots_cuisine, livraisons, non_conformites, actions_correctives) doit garder son comportement actuel comme fallback.
 4. Coût : +1 `get()` par évaluation de règle.
 
-**Décision de design à trancher avant d'écrire (voir question)** : si `settings/permissions` est absent ou incomplet, les règles doivent-elles **fail-open** (autoriser comme aujourd'hui — pas de lockout, mais une perm décochée pourrait ne pas bloquer si le doc est partiel) ou **fail-closed** (refuser — vraie sécurité mais risque de bloquer si le doc est mal déployé) ?
+**Décision Arthur (2026-06-12) : FAIL-OPEN.** Si `settings/permissions` est absent/incomplet → autoriser comme aujourd'hui. Une permission n'est appliquée par les règles que si elle est explicitement présente et `false`. Pattern :
+```
+function permAllows(key) {
+  let pdoc = /databases/$(database)/documents/settings/permissions;
+  return !exists(pdoc)
+      || !(role() in get(pdoc).data)
+      || !(key in get(pdoc).data[role()])
+      || get(pdoc).data[role()][key] == true;  // absent/true ⇒ autorisé (fail-open)
+}
+```
+Appliquer en `&&` sur les `delete` concernés (lots_cuisine, livraisons, non_conformites, actions_correctives) — en gardant aussi le garde de rôle existant. patron/administrateur restent toujours autorisés (role() les couvre déjà dans les défauts).
 
 ## Recommandation de séquencement
 1. Tranche 1 (UI) : ~5 fichiers, réversible → peut se faire maintenant ou en session dédiée.

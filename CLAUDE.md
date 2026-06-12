@@ -8,7 +8,9 @@
 
 ## 🔍 AUDIT COMPLET EN COURS (démarré 2026-06-12) — RIEN NE SE CORRIGE SANS ACCORD D'ARTHUR
 
-- **Plan en 5 phases** : 0-Cartographie ✅ · 1-Statique ✅ · 2-Web+Mobile ✅ (3 rôles testés) · 3-UX 🟡 (analyse faite, reste passe visuelle /impeccable) · 4-Synthèse GO/NO-GO ⬜ (Arthur tranche chaque item)
+- **Correctifs DÉPLOYÉS 2026-06-12** : Lot A sécurité (secret HMAC, sendPasswordReset admin-only, token 64c, anti-spam tél.), A6 anti-escalade users, B4 settings écriture managers, G1 consentement RGPD /commande. Reste A5 (Arthur change son mdp). Détails `docs/audit/04-SYNTHESE-DECISIONS.md`.
+- **D1 (permissions UI+rules)** : planifié `docs/audit/05-D1-plan.md`, décision **fail-open**, à faire en session dédiée (émulateur + test par rôle). Prompt de reprise en bas de `00-SYNTHESE-CARTOGRAPHIE.md`.
+- **Plan en 5 phases** : 0-Cartographie ✅ · 1-Statique ✅ · 2-Web+Mobile ✅ (3 rôles testés) · 3-UX 🟡 (analyse faite, reste passe visuelle /impeccable) · 4-Synthèse ✅ (registre A-G ; GO exécutés)
 - **Livrables** : `docs/audit/` → `00-SYNTHESE` · `01-statique.md` · `02-dynamique-web.md` · `02-dynamique-mobile.md` · `03-ux-architecture.md` · 5 `cartographie-*.md` + `PRODUCT.md` (racine)
 - **Comptes test** (à supprimer en fin d'audit) : `audit.corner@`, `audit.cuisine@`, `audit.manager@yorgios.fr`
 - **Isolation rôles** : routing OK pour corner/cuisine/manager. **W5/U4** : manager peut ouvrir /admin/settings mais les rules bloquent l'écriture settings → échec silencieux.
