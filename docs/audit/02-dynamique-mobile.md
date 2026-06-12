@@ -17,11 +17,22 @@ Le CLAUDE.md notait « MobilePlanningView jamais testé sur device réel ». C'e
 | M2 | **Boutons d'en-tête sans label d'accessibilité** : 2-3 icônes de la bannière (entre 🏖 et 📋, après 📋) n'ont aucun nom accessible (MobAI a signalé « 2-3 buttons have no accessibility labels » à chaque observe) | 🟡 a11y | VoiceOver ne peut pas les annoncer. Ajouter `aria-label` sur ces `<button>` icônes dans Layout.tsx. |
 | M3 | **Hygiène mot de passe device partagé** (pas un bug applicatif) : Safari a proposé en autofill le mot de passe enregistré d'un autre employé (`lay.berkous@gmail.com`), et Dashlane celui d'Arthur | ℹ️ ops | Sur un téléphone/iPad partagé, les mots de passe d'employés traînent dans le trousseau. À nettoyer côté device. Renforce la reco de changer le mot de passe d'Arthur. |
 
+## Isolation rôle CUISINE + gates RGPD/pointage — testé (compte audit.cuisine, 0 écriture)
+- Login cuisine → atterrit sur `/cuisine`, nav réduite aux sous-pages cuisine (Accueil / Réception / Fabrication / Livraisons) + bottom-nav Cuisine / Messages / Profil. **Pas de lien Corner/Planning/Admin** → cloisonnement cohérent au niveau nav. ✅
+- **GdprConsentModal « Information RGPD — Géolocalisation »** s'affiche pour ce nouveau compte → **répond à une question ouverte de la Phase 1 : ce modal n'est PAS du code mort, il se déclenche bien pour un utilisateur sans `gdprConsentAt`.** ✅
+- Derrière le modal : **DailyPointageGate** actif (« Bonjour Audit ! », bouton « Pointer mon arrivée », texte RGPD géoloc complet). Gate de pointage présent pour le rôle cuisine. ✅ (non complété — un pointage = écriture + email potentiel.)
+
+| # | Trouvaille | Gravité | Détail |
+|---|-----------|---------|--------|
+| M4 | **Consentement RGPD : bouton « Lisez l'intégralité pour continuer » resté désactivé après 2 scrolls** | 🟡 à confirmer | Possible friction du « scroll-to-unlock » (peut-être ai-je scrollé le mauvais conteneur). Si réel, un employé peut être bloqué au 1er lancement sans pouvoir accepter. À reproduire proprement en scrollant DANS le modal. |
+| M5 | **Incohérence RGPD** : les employés ont un gate de consentement géoloc complet (responsable, données, finalité, base légale), mais le formulaire **public `/commande` collecte nom/tél/email/adresse SANS aucun consentement** (cf. 01-statique #6) | 🟠 RGPD | Posture RGPD à deux vitesses : stricte en interne, inexistante côté public. |
+
 ## Reste à tester (mobile)
-- Pointage géoloc (DailyPointageGate) + FAB sortie — non testé (créerait un pointage réel).
-- Bannière service-worker « Nouvelle version disponible ».
+- **Compléter un pointage** géoloc (DailyPointageGate) + FAB sortie — volontairement non fait (pointage = écriture + email `onPointageLate` possible). Avec `set_location` en zone + un compte lié à un employé, testable sans risque si on coupe d'abord l'effet email.
+- Reproduire **M4** (scroll-to-unlock du consentement RGPD) en scrollant dans le modal.
+- Bannière service-worker « Nouvelle version disponible » (nécessite un nouveau déploiement).
 - Push FCM.
-- Isolation rôle **cuisine** (compte audit.cuisine) + **manager** sur device.
+- Isolation rôle **manager** : **bloqué** — pas de compte manager de test (seuls corner + cuisine créés ; Sébastien est manager mais sans accès à son mot de passe). Créer un `audit.manager@yorgios.fr` si on veut le couvrir.
 - Ajout d'absence via le bouton 🤒 du bottom sheet (EventModal mobile).
 
 ## Statut
