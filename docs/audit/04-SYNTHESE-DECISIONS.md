@@ -11,11 +11,12 @@ App **saine sur le fond** : 0 erreur console en prod, design Aegean uniforme, cl
 ## LOT A — Sécurité backend (P0) — recommandation : GO rapide
 | # | Décision | Effort | Reco | Statut |
 |---|----------|--------|------|--------|
-| A1 | Supprimer le fallback `'matias-fallback-secret'` → throw si env absent (index.ts:52) | XS | GO | ☐ |
-| A2 | `sendPasswordReset` : exiger auth + rôle patron/admin (index.ts:877) | S | GO | ☐ |
-| A3 | Token HMAC : utiliser 64 chars au lieu de `.slice(0,32)` (index.ts:53) | XS | GO | ☐ |
-| A4 | Anti-spam commandes : refuser tél. vide + corriger seuil `>3` (index.ts:189) | S | GO | ☐ |
-| A5 | Changer le mot de passe admin d'Arthur (faible « arthur ») | XS | GO (toi) | ☐ |
+| A1 | Supprimer le fallback `'matias-fallback-secret'` → throw si env absent (index.ts:52) | XS | GO | ✅ déployé |
+| A2 | `sendPasswordReset` : auth + rôle (finalement **administrateur seul**, voir A6) | S | GO | ✅ déployé |
+| A3 | Token HMAC : 64 chars au lieu de `.slice(0,32)` (index.ts:53) | XS | GO | ✅ déployé |
+| A4 | Anti-spam commandes : refuser tél. vide (règle `commandes_externes`) | S | GO | ✅ déployé |
+| A5 | Changer le mot de passe admin d'Arthur (faible « arthur ») | XS | GO (toi) | ☐ à faire par Arthur |
+| A6 | **Anti-escalade** : `deleteUser`/`updateUserEmail`/`setUserDisabled` refusent si la cible est administrateur et l'appelant non (findings scan sécurité) | S | GO | ✅ déployé |
 
 ## LOT B — Fiabilité / échecs silencieux (P1) — recommandation : GO
 | # | Décision | Effort | Reco | Statut |
@@ -23,7 +24,7 @@ App **saine sur le fond** : 0 erreur console en prod, design Aegean uniforme, cl
 | B1 | `usePlanning.save()`/load : try/catch + bandeau d'erreur (desktop+mobile) | S | GO | ☐ |
 | B2 | AnnonceGate / useAuth / DailyPointageGate : remplacer les catch muets par une surface d'erreur | S | GO | ☐ |
 | B3 | Hygiene corner + AdminSettings : remplacer `alert()`/catch muet par toasts cohérents | M | GO | ☐ |
-| B4 | **U4/W5** Manager + /admin/settings : soit retirer l'accès, soit ouvrir l'écriture aux managers, soit surfacer le permission-denied | S | À TRANCHER (voir question) | ☐ |
+| B4 | **U4/W5** Manager + /admin/settings : ouvrir l'écriture `settings/*` aux managers (rules) | S | GO (ouvrir aux managers) | ✅ déployé |
 | B5 | Écritures non atomiques cuisine/Livraisons (lot+livraison) → `writeBatch` | M | GO | ☐ |
 
 ## LOT C — Vitesse perçue mobile (P1) — recommandation : GO (gros impact terrain)
@@ -59,7 +60,7 @@ App **saine sur le fond** : 0 erreur console en prod, design Aegean uniforme, cl
 ## LOT G — Conformité (P1) — DÉCISION
 | # | Décision | Reco | Statut |
 |---|----------|------|--------|
-| G1 | **RGPD `/commande` public (U15/M5)** : ajouter checkbox de consentement + `consentAt` + lien /rgpd, et exiger en rules | À TRANCHER (voir question) | ☐ |
+| G1 | **RGPD `/commande` public (U15/M5)** : checkbox de consentement + `consentRgpd`/`consentAt` + lien /rgpd, exigé en rules (staff auth exempté) | GO | ✅ déployé + vérifié prod |
 
 ---
 
