@@ -77,8 +77,10 @@ async function notifyRoles(title, body, link, roles = ['patron', 'manager', 'cui
 // ─────────────────────────────────────────────────────────────────
 /** Génère un token HMAC-SHA256 pour les boutons d'action dans les emails */
 function makeActionToken(cmdId, statut) {
-    const secret = process.env.YORGIOS_WP_SECRET || 'matias-fallback-secret';
-    return crypto.createHmac('sha256', secret).update(`${cmdId}:${statut}`).digest('hex').slice(0, 32);
+    const secret = process.env.YORGIOS_WP_SECRET;
+    if (!secret)
+        throw new Error('YORGIOS_WP_SECRET non configuré — génération de token refusée');
+    return crypto.createHmac('sha256', secret).update(`${cmdId}:${statut}`).digest('hex');
 }
 function verifyActionToken(cmdId, statut, token) {
     return makeActionToken(cmdId, statut) === token;
@@ -755,6 +757,18 @@ exports.purgeOldMessages = (0, scheduler_1.onSchedule)({ schedule: 'every 24 hou
 // ADMIN — Créer un utilisateur (patron uniquement)
 // ─────────────────────────────────────────────────────────────────
 exports.sendPasswordReset = (0, https_1.onCall)({ region: 'europe-west1' }, async (request) => {
+    var _a;
+    // Garde : réservé à 'administrateur' UNIQUEMENT (aligné sur updateUserPassword).
+    // Retourne un resetLink que l'appelant peut utiliser sur n'importe quel compte →
+    // c'est une capacité de reset de credential, donc même périmètre que updateUserPassword
+    // (un patron ne doit pas pouvoir réinitialiser un administrateur).
+    // Le "mot de passe oublié" public du login passe par sendPasswordResetEmail côté client.
+    if (!request.auth)
+        throw new https_1.HttpsError('unauthenticated', 'Non authentifié');
+    const callerSnap = await db.collection('users').doc(request.auth.uid).get();
+    if (((_a = callerSnap.data()) === null || _a === void 0 ? void 0 : _a.role) !== 'administrateur') {
+        throw new https_1.HttpsError('permission-denied', 'Réservé à l\'administrateur');
+    }
     const { email } = request.data;
     if (!email)
         throw new https_1.HttpsError('invalid-argument', 'Email manquant');
@@ -821,7 +835,7 @@ exports.createUser = (0, https_1.onCall)({ region: 'europe-west1' }, async (requ
 // ADMIN — Supprimer un utilisateur (patron uniquement)
 // ─────────────────────────────────────────────────────────────────
 exports.deleteUser = (0, https_1.onCall)({ region: 'europe-west1' }, async (request) => {
-    var _a;
+    var _a, _b, _c;
     if (!request.auth)
         throw new https_1.HttpsError('unauthenticated', 'Non authentifié');
     const callerSnap = await db.collection('users').doc(request.auth.uid).get();
@@ -833,6 +847,11 @@ exports.deleteUser = (0, https_1.onCall)({ region: 'europe-west1' }, async (requ
         throw new https_1.HttpsError('invalid-argument', 'uid manquant');
     if (uid === request.auth.uid)
         throw new https_1.HttpsError('invalid-argument', 'Impossible de supprimer son propre compte');
+    // Anti-escalade : seul un administrateur peut agir sur un compte administrateur.
+    const targetSnap = await db.collection('users').doc(uid).get();
+    if (((_b = targetSnap.data()) === null || _b === void 0 ? void 0 : _b.role) === 'administrateur' && ((_c = callerSnap.data()) === null || _c === void 0 ? void 0 : _c.role) !== 'administrateur') {
+        throw new https_1.HttpsError('permission-denied', 'Seul un administrateur peut agir sur un compte administrateur');
+    }
     await (0, auth_1.getAuth)().deleteUser(uid);
     await db.collection('users').doc(uid).delete();
     return { ok: true };
@@ -858,7 +877,7 @@ exports.updateUserPassword = (0, https_1.onCall)({ region: 'europe-west1' }, asy
 // ADMIN — Mettre à jour l'email d'un utilisateur
 // ─────────────────────────────────────────────────────────────────
 exports.updateUserEmail = (0, https_1.onCall)({ region: 'europe-west1' }, async (request) => {
-    var _a;
+    var _a, _b, _c;
     if (!request.auth)
         throw new https_1.HttpsError('unauthenticated', 'Non authentifié');
     const callerSnap = await db.collection('users').doc(request.auth.uid).get();
@@ -872,6 +891,11 @@ exports.updateUserEmail = (0, https_1.onCall)({ region: 'europe-west1' }, async 
         throw new https_1.HttpsError('invalid-argument', 'Email invalide');
     if (uid === request.auth.uid)
         throw new https_1.HttpsError('invalid-argument', 'Impossible de modifier son propre email ici');
+    // Anti-escalade : seul un administrateur peut agir sur un compte administrateur.
+    const targetSnap = await db.collection('users').doc(uid).get();
+    if (((_b = targetSnap.data()) === null || _b === void 0 ? void 0 : _b.role) === 'administrateur' && ((_c = callerSnap.data()) === null || _c === void 0 ? void 0 : _c.role) !== 'administrateur') {
+        throw new https_1.HttpsError('permission-denied', 'Seul un administrateur peut agir sur un compte administrateur');
+    }
     await (0, auth_1.getAuth)().updateUser(uid, { email });
     await db.collection('users').doc(uid).update({ email, updatedAt: firestore_1.Timestamp.now() });
     return { ok: true };
@@ -880,7 +904,7 @@ exports.updateUserEmail = (0, https_1.onCall)({ region: 'europe-west1' }, async 
 // ADMIN — Désactiver / réactiver un compte utilisateur
 // ─────────────────────────────────────────────────────────────────
 exports.setUserDisabled = (0, https_1.onCall)({ region: 'europe-west1' }, async (request) => {
-    var _a;
+    var _a, _b, _c;
     if (!request.auth)
         throw new https_1.HttpsError('unauthenticated', 'Non authentifié');
     const callerSnap = await db.collection('users').doc(request.auth.uid).get();
@@ -892,6 +916,11 @@ exports.setUserDisabled = (0, https_1.onCall)({ region: 'europe-west1' }, async 
         throw new https_1.HttpsError('invalid-argument', 'uid manquant');
     if (uid === request.auth.uid)
         throw new https_1.HttpsError('invalid-argument', 'Impossible de désactiver son propre compte');
+    // Anti-escalade : seul un administrateur peut agir sur un compte administrateur.
+    const targetSnap = await db.collection('users').doc(uid).get();
+    if (((_b = targetSnap.data()) === null || _b === void 0 ? void 0 : _b.role) === 'administrateur' && ((_c = callerSnap.data()) === null || _c === void 0 ? void 0 : _c.role) !== 'administrateur') {
+        throw new https_1.HttpsError('permission-denied', 'Seul un administrateur peut agir sur un compte administrateur');
+    }
     await (0, auth_1.getAuth)().updateUser(uid, { disabled });
     await db.collection('users').doc(uid).update({
         disabled,
