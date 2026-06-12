@@ -878,12 +878,15 @@ export const purgeOldMessages = onSchedule(
 export const sendPasswordReset = onCall(
   { region: 'europe-west1' },
   async (request) => {
-    // Garde : réservé patron/administrateur (le "mot de passe oublié" public du login
-    // utilise sendPasswordResetEmail côté client, PAS cette fonction).
+    // Garde : réservé à 'administrateur' UNIQUEMENT (aligné sur updateUserPassword).
+    // Retourne un resetLink que l'appelant peut utiliser sur n'importe quel compte →
+    // c'est une capacité de reset de credential, donc même périmètre que updateUserPassword
+    // (un patron ne doit pas pouvoir réinitialiser un administrateur).
+    // Le "mot de passe oublié" public du login passe par sendPasswordResetEmail côté client.
     if (!request.auth) throw new HttpsError('unauthenticated', 'Non authentifié')
     const callerSnap = await db.collection('users').doc(request.auth.uid).get()
-    if (!['patron', 'administrateur'].includes(callerSnap.data()?.role)) {
-      throw new HttpsError('permission-denied', 'Réservé au patron / administrateur')
+    if (callerSnap.data()?.role !== 'administrateur') {
+      throw new HttpsError('permission-denied', 'Réservé à l\'administrateur')
     }
 
     const { email } = request.data as { email: string }
