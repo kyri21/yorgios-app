@@ -145,10 +145,13 @@ service cloud.firestore {
     // create : public (formulaire client sans auth)
     // read/update : corner + patron + manager
     match /commandes_externes/{doc} {
-      // Création publique mais téléphone non vide obligatoire (anti-spam : la CF
-      // onNewCommande déduplique par téléphone ; un tél. vide contournait le contrôle).
+      // Téléphone non vide obligatoire (anti-spam : la CF onNewCommande déduplique
+      // par téléphone ; un tél. vide contournait le contrôle).
+      // Le personnel authentifié saisit pour le client ; le formulaire PUBLIC (non
+      // authentifié) doit fournir consentRgpd == true (conformité RGPD — G1).
       allow create: if request.resource.data.telephone is string
-                    && request.resource.data.telephone.size() > 0;
+                    && request.resource.data.telephone.size() > 0
+                    && (isAnyRole() || request.resource.data.consentRgpd == true);
       allow read, update: if isCorner();
     }
 

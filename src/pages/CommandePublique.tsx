@@ -55,6 +55,7 @@ export default function CommandePublique() {
   const [errors, setErrors]     = useState<Record<string, string>>({})
   const [saving, setSaving]     = useState(false)
   const [submitted, setSubmitted] = useState(false)
+  const [consent, setConsent]   = useState(false)
 
   const set = (field: string, val: string) => {
     setForm(f => ({ ...f, [field]: val }))
@@ -68,6 +69,7 @@ export default function CommandePublique() {
 
   async function handleSubmit() {
     const errs = validateForm(form, produits)
+    if (!consent) errs.consent = 'Vous devez accepter le traitement de vos données'
     if (Object.keys(errs).length) { setErrors(errs); window.scrollTo({ top: 0, behavior: 'smooth' }); return }
 
     setSaving(true)
@@ -91,6 +93,7 @@ export default function CommandePublique() {
         produits: prodsClean,
         instructionsSpeciales: form.instructionsSpeciales.trim(),
         prixEstime: null, notesCuisine: '', notesManager: '', lienGcal: '',
+        consentRgpd: true, consentAt: Timestamp.now(),
       })
       setSubmitted(true)
     } catch {
@@ -141,22 +144,42 @@ export default function CommandePublique() {
               errors={errors} mode="public"
             />
 
+            <label style={{
+              display: 'flex', alignItems: 'flex-start', gap: 10, marginTop: 16,
+              padding: '12px 14px', borderRadius: 12, cursor: 'pointer',
+              background: errors.consent ? '#fef2f2' : '#f3f4f6',
+              border: errors.consent ? '1px solid #fecaca' : '1px solid #e5e7eb',
+            }}>
+              <input
+                type="checkbox"
+                checked={consent}
+                onChange={e => { setConsent(e.target.checked); setErrors(er => { const c = { ...er }; delete c.consent; return c }) }}
+                style={{ width: 20, height: 20, marginTop: 1, flexShrink: 0 }}
+              />
+              <span style={{ fontSize: 12, color: '#4b5563', lineHeight: 1.5 }}>
+                J'accepte que mes données (nom, téléphone, email, adresse) soient traitées par Yorgios
+                pour le suivi de ma commande, conformément à la{' '}
+                <a href="/rgpd" target="_blank" rel="noreferrer" style={{ color: '#2E5C9A', fontWeight: 600 }}>
+                  politique de confidentialité
+                </a>.
+              </span>
+            </label>
+            {errors.consent && (
+              <div style={{ fontSize: 12, color: '#dc2626', marginTop: 6 }}>⚠️ {errors.consent}</div>
+            )}
+
             <button
               onClick={handleSubmit}
               disabled={saving}
               style={{
                 width: '100%', padding: '16px', borderRadius: 14, fontSize: 15, fontWeight: 700,
                 background: 'linear-gradient(135deg, #1E3A5F 0%, #2E5C9A 100%)',
-                color: '#fff', border: 'none', cursor: 'pointer', marginTop: 8,
+                color: '#fff', border: 'none', cursor: 'pointer', marginTop: 12,
                 boxShadow: '0 4px 14px rgb(30 58 95 / 0.35)',
                 opacity: saving ? 0.6 : 1,
               }}>
               {saving ? 'Envoi en cours…' : '📨 Envoyer ma commande'}
             </button>
-
-            <p style={{ textAlign: 'center', fontSize: 11, color: '#9ca3af', marginTop: 16 }}>
-              Vos données sont utilisées uniquement pour le traitement de votre commande.
-            </p>
           </>
         )}
       </div>
