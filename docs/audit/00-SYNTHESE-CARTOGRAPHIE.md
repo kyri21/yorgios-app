@@ -81,15 +81,17 @@ Les affirmations à fort impact ont été contre-vérifiées manuellement.
 ### Correctifs DÉPLOYÉS en prod (2026-06-12)
 Lot A (sécurité P0 : secret HMAC, sendPasswordReset admin-only, token 64c, anti-spam tél.), A6 (anti-escalade users), B4 (settings écriture managers), G1 (consentement RGPD /commande, vérifié prod). Voir `04-SYNTHESE-DECISIONS.md`. Reste : A5 (Arthur change son mot de passe), et tous les items NO-GO/PLUS TARD non tranchés.
 
-### Chantier D1 (permissions UI+rules) — ✅ EXÉCUTÉ ET DÉPLOYÉ (2026-06-12 soir)
-Voir `05-D1-plan.md` (bloc EXÉCUTION en tête). Tranche 1 UI (6 fichiers) + Tranche 2 rules fail-open
-déployées en prod après **36/36 tests émulateur** (`tests/rules/d1-permissions.test.mjs`).
-Reste manuel : vérification prod avec les 3 comptes audit + état du doc dans /admin/permissions.
+### Chantier D1 (permissions UI+rules) — ✅ CLOS (déployé 2026-06-12, vérifié prod 2026-06-13)
+Voir `05-D1-plan.md` (blocs EXÉCUTION + VÉRIFIÉ EN PROD en tête). Tranche 1 UI (6 fichiers) +
+Tranche 2 rules fail-open : **36/36 tests émulateur** + **vérification prod serveur ET UI avec les
+3 comptes audit** (script `tests/rules/d1-prod-verify.mjs`, restauration `settings/permissions`
+vérifiée). Le doc `settings/permissions` existe en prod, valeurs ≈ défauts + personnalisations cuisine.
 
 ### Prompt de reprise (nouvelle session)
-> Audit Matias — D1 est DÉPLOYÉ (voir `05-D1-plan.md`). Reste : (1) vérifier D1 en prod avec les
-> 3 comptes audit (corner/cuisine/manager) — décocher une perm dans /admin/permissions → UI masquée
-> ET delete refusé serveur ; (2) Phase 3 passe visuelle /impeccable ; (3) A5 (Arthur change son mdp).
-> RIEN d'autre ne se corrige sans accord d'Arthur.
+> Audit Matias — D1 est CLOS (déployé + vérifié prod, voir `05-D1-plan.md`). Reste : (1) Phase 3
+> passe visuelle /impeccable écran par écran ; (2) A5 (Arthur change son mdp — action humaine) ;
+> (3) lots C/E/F du registre 04 en attente de GO/NO-GO d'Arthur (perf bundle, DLC groupé,
+> aria-labels, renommage livraisons, nettoyage) ; (4) en toute fin d'audit : supprimer les comptes
+> `audit.corner/cuisine/manager@yorgios.fr`. RIEN ne se corrige sans accord d'Arthur.
 >
 > Autres restes possibles (registre 04, lots C/E/F) : vitesse perçue (bundle 1 Mo + skeleton, items C1-C3/U1-U2), retrait groupé DLC vitrine (E1/V3), aria-labels (E2/M2), renommage 3 « livraisons » (E4/U8), nettoyage AdminDocuments + rules orphelines (F1/F2). + Phase 2-mobile non finie : pointage géoloc, service worker, FCM (MobAI device id 00008110-000E44E814DB801E ; rebrancher l'iPhone, le bridge avait sauté). **Supprimer les 3 comptes test audit.* en fin d'audit.** Précautions prod habituelles (pas d'emails/FCM réels, jamais « On s'en occupe »).

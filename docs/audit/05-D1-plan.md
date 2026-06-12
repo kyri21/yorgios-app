@@ -20,9 +20,21 @@
 >   4. Deltas par défaut si `settings/permissions` reflète DEFAULT_PERMISSIONS : corner perd le champ
 >      « Prix estimé » du formulaire interne (défaut false) ; manager VOIT désormais « Créé par » en
 >      Fabrication (défaut true, avant patron/admin only). Ajustables dans /admin/permissions.
-> - **Reste à faire (manuel)** : vérifier en prod avec les 3 comptes audit (corner/cuisine/manager) :
->   décocher une perm dans AdminPermissions → UI masquée ET delete refusé serveur. Vérifier l'état du
->   doc `settings/permissions` dans AdminPermissions (lecture directe prod non faite en session).
+> - **✅ VÉRIFIÉ EN PROD (2026-06-13, comptes audit, autorisé par Demis)** :
+>   - **Serveur** (`tests/rules/d1-prod-verify.mjs`, collection actions_correctives — zéro trigger
+>     email/FCM) : garde rôle cuisine ✓, fail-open manager ✓, `action_delete_ac=false` ⇒
+>     permission-denied ✓, restauration de `settings/permissions` vérifiée octet par octet ✓,
+>     zéro doc de test résiduel ✓.
+>   - **Doc `settings/permissions` EXISTE en prod**, valeurs ≈ défauts avec personnalisations :
+>     `cuisine.action_create_commande=true`, `cuisine.action_update_statut_commande=true`
+>     (plus permissifs que DEFAULT_PERMISSIONS du code).
+>   - **UI (navigateur, lecture seule, 3 comptes)** : corner = bouton Enregistrer ✓, PRIX ESTIMÉ
+>     masqué ✓, NOTES CUISINE visible ✓, pas d'édition rapide en Gestion ✓. cuisine = idem corner
+>     + Fabrication 23 lots/23 🗑 ✓, « Créé par » masqué ✓. manager = tous champs visibles ✓,
+>     « Créé par » visible ✓ (delta attendu confirmé).
+>   - ⚠️ Constat : la route `/admin/permissions` est **réservée patron/administrateur** (router) —
+>     le manager peut écrire `settings/*` par les rules (B4) mais n'a pas l'UI. Cohérent mais à savoir.
+> - **D1 est CLOS.** Reste audit global : supprimer les comptes `audit.*` en toute fin d'audit.
 
 > Décision Arthur : « Brancher vraiment (UI + rules) ». Chantier en 2 tranches.
 > ⚠️ La tranche 2 (rules) touche les `delete` Firestore → **risque de lockout** → à exécuter en session dédiée avec test par rôle.
