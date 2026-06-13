@@ -636,6 +636,9 @@ export default function Profile() {
           {['patron', 'administrateur'].includes(user?.role ?? '') && (
             <Row label="Gérer les utilisateurs" onClick={() => navigate('/admin/users')} />
           )}
+          {['patron', 'administrateur'].includes(user?.role ?? '') && (
+            <Row label="Catalogue produits" onClick={() => navigate('/admin/produits')} />
+          )}
         </div>
       </div>
 
