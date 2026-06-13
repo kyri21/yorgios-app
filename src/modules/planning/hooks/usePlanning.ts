@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import {
   loadWeek, saveWeek, emptyWeekDraft, weekId, mondayOf,
   loadWeekEvents, saveWeekEvents, addDays, clearWeek
@@ -141,23 +141,83 @@ export function usePlanning(user: { uid: string } | null) {
   const [weekEvents, setWeekEvents] = useState<WeekEvents>({})
   const [savedWeekId, setSavedWeekId] = useState<string>('')
   const [loading, setLoading] = useState(false)
+  const [slow, setSlow] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [history, setHistory] = useState<HistoryEntry[]>([])
 
+  // Miroir de `dirty` lisible dans les callbacks async (la closure fige la valeur d'état).
+  // Le useEffect couvre les remises à false ; markDirty met le ref à true de façon
+  // SYNCHRONE avec chaque édition — sinon le refresh serveur pourrait résoudre avant le
+  // flush de l'effet passif et écraser une saisie tout juste faite (race signalée par Codex).
+  const dirtyRef = useRef(false)
+  useEffect(() => { dirtyRef.current = dirty }, [dirty])
+  const markDirty = useCallback(() => { dirtyRef.current = true; setDirty(true) }, [])
+  // Jeton de chargement : une réponse serveur d'un chargement périmé (semaine changée
+  // entre-temps) est ignorée si un chargement plus récent a démarré.
+  const loadTokenRef = useRef(0)
+
   const loadCurrentWeek = useCallback(async (mon: Date) => {
-    setLoading(true)
+    const wid = weekId(mon)
+    const myToken = ++loadTokenRef.current
+    setError(null)
+    setSlow(false)
     setDirty(false)
+    dirtyRef.current = false
+    setLoading(true)
+
+    // 1. Cache-first : si la semaine a déjà été ouverte, on l'affiche INSTANTANÉMENT.
+    //    getDocFromCache rejette si la semaine n'est pas en cache → on ignore et on attend le serveur.
+    let shownFromCache = false
     try {
-      const wid = weekId(mon)
+      const [cd, ce] = await Promise.all([loadWeek(mon, true), loadWeekEvents(mon, true)])
+      if (loadTokenRef.current === myToken) {
+        setDraft(cd)
+        setWeekEvents(ce)
+        setSavedWeekId(wid)
+        setLoading(false)
+        shownFromCache = true
+      }
+    } catch {
+      // pas de cache complet pour cette semaine — on patiente le serveur
+    }
+
+    // 2. Indicateur "lent" seulement si rien n'est encore affiché (1er chargement).
+    // Token dans le callback : un timer d'un chargement périmé (semaine changée) devient
+    // un no-op au lieu d'afficher "lent/Réessayer" sur la semaine courante (Codex P3).
+    let slowTimer: ReturnType<typeof setTimeout> | undefined
+    if (!shownFromCache) slowTimer = setTimeout(() => {
+      if (loadTokenRef.current === myToken) setSlow(true)
+    }, 8000)
+
+    // 3. Rafraîchissement serveur (source de vérité).
+    try {
       const [loaded, events] = await Promise.all([loadWeek(mon), loadWeekEvents(mon)])
-      setDraft(loaded)
-      setWeekEvents(events)
-      setSavedWeekId(wid)
+      // N'appliquer la donnée serveur QUE si ce chargement est toujours le plus récent
+      // ET que l'utilisateur n'a pas commencé à éditer entre-temps (sinon on écraserait
+      // silencieusement sa saisie — le cache-first rend l'UI éditable avant le refresh).
+      if (loadTokenRef.current === myToken && !dirtyRef.current) {
+        setDraft(loaded)
+        setWeekEvents(events)
+        setSavedWeekId(wid)
+        setError(null)
+      }
+    } catch (e) {
+      // Si on affichait déjà le cache, on le garde (pas d'erreur visible). Sinon on surface.
+      if (!shownFromCache && loadTokenRef.current === myToken) {
+        setError(e instanceof Error ? e.message : 'Chargement impossible')
+      }
     } finally {
-      setLoading(false)
+      if (loadTokenRef.current === myToken) {
+        if (slowTimer) clearTimeout(slowTimer)
+        setSlow(false)
+        setLoading(false)
+      }
     }
   }, [])
+
+  const retryLoad = useCallback(() => loadCurrentWeek(monday), [loadCurrentWeek, monday])
 
   const goToWeek = useCallback((mon: Date) => {
     setMonday(mon)
@@ -177,7 +237,7 @@ export function usePlanning(user: { uid: string } | null) {
         [dayIndex]: { ...day, hours: { ...day.hours, [h]: newList } }
       }
     })
-    setDirty(true)
+    markDirty()
   }, [])
 
   const paintCell = useCallback((dayIndex: number, hour: number, empId: string, paintMode: 'add' | 'remove') => {
@@ -193,7 +253,7 @@ export function usePlanning(user: { uid: string } | null) {
         [dayIndex]: { ...day, hours: { ...day.hours, [h]: newList } }
       }
     })
-    setDirty(true)
+    markDirty()
   }, [])
 
   /** Règle les horaires d'un employé sur un jour comme un bloc continu [startHour, endHour[.
@@ -214,7 +274,7 @@ export function usePlanning(user: { uid: string } | null) {
       })
       return { ...prev, [dayIndex]: { dayIndex, hours: nextHours } }
     })
-    setDirty(true)
+    markDirty()
   }, [])
 
   const setDayEvent = useCallback((dateISO: string, event: DayEvent) => {
@@ -223,7 +283,7 @@ export function usePlanning(user: { uid: string } | null) {
       const filtered = dayEvents.filter(e => !(e.empId === event.empId && e.type === event.type))
       return { ...prev, [dateISO]: [...filtered, event] }
     })
-    setDirty(true)
+    markDirty()
   }, [])
 
   const removeDayEvent = useCallback((dateISO: string, empId: string, type?: string) => {
@@ -234,7 +294,7 @@ export function usePlanning(user: { uid: string } | null) {
         : dayEvents.filter(e => e.empId !== empId)
       return { ...prev, [dateISO]: filtered }
     })
-    setDirty(true)
+    markDirty()
   }, [])
 
   const mondayRef = useRef(mondayOf(new Date()))
@@ -274,7 +334,7 @@ export function usePlanning(user: { uid: string } | null) {
         })
         return next
       })
-      setDirty(true)
+      markDirty()
     }
     for (const [wid, { mon, dates: wDates }] of weekMap) {
       if (wid === currentWid) continue
@@ -301,7 +361,7 @@ export function usePlanning(user: { uid: string } | null) {
         curEntry.dates.forEach(iso => { next[iso] = (next[iso] ?? []).filter(e => e.empId !== empId) })
         return next
       })
-      setDirty(true)
+      markDirty()
     }
     for (const [wid, { mon, dates: wDates }] of weekMap) {
       if (wid === currentWid) continue
@@ -373,7 +433,7 @@ export function usePlanning(user: { uid: string } | null) {
       Object.keys(prev[dayIndex]?.hours ?? {}).forEach(h => { hours[h] = [] })
       return { ...prev, [dayIndex]: { dayIndex, hours } }
     })
-    setDirty(true)
+    markDirty()
   }, [])
 
   const copyDay = useCallback((srcIndex: number, dstIndexes: number[]) => {
@@ -385,7 +445,7 @@ export function usePlanning(user: { uid: string } | null) {
       })
       return next
     })
-    setDirty(true)
+    markDirty()
   }, [])
 
   function dayDateISO(dayIndex: number): string {
@@ -396,7 +456,7 @@ export function usePlanning(user: { uid: string } | null) {
     monday, goToWeek,
     draft,
     weekEvents, setDayEvent, removeDayEvent, setEventRange, removeEventRange,
-    loading, saving, dirty,
+    loading, slow, error, retryLoad, saving, dirty,
     toggleCell, paintCell, setEmpDayHours,
     save, history, undoTo,
     weeklyHours,

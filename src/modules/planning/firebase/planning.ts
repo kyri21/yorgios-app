@@ -1,5 +1,5 @@
 import {
-  doc, getDoc, setDoc, collection, getDocs,
+  doc, getDoc, getDocFromCache, setDoc, collection, getDocs,
   writeBatch, serverTimestamp
 } from 'firebase/firestore'
 import { db } from '../../../firebase/config'
@@ -39,12 +39,17 @@ export function emptyWeekDraft(): WeekDraft {
   return draft
 }
 
-export async function loadWeek(monday: Date): Promise<WeekDraft> {
+// fromCache=true → getDocFromCache : rejette si la semaine n'est pas en cache local
+// (le hook catch et tombe sur le serveur). Sinon getDoc (server-first, fallback offline).
+// Les 7 jours sont lus en PARALLÈLE (avant : 7 allers-retours en série = ~lenteur 4G).
+export async function loadWeek(monday: Date, fromCache = false): Promise<WeekDraft> {
   const wid = weekId(monday)
   const draft = emptyWeekDraft()
-  for (let i = 0; i < 7; i++) {
-    const ref = doc(db, 'planningWeeks', wid, 'days', String(i))
-    const snap = await getDoc(ref)
+  const read = (ref: ReturnType<typeof doc>) => fromCache ? getDocFromCache(ref) : getDoc(ref)
+  const snaps = await Promise.all(
+    Array.from({ length: 7 }, (_, i) => read(doc(db, 'planningWeeks', wid, 'days', String(i))))
+  )
+  snaps.forEach((snap, i) => {
     if (snap.exists()) {
       const data = snap.data()
       const hours: HoursMap = {}
@@ -53,7 +58,7 @@ export async function loadWeek(monday: Date): Promise<WeekDraft> {
       })
       draft[i] = { dayIndex: i, hours }
     }
-  }
+  })
   return draft
 }
 
@@ -85,18 +90,17 @@ export async function duplicateWeek(srcMonday: Date, dstMonday: Date, uid: strin
   await saveWeek(dstMonday, src, uid)
 }
 
-export async function loadWeekEvents(monday: Date): Promise<WeekEvents> {
+export async function loadWeekEvents(monday: Date, fromCache = false): Promise<WeekEvents> {
   const wid = weekId(monday)
   const events: WeekEvents = {}
-  for (let i = 0; i < 7; i++) {
-    const dateISO = toLocalISO(addDays(monday, i))
-    events[dateISO] = []
-    const ref = doc(db, 'planningWeeks', wid, 'events', dateISO)
-    const snap = await getDoc(ref)
-    if (snap.exists()) {
-      events[dateISO] = snap.data().events ?? []
-    }
-  }
+  const read = (ref: ReturnType<typeof doc>) => fromCache ? getDocFromCache(ref) : getDoc(ref)
+  const dateISOs = Array.from({ length: 7 }, (_, i) => toLocalISO(addDays(monday, i)))
+  const snaps = await Promise.all(
+    dateISOs.map(dateISO => read(doc(db, 'planningWeeks', wid, 'events', dateISO)))
+  )
+  dateISOs.forEach((dateISO, i) => {
+    events[dateISO] = snaps[i].exists() ? (snaps[i].data()!.events ?? []) : []
+  })
   return events
 }
 

@@ -259,19 +259,9 @@ export default function Livraison() {
         .map(d => ({ id: d.id, ...(d.data() as any) }) as LivrDoc)
         .filter(l => (l.result === 'REFUSE' || l.result === 'A_VERIFIER') && l.departTempC != null)
       setAcTabLivraisons(livs)
-      // Charger les ACs par lots en parallèle
-      const acsResults = await Promise.all(
-        livs.map(async l => {
-          const q = query(collection(db, 'actions_correctives'), where('refId', '==', l.id))
-          const snap = await getDocs(q)
-          return { id: l.id, acs: snap.docs.map(s => ({ id: s.id, ...s.data() } as AcItem)) }
-        })
-      )
-      setLivAcs(prev => {
-        const next = { ...prev }
-        acsResults.forEach(({ id, acs }) => { next[id] = acs })
-        return next
-      })
+      // Charger les ACs en batch (where in, ⌈N/30⌉ requêtes) au lieu d'une par livraison
+      const acsByRef = await fetchLivAcsBatch(livs.map(l => l.id))
+      setLivAcs(prev => ({ ...prev, ...acsByRef }))
     } catch (e: any) { setAcTabError(e?.message) }
     finally { setAcTabLoading(false) }
   }
@@ -290,13 +280,18 @@ export default function Livraison() {
 
   useEffect(() => {
     const t0 = todayStart()
-    livraisons
+    const missingIds = livraisons
       .filter(l => {
         if (l.returned || l.result !== 'REFUSE') return false
         const recAt = l.receptionAt?.toDate ? l.receptionAt.toDate().getTime() : null
-        return recAt !== null && recAt >= t0
+        return recAt !== null && recAt >= t0 && livAcs[l.id] === undefined
       })
-      .forEach(l => { if (livAcs[l.id] === undefined) loadLivAcs(l.id) })
+      .map(l => l.id)
+    if (missingIds.length === 0) return
+    // 1 batch (where in) au lieu d'une requête par REFUSE du jour (N+1)
+    fetchLivAcsBatch(missingIds)
+      .then(acsByRef => setLivAcs(prev => ({ ...prev, ...acsByRef })))
+      .catch(() => {}) // offline/erreur réseau : on laisse les ACs vides, pas de rejet non géré
   }, [livraisons]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -458,6 +453,26 @@ export default function Livraison() {
     } catch {
       setLivAcs(prev => ({ ...prev, [id]: [] }))
     }
+  }
+
+  // Charge les ACs de PLUSIEURS livraisons en une poignée de requêtes (where in, 30 ids max)
+  // au lieu d'une requête par livraison (N+1). Garantit une entrée par id, même vide.
+  async function fetchLivAcsBatch(ids: string[]): Promise<Record<string, AcItem[]>> {
+    const out: Record<string, AcItem[]> = {}
+    ids.forEach(id => { out[id] = [] })
+    for (let i = 0; i < ids.length; i += 30) {
+      const chunk = ids.slice(i, i + 30)
+      const snap = await getDocs(query(
+        collection(db, 'actions_correctives'),
+        where('refId', 'in', chunk)
+      ))
+      snap.docs.forEach(s => {
+        const ac = { id: s.id, ...s.data() } as AcItem
+        const refId = (s.data() as any).refId as string
+        if (out[refId]) out[refId].push(ac)
+      })
+    }
+    return out
   }
 
   async function markDeliveryDone(id: string) {

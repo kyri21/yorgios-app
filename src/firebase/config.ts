@@ -2,7 +2,11 @@
 // Ne JAMAIS appeler initializeApp() ailleurs
 
 import { initializeApp } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
+import {
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+} from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 import { getStorage } from 'firebase/storage';
 import { getFunctions } from 'firebase/functions';
@@ -19,7 +23,14 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 
 // DB "test" — projet Firebase cuisine-yorgios (unique projet Firestore)
-export const db        = getFirestore(app, 'test');
+// Persistance offline (IndexedDB) : les lectures servies depuis le cache sont
+// instantanées, et l'app reste consultable sans réseau. persistentMultipleTabManager
+// gère plusieurs onglets/instances PWA sans conflit de lock IndexedDB.
+// Si IndexedDB est indisponible (mode privé, quota), le SDK retombe sur le cache
+// mémoire sans planter. C'est l'UNIQUE init Firestore de l'app (cf. règle absolue #1).
+export const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+}, 'test');
 export const auth      = getAuth(app);
 export const storage   = getStorage(app);
 export const functions = getFunctions(app, 'europe-west1');

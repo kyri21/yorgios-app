@@ -11,6 +11,9 @@ interface Props {
   employees: Employee[]
   weekEvents: WeekEvents
   loading: boolean
+  slow?: boolean
+  error?: string | null
+  onRetry?: () => void
   canEdit: boolean
   userRole?: string
   dirty: boolean
@@ -64,7 +67,7 @@ const START_OPTIONS = HOURS                       // 8 … 20
 const END_OPTIONS = HOURS.map(h => h + 1)         // 9 … 21
 
 export function MobilePlanningView({
-  monday, draft, employees, weekEvents, loading,
+  monday, draft, employees, weekEvents, loading, slow, error, onRetry,
   canEdit, userRole, dirty, saving,
   onPrevWeek, onNextWeek,
   onSetEmpDayHours, onSetEventRange, onRemoveEventRange, onRemoveDayEvent, onSave,
@@ -209,6 +212,25 @@ export function MobilePlanningView({
             <div className="skeleton" style={{ height: 68, borderRadius: 14 }} />
             <div className="skeleton" style={{ height: 68, borderRadius: 14 }} />
             <div className="skeleton" style={{ height: 68, borderRadius: 14 }} />
+            <div style={{ textAlign: 'center', marginTop: 6, color: 'var(--on-surface-2)', fontSize: 13, fontFamily: 'Manrope, sans-serif' }}>
+              {slow ? 'Ça prend plus de temps que prévu…' : 'Chargement du planning…'}
+            </div>
+            {slow && onRetry && (
+              <div style={{ textAlign: 'center', marginTop: 4 }}>
+                <button className="btn-secondary" onClick={onRetry}>Réessayer</button>
+              </div>
+            )}
+          </div>
+        ) : error ? (
+          <div style={{ textAlign: 'center', padding: '40px 16px', fontFamily: 'Manrope, sans-serif' }}>
+            <div style={{ fontSize: 30, marginBottom: 8 }}>⚠️</div>
+            <div style={{ color: 'var(--on-surface)', fontSize: 15, fontWeight: 600, marginBottom: 4 }}>
+              Chargement impossible
+            </div>
+            <div style={{ color: 'var(--on-surface-2)', fontSize: 13, marginBottom: 16 }}>
+              Vérifie ta connexion, puis réessaie.
+            </div>
+            {onRetry && <button className="btn-primary" onClick={onRetry}>Réessayer</button>}
           </div>
         ) : working.length === 0 && withEvent.length === 0 && !canEdit ? (
           <div style={{ textAlign: 'center', padding: '48px 0', color: 'var(--on-surface-3)', fontSize: 14, fontFamily: 'Manrope, sans-serif' }}>

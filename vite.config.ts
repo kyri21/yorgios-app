@@ -31,6 +31,9 @@ export default defineConfig({
       workbox: {
         skipWaiting: true,
         clientsClaim: true,
+        // Le SW précache tous les chunks. Avec des chunks vendor au hash stable
+        // (firebase/react ci-dessous), un déploiement n'invalide que le chunk app,
+        // pas les ~360 KB de vendor inchangés.
         globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
         runtimeCaching: [
           {
@@ -41,5 +44,30 @@ export default defineConfig({
         ]
       }
     })
-  ]
+  ],
+  build: {
+    rollupOptions: {
+      output: {
+        // Vendor splitting : isole les dépendances stables (jamais modifiées par
+        // notre code) dans des chunks au hash propre. Bénéfice principal = caching
+        // PWA inter-déploiements (cf. commentaire workbox ci-dessus), pas une
+        // réduction du poids total au 1er chargement.
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            // Firestore est le plus gros morceau (~210 KB gz) — chunk dédié pour
+            // qu'il se mette en cache indépendamment du reste de Firebase.
+            if (id.includes('@firebase/firestore') || id.includes('/firestore')) {
+              return 'firebase-firestore';
+            }
+            if (id.includes('firebase') || id.includes('@firebase') || id.includes('@grpc') || id.includes('protobufjs')) {
+              return 'firebase';
+            }
+            if (id.includes('react-dom') || id.includes('/react/') || id.includes('react-router') || id.includes('@remix-run')) {
+              return 'react-vendor';
+            }
+          }
+        }
+      }
+    }
+  }
 });

@@ -473,6 +473,9 @@ export default function PlanningModule() {
               employees={employees}
               weekEvents={planning.weekEvents}
               loading={planning.loading}
+              slow={planning.slow}
+              error={planning.error}
+              onRetry={planning.retryLoad}
               canEdit={isEditor}
               userRole={user.role}
               dirty={planning.dirty}
