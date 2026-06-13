@@ -10,7 +10,8 @@
 
 - **Correctifs DÉPLOYÉS 2026-06-12** : Lot A sécurité (secret HMAC, sendPasswordReset admin-only, token 64c, anti-spam tél.), A6 anti-escalade users, B4 settings écriture managers, G1 consentement RGPD /commande. Reste A5 (Arthur change son mdp). Détails `docs/audit/04-SYNTHESE-DECISIONS.md`.
 - **D1 (permissions UI+rules)** : ✅ **DÉPLOYÉ 2026-06-12 soir** — UI câblée (`can(role,key)` dans Commandes/Livraison/Fabrication/Livraisons cuisine/Temperatures ×2) + rules `permAllows()` **fail-open** sur les 4 delete (lots_cuisine, livraisons, non_conformites→clé `action_delete_ac`, actions_correctives). 36/36 tests émulateur (`tests/rules/d1-permissions.test.mjs`, Java 21 requis : `~/.local/jdk`). `firestore.rules` passé au wildcard `{database}` (équivalent, déploiement cible DB `test`). Reste : vérif prod 3 comptes audit + état doc `settings/permissions` dans /admin/permissions. Détails `docs/audit/05-D1-plan.md`.
-- **Plan en 5 phases** : 0-Cartographie ✅ · 1-Statique ✅ · 2-Web+Mobile ✅ (3 rôles testés) · 3-UX 🟡 (analyse faite, reste passe visuelle /impeccable) · 4-Synthèse ✅ (registre A-G ; GO exécutés)
+- **LOT C (perf mobile) — ✅ DÉPLOYÉ EN PROD 2026-06-13** : merge `--ff-only perf/lot-c` → main (`fd0e094`), build vert (33.7s, 0 erreur), `firebase deploy --only hosting` OK (29/40 fichiers ré-uploadés, 11 chunks vendor inchangés = bénéfice C1 confirmé côté CDN). C1 vendor chunks (vite.config) → `react-vendor` 165KB / `firebase` 304KB / `firebase-firestore` 381KB séparés et hash-stables ; C2 `persistentLocalCache` global (config.ts) + planning cache-first/parallèle + états honnêtes (timeout 8s/erreur/Réessayer) ; C3 Livraison N+1 ACs → `fetchLivAcsBatch` where-in/30. **Revu Codex (P1/P2/P3 corrigés) + LLM Council 4 modèles (rien de bloquant)**. RESTE : **validation MobAI iPhone** (cache-first instantané + skeleton honnête + non-perte d'édition planning) — bloquée si `device_limit_reached` sur l'offre gratuite. Détails : mémoire `project_lot_c_resume.md` + `project_firestore_persistence.md`. ⚠️ getDoc reste server-first même avec persistence ; cache-first = `getDocFromCache`.
+- **Plan en 5 phases** : 0-Cartographie ✅ · 1-Statique ✅ · 2-Web+Mobile ✅ (3 rôles testés) · 3-UX 🟡 (analyse faite, reste passe visuelle /impeccable + Lot C ci-dessus) · 4-Synthèse ✅ (registre A-G ; GO exécutés)
 - **Livrables** : `docs/audit/` → `00-SYNTHESE` · `01-statique.md` · `02-dynamique-web.md` · `02-dynamique-mobile.md` · `03-ux-architecture.md` · 5 `cartographie-*.md` + `PRODUCT.md` (racine)
 - **Comptes test** (à supprimer en fin d'audit) : `audit.corner@`, `audit.cuisine@`, `audit.manager@yorgios.fr`
 - **Isolation rôles** : routing OK pour corner/cuisine/manager. **W5/U4** : manager peut ouvrir /admin/settings mais les rules bloquent l'écriture settings → échec silencieux.
@@ -949,7 +950,7 @@ Pastilles DLC : AUJ. = orange, DEMAIN = violet.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **yorgios-app** (5332 symbols, 8232 relationships, 205 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **yorgios-app** (5510 symbols, 8426 relationships, 204 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
