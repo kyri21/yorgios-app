@@ -92,7 +92,7 @@ function AcInlineSection({
               <button
                 onClick={() => onEdit(ac)}
                 style={{
-                  padding: '3px 7px', borderRadius: 7, border: '1px solid var(--border)',
+                  padding: '3px 7px', minWidth: 44, minHeight: 44, borderRadius: 7, border: '1px solid var(--border)',
                   background: 'var(--surface-mid)', cursor: 'pointer', fontSize: 11,
                   flexShrink: 0,
                 }}
@@ -177,6 +177,7 @@ export default function Livraison() {
   const [galTo, setGalTo] = useState(toLocalDateValue(new Date()))
   const [gallery, setGallery] = useState<GalleryItem[]>([])
   const [galLoading, setGalLoading] = useState(false)
+  const [galError, setGalError] = useState<string | null>(null)
 
   // --- Modal photo ---
   const [photoModal, setPhotoModal] = useState<PhotoModal | null>(null)
@@ -221,6 +222,7 @@ export default function Livraison() {
 
   async function loadGalerie() {
     setGalLoading(true)
+    setGalError(null)
     try {
       const [y1, m1, d1] = galFrom.split('-').map(Number)
       const [y2, m2, d2] = galTo.split('-').map(Number)
@@ -235,7 +237,10 @@ export default function Livraison() {
       const snap = await getDocs(q)
       const all: GalleryItem[] = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }))
       setGallery(all.filter(l => l.departPhotoUrl || l.receptionPhotoUrl))
-    } catch { /* silencieux */ }
+    } catch (e: any) {
+      console.error('[Livraison] loadGalerie', e)
+      setGalError(e?.message ?? 'Erreur de chargement')
+    }
     finally { setGalLoading(false) }
   }
 
@@ -565,8 +570,8 @@ export default function Livraison() {
         </h1>
       </div>
 
-      {/* ── Onglets ── */}
-      <div style={{ display: 'flex', gap: 4, padding: 4, background: 'var(--surface-mid)', borderRadius: 14 }}>
+      {/* ── Onglets (scrollables en mobile : 5 onglets > largeur 390px) ── */}
+      <div style={{ display: 'flex', gap: 4, padding: 4, background: 'var(--surface-mid)', borderRadius: 14, overflowX: 'auto', scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' }}>
         {([
           { key: 'today', label: "Aujourd'hui" },
           { key: 'historique', label: 'Historique' },
@@ -575,7 +580,8 @@ export default function Livraison() {
           { key: 'ac_tab', label: '⚠️ AC' },
         ] as const).map(({ key, label }) => (
           <button key={key} onClick={() => setTab(key)} style={{
-            flex: 1, padding: '9px 0', borderRadius: 10, border: 'none', cursor: 'pointer',
+            flex: '1 0 auto', minHeight: 44, padding: '0 16px', borderRadius: 10, border: 'none', cursor: 'pointer',
+            whiteSpace: 'nowrap',
             background: tab === key ? 'var(--surface)' : 'transparent',
             color: tab === key ? 'var(--primary)' : 'var(--on-surface-3)',
             fontWeight: 700, fontFamily: 'Manrope, sans-serif', fontSize: 13,
@@ -690,7 +696,7 @@ export default function Livraison() {
 
                   <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                     <button onClick={() => retourCuisine(l.id, l.lotCode)} style={{
-                      fontSize: 12, padding: '6px 12px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                      fontSize: 12, padding: '6px 12px', minHeight: 44, borderRadius: 8, border: 'none', cursor: 'pointer',
                       background: 'rgba(0,66,117,0.08)', color: 'var(--primary)', fontWeight: 600,
                       fontFamily: 'Manrope, sans-serif',
                     }}>
@@ -698,7 +704,7 @@ export default function Livraison() {
                     </button>
                     {canDeleteLivraison && (
                       <button onClick={() => supprimerLivraison(l.id)} style={{
-                        fontSize: 12, padding: '6px 12px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                        fontSize: 12, padding: '6px 12px', minHeight: 44, borderRadius: 8, border: 'none', cursor: 'pointer',
                         background: 'rgba(192,57,43,0.08)', color: 'var(--danger)', fontWeight: 600,
                         fontFamily: 'Manrope, sans-serif',
                       }}>
@@ -790,7 +796,7 @@ export default function Livraison() {
                     {/* Boutons retour/suppr */}
                     <div style={{ display: 'flex', gap: 8, padding: '0 16px 10px', paddingTop: 0 }}>
                       <button onClick={() => retourCuisine(l.id, l.lotCode)} style={{
-                        fontSize: 11, padding: '5px 10px', borderRadius: 7, border: 'none', cursor: 'pointer',
+                        fontSize: 11, padding: '5px 10px', minHeight: 44, borderRadius: 7, border: 'none', cursor: 'pointer',
                         background: 'rgba(0,66,117,0.08)', color: 'var(--primary)', fontWeight: 600,
                         fontFamily: 'Manrope, sans-serif',
                       }}>
@@ -798,7 +804,7 @@ export default function Livraison() {
                       </button>
                       {canDeleteLivraison && (
                         <button onClick={() => supprimerLivraison(l.id)} style={{
-                          fontSize: 11, padding: '5px 10px', borderRadius: 7, border: 'none', cursor: 'pointer',
+                          fontSize: 11, padding: '5px 10px', minHeight: 44, borderRadius: 7, border: 'none', cursor: 'pointer',
                           background: 'rgba(192,57,43,0.08)', color: 'var(--danger)', fontWeight: 600,
                           fontFamily: 'Manrope, sans-serif',
                         }}>
@@ -889,7 +895,7 @@ export default function Livraison() {
                           <button
                             onClick={() => accepterDérogation(l.id)}
                             style={{
-                              fontSize: 11, padding: '5px 10px', borderRadius: 7, cursor: 'pointer',
+                              fontSize: 11, padding: '5px 10px', minHeight: 44, borderRadius: 7, cursor: 'pointer',
                               border: '1px solid rgba(45,122,79,0.3)',
                               background: 'rgba(45,122,79,0.08)', color: 'var(--success)', fontWeight: 600,
                               fontFamily: 'Manrope, sans-serif',
@@ -901,7 +907,7 @@ export default function Livraison() {
                         <button
                           onClick={() => retourCuisine(l.id, l.lotCode)}
                           style={{
-                            fontSize: 11, padding: '5px 10px', borderRadius: 7, border: 'none', cursor: 'pointer',
+                            fontSize: 11, padding: '5px 10px', minHeight: 44, borderRadius: 7, border: 'none', cursor: 'pointer',
                             background: 'rgba(0,66,117,0.08)', color: 'var(--primary)', fontWeight: 600,
                             fontFamily: 'Manrope, sans-serif',
                           }}
@@ -1186,13 +1192,29 @@ export default function Livraison() {
             </div>
           </div>
 
+          {galError && (
+            <div style={{
+              padding: '10px 14px', background: 'rgba(192,57,43,0.06)',
+              border: '1px solid rgba(192,57,43,0.18)', borderRadius: 10,
+              fontSize: 13, color: 'var(--danger)',
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+            }}>
+              <span>⚠️ {galError}</span>
+              <button onClick={() => loadGalerie()} style={{
+                background: 'none', border: 'none', color: 'var(--primary)', fontWeight: 700,
+                cursor: 'pointer', textDecoration: 'underline', fontSize: 13, minHeight: 44,
+                fontFamily: 'Manrope, sans-serif',
+              }}>Réessayer</button>
+            </div>
+          )}
+
           {galLoading && (
             <div style={{ textAlign: 'center', padding: '40px 0' }}>
               <div className="spinner" style={{ margin: '0 auto' }} />
             </div>
           )}
 
-          {!galLoading && gallery.length === 0 && (
+          {!galLoading && !galError && gallery.length === 0 && (
             <div className="card" style={{ textAlign: 'center', padding: '40px 20px' }}>
               <div style={{ fontSize: 36, marginBottom: 10 }}>📷</div>
               <p style={{
@@ -1525,9 +1547,8 @@ export default function Livraison() {
                     </div>
                   </div>
 
-                  {/* Zone actions correctives */}
+                  {/* Zone actions correctives — réutilise AcInlineSection (cohérence Aujourd'hui/Historique) */}
                   <div style={{ padding: '12px 14px' }}>
-                    {/* Pas d'AC saisie */}
                     {hasNoAc && (
                       <div style={{
                         marginBottom: 10, background: 'rgba(180,83,9,0.08)',
@@ -1537,65 +1558,18 @@ export default function Livraison() {
                         ⚠️ Aucune action corrective saisie
                       </div>
                     )}
-
-                    {/* Liste des ACs */}
-                    {acs === undefined && (
+                    {acs === undefined ? (
                       <div style={{ fontSize: 12, color: 'var(--on-surface-3)' }}>Chargement…</div>
+                    ) : (
+                      <AcInlineSection
+                        livId={l.id}
+                        receptionAt={l.receptionAt ?? l.departAt}
+                        acs={acs}
+                        isManager={isManagerRole}
+                        onAdd={p => { setLivAcModal(p); setAcExpandedId(l.id) }}
+                        onEdit={ac => { setEditAc(ac); setAcExpandedId(l.id) }}
+                      />
                     )}
-                    {acs && acs.length > 0 && (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
-                        {acs.map(ac => (
-                          <div key={ac.id} style={{
-                            background: 'var(--surface-low)', borderRadius: 10,
-                            padding: '10px 12px', border: '1px solid var(--border-soft)',
-                          }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
-                              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--danger)' }}>
-                                {ac.problem || '—'}
-                              </div>
-                              {isManagerRole && (
-                                <button
-                                  onClick={() => { setEditAc(ac); setAcExpandedId(l.id) }}
-                                  style={{
-                                    padding: '3px 7px', borderRadius: 7, border: '1px solid var(--border)',
-                                    background: 'var(--surface-mid)', cursor: 'pointer', fontSize: 11, flexShrink: 0,
-                                  }}
-                                >✏️</button>
-                              )}
-                            </div>
-                            <div style={{
-                              fontSize: 12, color: 'var(--on-surface)', lineHeight: 1.5,
-                              fontFamily: 'Manrope, sans-serif', whiteSpace: 'pre-wrap',
-                            }}>
-                              {ac.action}
-                            </div>
-                            <div style={{ fontSize: 10, color: 'var(--on-surface-3)', marginTop: 4 }}>
-                              par {ac.createdByName || '—'} ·{' '}
-                              {ac.createdAt?.toDate
-                                ? ac.createdAt.toDate().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
-                                : ''}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Bouton ajouter */}
-                    <button
-                      onClick={() => {
-                        const dateISO = depDate ? depDate.toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10)
-                        setLivAcModal({ type: 'temperature_reception', date: dateISO, refId: l.id, problem: '' })
-                        setAcExpandedId(l.id)
-                      }}
-                      style={{
-                        fontSize: 11, color: 'var(--primary)', background: 'none',
-                        border: '1px dashed rgba(0,66,117,0.4)', borderRadius: 8,
-                        padding: '5px 10px', cursor: 'pointer', fontWeight: 600,
-                        fontFamily: 'Manrope, sans-serif',
-                      }}
-                    >
-                      ➕ Ajouter une action corrective
-                    </button>
                   </div>
                 </div>
               )
