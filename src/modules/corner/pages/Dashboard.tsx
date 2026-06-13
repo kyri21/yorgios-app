@@ -132,6 +132,8 @@ function saveChecks(checks: Record<TaskKey, boolean>) {
   localStorage.setItem('dashboard_checks', JSON.stringify({ date: todayISO(), checks }))
 }
 
+type TaskItem = { label: string; status: string; nav: string; checkKey: TaskKey | null }
+
 export default function Dashboard() {
   const navigate = useNavigate()
   const [temps, setTemps] = useState<TempStatus[]>([])
@@ -159,7 +161,6 @@ export default function Dashboard() {
   useEffect(() => {
     async function loadAll() {
       const today = todayISO()
-      const t0 = todayStart().getTime()
       const endWeek = endOfWeekISO()
 
       // Températures matin : une seule requête par frigo (réutilisée pour data + existence)
@@ -258,7 +259,7 @@ export default function Dashboard() {
           code: codes[i] ?? 0, isToday: date === todayStr,
         })))
       })
-      .catch(() => {})
+      .catch(e => console.error('[Dashboard corner] météo', e))
   }, [])
 
   if (loading) return (
@@ -276,17 +277,20 @@ export default function Dashboard() {
   const dlcExpire = dlcItems.filter(i => i.dlcStatus === 'expire').length
   const dlcStatusVal = dlcItems.length === 0 ? 'ok' : dlcExpire > 0 ? 'ko' : 'warn'
 
-  const taskItems = [
-    { label: 'Hygiène quotidienne',   status: hygieneOk === null ? 'gray' : hygieneOk ? 'ok' : 'ko',   nav: 'hygiene',      checkKey: null as TaskKey | null },
-    { label: 'Températures matin',    status: matinSaisis ? 'ok' : 'ko',                                nav: 'temperatures', checkKey: null as TaskKey | null },
-    { label: 'Températures soir',     status: soirStatus,                                               nav: 'temperatures', checkKey: null as TaskKey | null },
+  const taskItems: TaskItem[] = [
+    { label: 'Hygiène quotidienne',   status: hygieneOk === null ? 'gray' : hygieneOk ? 'ok' : 'ko',   nav: 'hygiene',      checkKey: null },
+    { label: 'Températures matin',    status: matinSaisis ? 'ok' : 'ko',                                nav: 'temperatures', checkKey: null },
+    { label: 'Températures soir',     status: soirStatus,                                               nav: 'temperatures', checkKey: null },
     {
       label: dlcExpire > 0 ? `DLC vitrine (${dlcExpire} expirée(s))` : dlcItems.length > 0 ? `DLC vitrine (${dlcItems.length} à surveiller)` : 'DLC vitrine',
-      status: dlcStatusVal, nav: 'vitrine', checkKey: null as TaskKey | null,
+      status: dlcStatusVal, nav: 'vitrine', checkKey: null,
     },
-    { label: '🥡 Faire les TooGoodToGo',              status: checks.tgtg    ? 'ok' : (totalMin >= 9*60  ? 'todo' : 'gray'), nav: '', checkKey: 'tgtg'    as TaskKey },
-    { label: '📦 Vider les cartons chambre froide',  status: checks.cartons ? 'ok' : (totalMin >= 9*60+30 ? 'todo' : 'gray'), nav: '', checkKey: 'cartons' as TaskKey },
-    { label: '🍽️ Faire les plats du jour',            status: checks.plats   ? 'ok' : (totalMin >= 11*60  ? 'todo' : 'gray'), nav: '', checkKey: 'plats'   as TaskKey },
+    // Hygiène hebdo/mensuel : seulement quand dues et non faites (sinon bruit)
+    ...(hygieneHebdoOk === false   ? [{ label: 'Hygiène hebdomadaire', status: 'ko', nav: 'hygiene', checkKey: null } as TaskItem] : []),
+    ...(hygieneMensuelOk === false ? [{ label: 'Hygiène mensuelle',    status: 'ko', nav: 'hygiene', checkKey: null } as TaskItem] : []),
+    { label: '🥡 Faire les TooGoodToGo',              status: checks.tgtg    ? 'ok' : (totalMin >= 9*60  ? 'todo' : 'gray'), nav: '', checkKey: 'tgtg' },
+    { label: '📦 Vider les cartons chambre froide',  status: checks.cartons ? 'ok' : (totalMin >= 9*60+30 ? 'todo' : 'gray'), nav: '', checkKey: 'cartons' },
+    { label: '🍽️ Faire les plats du jour',            status: checks.plats   ? 'ok' : (totalMin >= 11*60  ? 'todo' : 'gray'), nav: '', checkKey: 'plats' },
   ]
 
   const hasKo = taskItems.some(i => i.status === 'ko')
@@ -332,8 +336,7 @@ export default function Dashboard() {
             cursor: 'pointer',
             padding: '12px 16px',
             background: 'rgba(180,83,9,0.08)',
-            border: '1.5px solid rgba(180,83,9,0.30)',
-            borderLeft: '4px solid var(--warning)',
+            border: '1px solid rgba(180,83,9,0.32)',
             borderRadius: 14,
             display: 'flex', alignItems: 'center', gap: 12,
           }}
@@ -353,38 +356,13 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* ── Météo de la semaine ─────────────────────────────────── */}
-      {weather.length > 0 && (
-        <div className="card" style={{ padding: '12px 14px' }}>
-          <p className="section-label" style={{ marginBottom: 10 }}>Météo Paris — semaine</p>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 }}>
-            {weather.map(day => {
-              const { emoji } = wmoToEmoji(day.code)
-              return (
-                <div key={day.date} style={{
-                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
-                  padding: '8px 2px', borderRadius: 10,
-                  background: day.isToday ? 'rgba(0,66,117,0.08)' : 'var(--surface-low)',
-                  border: day.isToday ? '1.5px solid rgba(0,66,117,0.22)' : '1.5px solid transparent',
-                }}>
-                  <span style={{ fontSize: 10, fontWeight: 700, color: day.isToday ? 'var(--primary)' : 'var(--on-surface-3)', textTransform: 'uppercase' }}>{day.dayLabel}</span>
-                  <span style={{ fontSize: 18, lineHeight: 1.2 }}>{emoji}</span>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface)' }}>{day.maxC}°</span>
-                  <span style={{ fontSize: 10, color: 'var(--on-surface-3)' }}>{day.minC}°</span>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
       {/* ── À faire aujourd'hui ─────────────────────────────────── */}
       <div
         className="card"
         style={{
           background: hasKo ? 'rgba(136,0,20,0.04)' : 'var(--surface-low)',
           cursor: 'default',
-          borderLeft: hasKo ? '3px solid var(--danger)' : '3px solid transparent',
+          border: hasKo ? '1px solid rgba(136,0,20,0.22)' : '1px solid var(--border-soft)',
           borderRadius: 16,
           padding: '14px 16px',
         }}
@@ -624,141 +602,116 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* ── Commandes clients — bannière pleine largeur ──────────── */}
-      {commandesToday.length > 0 && (
-        <div
-          className="card"
-          style={{
-            cursor: 'pointer',
-            background: 'rgba(136,0,20,0.04)',
-            border: '1.5px solid rgba(192,57,43,0.35)',
-            borderLeft: '4px solid var(--danger)',
-            borderRadius: 16,
-            padding: '14px 16px',
-          }}
-          onClick={() => navigate('commandes')}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontSize: 20 }}>📬</span>
-              <div>
-                <p className="section-label" style={{ marginBottom: 1, color: 'var(--danger)' }}>Commandes clients</p>
-                <h2 style={{ fontSize: 15, fontWeight: 700, color: 'var(--on-surface)', margin: 0, fontFamily: 'Epilogue, sans-serif' }}>
-                  {commandesToday.length} livraison{commandesToday.length > 1 ? 's' : ''} aujourd'hui
-                </h2>
+      {/* ── Commandes clients — carte unique (aujourd'hui + semaine) ── */}
+      {(commandesToday.length > 0 || commandesWeek.length > 0) && (() => {
+        const urgent = commandesToday.length > 0
+        const accent = urgent ? 'var(--danger)' : 'var(--warning)'
+        return (
+          <div
+            className="card"
+            onClick={() => navigate('commandes')}
+            style={{
+              cursor: 'pointer',
+              background: urgent ? 'rgba(136,0,20,0.04)' : 'rgba(180,83,9,0.05)',
+              border: `1px solid ${urgent ? 'rgba(192,57,43,0.28)' : 'rgba(180,83,9,0.28)'}`,
+              borderRadius: 16,
+              padding: '14px 16px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 20 }}>📬</span>
+                <div>
+                  <p className="section-label" style={{ marginBottom: 1, color: accent }}>Commandes clients</p>
+                  <h2 style={{ fontSize: 15, fontWeight: 700, color: 'var(--on-surface)', margin: 0, fontFamily: 'Epilogue, sans-serif' }}>
+                    {urgent
+                      ? `${commandesToday.length} livraison${commandesToday.length > 1 ? 's' : ''} aujourd'hui`
+                      : `${commandesWeek.length} commande${commandesWeek.length > 1 ? 's' : ''} cette semaine`}
+                  </h2>
+                </div>
               </div>
+              <span className={urgent ? 'chip-danger' : 'chip-warn'}>{urgent ? commandesToday.length : commandesWeek.length}</span>
             </div>
-            <span className="chip-danger">{commandesToday.length}</span>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-            {commandesToday.map(c => (
-              <div key={c.id} style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                borderRadius: 8, padding: '8px 12px',
-                background: 'rgba(192,57,43,0.06)',
-              }}>
-                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--on-surface)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 8 }}>
-                  {c.prenom ? `${c.prenom} ${c.nom ?? ''}`.trim() : c.nom ?? `Commande #${c.id.slice(-4)}`}
-                </span>
-                <span className={c.statut === 'Accepté' ? 'chip-ok' : c.statut === 'Devis envoyé' ? 'chip-warn' : 'chip-warn'} style={{ fontSize: 10, padding: '2px 8px' }}>
-                  {c.statut || 'En cours'}
-                </span>
-              </div>
-            ))}
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginTop: 8, gap: 4 }}>
-            <span style={{ fontSize: 11, color: 'var(--danger)', fontWeight: 600 }}>Voir les commandes</span>
-            <svg width="6" height="10" fill="none" viewBox="0 0 6 10">
-              <path d="M1 1l4 4-4 4" stroke="var(--danger)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </div>
-        </div>
-      )}
 
-      {commandesWeek.length > 0 && (
-        <div
-          onClick={() => navigate('commandes')}
-          style={{
-            cursor: 'pointer',
-            background: 'rgba(180,83,9,0.07)',
-            border: '2px solid rgba(180,83,9,0.35)',
-            borderLeft: '5px solid var(--warning)',
-            borderRadius: 16,
-            padding: '14px 16px',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 26 }}>⚠️</span>
-            <div style={{ flex: 1 }}>
-              <p style={{ margin: 0, fontSize: 11, fontWeight: 800, color: 'var(--warning)', textTransform: 'uppercase', letterSpacing: '0.06em', fontFamily: 'Manrope, sans-serif' }}>
-                À PRÉPARER CETTE SEMAINE
-              </p>
-              <h2 style={{ fontSize: 17, fontWeight: 800, color: 'var(--on-surface)', margin: '2px 0 6px', fontFamily: 'Epilogue, sans-serif' }}>
-                {commandesWeek.length} commande{commandesWeek.length > 1 ? 's' : ''} client{commandesWeek.length > 1 ? 's' : ''}
-              </h2>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                {commandesWeek.slice(0, 3).map(c => (
-                  <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--warning)', background: 'rgba(180,83,9,0.10)', borderRadius: 6, padding: '1px 7px', fontFamily: 'Manrope, sans-serif' }}>
-                      {new Date(c.dateLivraison + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })}
+            {/* Aujourd'hui */}
+            {commandesToday.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: commandesWeek.length > 0 ? 10 : 0 }}>
+                {commandesToday.map(c => (
+                  <div key={c.id} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    borderRadius: 8, padding: '8px 12px', background: 'rgba(192,57,43,0.06)',
+                  }}>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--on-surface)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 8 }}>
+                      {c.prenom ? `${c.prenom} ${c.nom ?? ''}`.trim() : c.nom ?? `Commande #${c.id.slice(-4)}`}
                     </span>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--on-surface)', fontFamily: 'Manrope, sans-serif' }}>
-                      {c.prenom ? `${c.prenom} ${c.nom ?? ''}`.trim() : c.nom ?? `#${c.id.slice(-4)}`}
+                    <span className={c.statut === 'Accepté' ? 'chip-ok' : 'chip-warn'} style={{ fontSize: 10, padding: '2px 8px' }}>
+                      {c.statut || 'En cours'}
                     </span>
                   </div>
                 ))}
-                {commandesWeek.length > 3 && (
-                  <span style={{ fontSize: 12, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif' }}>
-                    + {commandesWeek.length - 3} autre{commandesWeek.length - 3 > 1 ? 's' : ''}…
-                  </span>
-                )}
               </div>
+            )}
+
+            {/* Cette semaine */}
+            {commandesWeek.length > 0 && (
+              <div>
+                {commandesToday.length > 0 && (
+                  <p className="section-label" style={{ color: 'var(--warning)', marginBottom: 5 }}>À préparer cette semaine</p>
+                )}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {commandesWeek.slice(0, 3).map(c => (
+                    <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--warning)', background: 'rgba(180,83,9,0.10)', borderRadius: 6, padding: '1px 7px' }}>
+                        {new Date(c.dateLivraison + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })}
+                      </span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--on-surface)' }}>
+                        {c.prenom ? `${c.prenom} ${c.nom ?? ''}`.trim() : c.nom ?? `#${c.id.slice(-4)}`}
+                      </span>
+                    </div>
+                  ))}
+                  {commandesWeek.length > 3 && (
+                    <span style={{ fontSize: 12, color: 'var(--on-surface-3)' }}>
+                      + {commandesWeek.length - 3} autre{commandesWeek.length - 3 > 1 ? 's' : ''}…
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginTop: 8, gap: 4 }}>
+              <span style={{ fontSize: 11, color: accent, fontWeight: 600 }}>Voir les commandes</span>
+              <svg width="6" height="10" fill="none" viewBox="0 0 6 10">
+                <path d="M1 1l4 4-4 4" stroke={accent} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
             </div>
-            <svg width="7" height="12" fill="none" viewBox="0 0 7 12">
-              <path d="M1 1l5 5-5 5" stroke="var(--warning)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
+          </div>
+        )
+      })()}
+
+      {/* ── Météo de la semaine (référence, basse priorité) ──────── */}
+      {weather.length > 0 && (
+        <div className="card" style={{ padding: '12px 14px' }}>
+          <p className="section-label" style={{ marginBottom: 10 }}>Météo Paris — semaine</p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 }}>
+            {weather.map(day => {
+              const { emoji } = wmoToEmoji(day.code)
+              return (
+                <div key={day.date} style={{
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+                  padding: '8px 2px', borderRadius: 10,
+                  background: day.isToday ? 'rgba(0,66,117,0.08)' : 'var(--surface-low)',
+                  border: day.isToday ? '1.5px solid rgba(0,66,117,0.22)' : '1.5px solid transparent',
+                }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: day.isToday ? 'var(--primary)' : 'var(--on-surface-3)', textTransform: 'uppercase' }}>{day.dayLabel}</span>
+                  <span style={{ fontSize: 18, lineHeight: 1.2 }}>{emoji}</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--on-surface)' }}>{day.maxC}°</span>
+                  <span style={{ fontSize: 10, color: 'var(--on-surface-3)' }}>{day.minC}°</span>
+                </div>
+              )
+            })}
           </div>
         </div>
       )}
-
-      {/* ── Hygiène + Commandes (grille 2 col) ──────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <div className="card" style={{ cursor: 'pointer' }} onClick={() => navigate('hygiene')}>
-          <div style={{ fontSize: 22, marginBottom: 8 }}>🧼</div>
-          <p className="section-label" style={{ marginBottom: 6 }}>Hygiène</p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-            {[
-              { label: 'Quotidien', ok: hygieneOk },
-              { label: 'Hebdo',     ok: hygieneHebdoOk },
-              { label: 'Mensuel',   ok: hygieneMensuelOk },
-            ].map(({ label, ok }) => (
-              <div key={label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4 }}>
-                <span style={{ fontSize: 11, color: 'var(--on-surface-2)' }}>{label}</span>
-                {ok === null
-                  ? <span style={{ fontSize: 10, color: 'var(--on-surface-3)' }}>—</span>
-                  : ok
-                    ? <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--success)' }}>✓ Fait</span>
-                    : <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--danger)' }}>⚠ À faire</span>
-                }
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="card" style={{ cursor: 'pointer' }} onClick={() => navigate('commandes')}>
-          <div style={{ fontSize: 22, marginBottom: 8 }}>📬</div>
-          <p className="section-label" style={{ marginBottom: 6 }}>Commandes</p>
-          {commandesToday.length > 0 ? (
-            <span className="chip-warn">{commandesToday.length} aujourd'hui</span>
-          ) : commandesWeek.length > 0 ? (
-            <span style={{ fontSize: 12, color: 'var(--warning)', fontWeight: 700 }}>
-              {commandesWeek.length} cette semaine
-            </span>
-          ) : (
-            <span style={{ fontSize: 12, color: 'var(--on-surface-3)' }}>Aucune cette semaine</span>
-          )}
-        </div>
-      </div>
     </div>
   )
 }
