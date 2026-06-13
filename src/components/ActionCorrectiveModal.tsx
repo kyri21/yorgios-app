@@ -64,6 +64,7 @@ export default function ActionCorrectiveModal({
   const [manualProblem, setManualProblem] = useState(payload.problem || '')
   const [saving, setSaving]               = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [error, setError]                 = useState<string | null>(null)
 
   const isManual    = !payload.problem && !editId
   const isEdit      = !!editId
@@ -74,6 +75,7 @@ export default function ActionCorrectiveModal({
     const trimProblem = isManual ? manualProblem.trim() : payload.problem
     if (!trimAction || !trimProblem) return
     setSaving(true)
+    setError(null)
     try {
       if (isEdit && editId) {
         await updateDoc(doc(db, 'actions_correctives', editId), {
@@ -93,18 +95,23 @@ export default function ActionCorrectiveModal({
       }
       onSaved()
       onClose()
-    } catch { /* silencieux */ }
+    } catch (e) {
+      setError(`Échec de l'enregistrement — l'action corrective n'a PAS été sauvegardée. Réessayez. (${e instanceof Error ? e.message : String(e)})`)
+    }
     finally { setSaving(false) }
   }
 
   async function handleDelete() {
     if (!editId) return
     setSaving(true)
+    setError(null)
     try {
       await deleteDoc(doc(db, 'actions_correctives', editId))
       onDeleted?.()
       onClose()
-    } catch { }
+    } catch (e) {
+      setError(`Échec de la suppression — réessayez. (${e instanceof Error ? e.message : String(e)})`)
+    }
     finally { setSaving(false) }
   }
 
@@ -213,6 +220,17 @@ export default function ActionCorrectiveModal({
             }}
           />
         </div>
+
+        {error && (
+          <div role="alert" style={{
+            padding: '10px 12px', borderRadius: 10,
+            background: 'rgba(192,57,43,0.10)', border: '1px solid var(--danger)',
+            color: 'var(--danger)', fontSize: 12.5, fontWeight: 600,
+            fontFamily: 'Manrope, sans-serif', lineHeight: 1.4,
+          }}>
+            ⚠️ {error}
+          </div>
+        )}
 
         <div style={{ display: 'flex', gap: 10 }}>
           <button onClick={onClose} className="btn-secondary" style={{ flex: 1 }}>Annuler</button>
