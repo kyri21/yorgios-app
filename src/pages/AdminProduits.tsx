@@ -124,7 +124,7 @@ export default function AdminProduits() {
         const lvls = (snap.data() as any).levels
         if (Array.isArray(lvls) && lvls.length > 0) setPriorityLevels(lvls)
       }
-    }).catch(() => {})
+    }).catch(e => console.error('[AdminProduits] chargement priority_levels', e))
   }, [])
 
   async function create() {

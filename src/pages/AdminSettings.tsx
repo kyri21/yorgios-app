@@ -350,7 +350,7 @@ export default function AdminSettings() {
           .sort((a, b) => (a.displayName || '').localeCompare(b.displayName || ''))
         setManagers(list)
       })
-      .catch(() => {})
+      .catch(e => console.error('[AdminSettings] chargement managers', e))
   }, [])
 
   useEffect(() => {

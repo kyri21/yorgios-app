@@ -133,10 +133,12 @@ export default function Fabrication() {
   const [transfoReceptionId, setTransfoReceptionId] = useState('')
   const [transfoReceptions, setTransfoReceptions] = useState<ReceptionSource[]>([])
   const [transfoReceptionsLoaded, setTransfoReceptionsLoaded] = useState(false)
+  const [transfoReceptionsError, setTransfoReceptionsError] = useState(false)
 
   // Sélecteur lots sources (ingrédients)
   const [transfoLots, setTransfoLots] = useState<Lot[]>([])
   const [transfoLotsLoaded, setTransfoLotsLoaded] = useState(false)
+  const [transfoLotsError, setTransfoLotsError] = useState(false)
   const [selectedIngredientLotIds, setSelectedIngredientLotIds] = useState<string[]>([])
   const [showIngredientPicker, setShowIngredientPicker] = useState(false)
 
@@ -219,6 +221,7 @@ export default function Fabrication() {
 
   async function loadTransfoReceptions() {
     setTransfoReceptionsLoaded(false)
+    setTransfoReceptionsError(false)
     try {
       const snap = await getDocs(query(
         collection(db, 'receptions'),
@@ -226,12 +229,16 @@ export default function Fabrication() {
         limit(50),
       ))
       setTransfoReceptions(snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as ReceptionSource[])
-    } catch { }
+    } catch (e) {
+      console.error('[Fabrication] loadTransfoReceptions', e)
+      setTransfoReceptionsError(true)
+    }
     finally { setTransfoReceptionsLoaded(true) }
   }
 
   async function loadTransfoLots() {
     setTransfoLotsLoaded(false)
+    setTransfoLotsError(false)
     try {
       const since = new Date()
       since.setDate(since.getDate() - 14)
@@ -242,7 +249,10 @@ export default function Fabrication() {
         orderBy('createdAt', 'desc'),
       ))
       setTransfoLots(snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }) as Lot))
-    } catch { }
+    } catch (e) {
+      console.error('[Fabrication] loadTransfoLots', e)
+      setTransfoLotsError(true)
+    }
     finally { setTransfoLotsLoaded(true) }
   }
 
@@ -430,7 +440,9 @@ export default function Fabrication() {
         }))).filter(Boolean) as Array<{ lot: Lot; reception: ReceptionSource | null }>
       }
       setTraceData({ ingredientLots, directReception })
-    } catch { }
+    } catch (e) {
+      console.error('[Fabrication] loadTrace', e)
+    }
     finally { setTraceLoading(false) }
   }
 
@@ -774,6 +786,11 @@ export default function Fabrication() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {[1,2,3].map(i => <div key={i} className="skeleton" style={{ height: 52, borderRadius: 10 }} />)}
                 </div>
+              ) : transfoReceptionsError ? (
+                <p style={{ fontSize: 13, color: 'var(--danger)', fontWeight: 600 }}>
+                  ⚠️ Échec du chargement des réceptions.{' '}
+                  <button type="button" onClick={() => loadTransfoReceptions()} style={{ background: 'none', border: 'none', color: 'var(--primary)', fontWeight: 700, cursor: 'pointer', textDecoration: 'underline', padding: 0, fontSize: 13 }}>Réessayer</button>
+                </p>
               ) : transfoReceptions.length === 0 ? (
                 <p style={{ fontSize: 13, color: 'var(--on-surface-3)' }}>Aucune réception enregistrée.</p>
               ) : (
@@ -846,6 +863,11 @@ export default function Fabrication() {
                 <div style={{ maxHeight: 220, overflowY: 'auto', borderRadius: 10, background: 'var(--surface-mid)', border: '1px solid var(--border-soft)' }}>
                   {!transfoLotsLoaded ? (
                     <div style={{ padding: '12px 14px', fontSize: 13, color: 'var(--on-surface-3)' }}>Chargement…</div>
+                  ) : transfoLotsError ? (
+                    <div style={{ padding: '12px 14px', fontSize: 13, color: 'var(--danger)', fontWeight: 600 }}>
+                      ⚠️ Échec du chargement des lots.{' '}
+                      <button type="button" onClick={() => loadTransfoLots()} style={{ background: 'none', border: 'none', color: 'var(--primary)', fontWeight: 700, cursor: 'pointer', textDecoration: 'underline', padding: 0, fontSize: 13 }}>Réessayer</button>
+                    </div>
                   ) : transfoLots.length === 0 ? (
                     <div style={{ padding: '12px 14px', fontSize: 13, color: 'var(--on-surface-3)' }}>Aucun lot de transformation disponible (14 derniers jours).</div>
                   ) : transfoLots.map(l => {
