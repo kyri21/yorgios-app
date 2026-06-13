@@ -379,6 +379,7 @@ function GestionCommandes({ user }: { user: any }) {
   const canManageCommandes = can(user?.role, 'action_update_statut_commande')
   const [commandes, setCommandes] = useState<Commande[]>([])
   const [loading, setLoading]     = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [filtreStatuts, setFiltreStatuts] = useState<string[]>([])
   const [filtreDateFrom, setFiltreDateFrom] = useState('')
   const [filtreDateTo, setFiltreDateTo]     = useState('')
@@ -387,9 +388,15 @@ function GestionCommandes({ user }: { user: any }) {
 
   async function load() {
     setLoading(true)
-    const snap = await getDocs(query(collection(db, 'commandes_externes'), orderBy('dateSaisie', 'desc')))
-    setCommandes(snap.docs.map(d => ({ docId: d.id, ...(d.data() as any) })))
-    setLoading(false)
+    setLoadError(null)
+    try {
+      const snap = await getDocs(query(collection(db, 'commandes_externes'), orderBy('dateSaisie', 'desc')))
+      setCommandes(snap.docs.map(d => ({ docId: d.id, ...(d.data() as any) })))
+    } catch (e: any) {
+      setLoadError(e?.message || 'Chargement impossible')
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => { load() }, [])
@@ -421,22 +428,20 @@ function GestionCommandes({ user }: { user: any }) {
 
   return (
     <>
-      {/* KPIs */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
-        {([
-          ['Total', kpi.total, 'var(--primary)', 'rgba(0,66,117,0.07)'],
-          ['En cours', kpi.encours, 'var(--warning)', 'rgba(180,83,9,0.07)'],
-          ['Cette semaine', kpi.semaine, 'var(--primary)', 'rgba(0,66,117,0.07)'],
-          ['Acceptées', kpi.acceptees, 'var(--success)', 'rgba(45,122,79,0.07)'],
-        ] as const).map(([label, val, color, bg]) => (
-          <div key={label} style={{
-            padding: '14px 16px', borderRadius: 'var(--radius-md)',
-            background: bg, border: `1px solid ${color}25`,
-          }}>
-            <div style={{ fontSize: 28, fontWeight: 800, color, fontFamily: 'Epilogue, sans-serif', lineHeight: 1 }}>{val}</div>
-            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--on-surface-2)', marginTop: 4, fontFamily: 'Manrope, sans-serif' }}>{label}</div>
-          </div>
-        ))}
+      {/* Récap compact — outil terrain, l'actionnable (« en cours ») mis en avant */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
+        padding: '11px 16px', background: 'var(--surface)',
+        border: '1px solid var(--border)', borderRadius: 'var(--radius-md)',
+      }}>
+        <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6 }}>
+          <strong style={{ fontSize: 21, fontWeight: 800, color: 'var(--warning)', fontFamily: 'Epilogue, sans-serif', lineHeight: 1 }}>{kpi.encours}</strong>
+          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--on-surface)', fontFamily: 'Manrope, sans-serif' }}>en cours</span>
+        </span>
+        <span style={{ width: 1, height: 18, background: 'var(--border)' }} />
+        <span style={{ fontSize: 13, color: 'var(--on-surface-2)', fontFamily: 'Manrope, sans-serif' }}>{kpi.semaine} cette semaine</span>
+        <span style={{ fontSize: 13, color: 'var(--on-surface-2)', fontFamily: 'Manrope, sans-serif' }}>{kpi.acceptees} acceptées</span>
+        <span style={{ fontSize: 13, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', marginLeft: 'auto' }}>{kpi.total} au total</span>
       </div>
 
       {/* Filtre rapide semaine / mois */}
@@ -494,6 +499,13 @@ function GestionCommandes({ user }: { user: any }) {
           <div className="spinner" style={{ margin: '0 auto 12px' }} />
           Chargement…
         </div>
+      ) : loadError ? (
+        <div style={{ background: 'var(--surface)', borderRadius: 14, padding: '32px 20px', textAlign: 'center', border: '1px solid var(--border)', fontFamily: 'Manrope, sans-serif' }}>
+          <div style={{ fontSize: 28, marginBottom: 8 }}>⚠️</div>
+          <div style={{ color: 'var(--on-surface)', fontSize: 15, fontWeight: 600, marginBottom: 4 }}>Chargement impossible</div>
+          <div style={{ color: 'var(--on-surface-2)', fontSize: 13, marginBottom: 16 }}>Vérifie ta connexion, puis réessaie.</div>
+          <button className="btn-primary" onClick={load} style={{ width: 'auto', padding: '0 20px' }}>Réessayer</button>
+        </div>
       ) : filtered.length === 0 ? (
         <div style={{ background: 'var(--surface)', borderRadius: 14, padding: '32px 20px', textAlign: 'center', fontSize: 13, color: 'var(--on-surface-3)', border: '1px solid var(--border)' }}>
           Aucune commande
@@ -526,6 +538,7 @@ function CommandeCard({ commande: c, expanded, onToggle, onUpdated, isPatron, ro
   const [prixEstime, setPrixEstime]   = useState(c.prixEstime || '')
   const [saving, setSaving]           = useState(false)
   const [saved, setSaved]             = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [commandePreteSending, setCommandePreteSending] = useState(false)
   const [commandePreteOk, setCommandePreteOk] = useState(false)
 
@@ -575,13 +588,14 @@ function CommandeCard({ commande: c, expanded, onToggle, onUpdated, isPatron, ro
 
   async function handleCommandePrete() {
     setCommandePreteSending(true)
+    setActionError(null)
     try {
       const fn = httpsCallable(getFunctions(undefined, 'europe-west1'), 'onCommandePrete')
       await fn({ commandeId: c.docId })
       setCommandePreteOk(true)
       setTimeout(() => setCommandePreteOk(false), 3000)
-    } catch (e) {
-      console.error(e)
+    } catch (e: any) {
+      setActionError(e?.message || 'Échec de l\'envoi de la notification')
     } finally {
       setCommandePreteSending(false)
     }
@@ -589,6 +603,7 @@ function CommandeCard({ commande: c, expanded, onToggle, onUpdated, isPatron, ro
 
   async function handleUpdate() {
     setSaving(true)
+    setActionError(null)
     try {
       await updateDoc(doc(db, 'commandes_externes', c.docId), {
         statut, notesCuisine, notesManager,
@@ -597,12 +612,13 @@ function CommandeCard({ commande: c, expanded, onToggle, onUpdated, isPatron, ro
       })
       setSaved(true)
       setTimeout(() => { setSaved(false); onUpdated() }, 1500)
-    } catch (e) { console.error(e) }
+    } catch (e: any) { setActionError(e?.message || 'Échec de l\'enregistrement') }
     finally { setSaving(false) }
   }
 
   async function handleSaveFullEdit() {
     setSaving(true)
+    setActionError(null)
     try {
       const prodsClean = editProduits
         .filter(p => p.produit.trim())
@@ -630,7 +646,7 @@ function CommandeCard({ commande: c, expanded, onToggle, onUpdated, isPatron, ro
       setSaved(true)
       setIsEditing(false)
       setTimeout(() => { setSaved(false); onUpdated() }, 1500)
-    } catch (e) { console.error(e) }
+    } catch (e: any) { setActionError(e?.message || 'Échec de l\'enregistrement') }
     finally { setSaving(false) }
   }
 
@@ -677,6 +693,17 @@ function CommandeCard({ commande: c, expanded, onToggle, onUpdated, isPatron, ro
 
       {expanded && (
         <div style={{ borderTop: '1px solid var(--border)' }} className="animate-fade-in">
+
+          {actionError && (
+            <div style={{
+              margin: '12px 16px 0', padding: '10px 14px',
+              background: 'rgba(136,0,20,0.10)', border: '1px solid rgba(136,0,20,0.25)',
+              borderRadius: 'var(--radius-sm)', fontSize: 13, color: 'var(--danger)',
+              display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'Manrope, sans-serif',
+            }}>
+              <span>⚠️</span><span>{actionError}</span>
+            </div>
+          )}
 
           {/* Mode édition complète */}
           {isEditing ? (
@@ -1128,25 +1155,13 @@ export function CommandeFormBody({ form, set, produits, addProduit, removeProdui
   const [catalogue, setCatalogue] = useState<CatalogueProduit[]>([])
 
   useEffect(() => {
-    getDocs(query(collection(db, 'produits'), orderBy('name', 'asc')))
+    // Catalogue vivant (105 produits) — alimente l'autocomplete des noms.
+    getDocs(query(collection(db, 'catalogue'), orderBy('name', 'asc')))
       .then(snap => {
         setCatalogue(snap.docs.map(d => ({ id: d.id, ...(d.data() as any) } as CatalogueProduit)))
       })
-      .catch(() => {/* silently ignore — catalogue is optional */})
+      .catch(() => {/* autocomplete optionnel — la saisie libre reste possible */})
   }, [])
-
-  // Estimation de prix automatique
-  const estimation = produits.reduce((sum, p) => {
-    const found = catalogue.find(c => c.name.toLowerCase() === p.produit.toLowerCase())
-    if (!found || found.prix == null) return sum
-    const qty = parseFloat(p.quantite) || 1
-    return sum + qty * found.prix
-  }, 0)
-
-  const hasEstimation = produits.some(p => {
-    const found = catalogue.find(c => c.name.toLowerCase() === p.produit.toLowerCase())
-    return found && found.prix != null
-  })
 
   return (
     <>
@@ -1212,35 +1227,6 @@ export function CommandeFormBody({ form, set, produits, addProduit, removeProdui
         }}>
           ➕ Ajouter un produit
         </button>
-
-        {/* Estimation de prix automatique */}
-        {hasEstimation && (
-          <div style={{
-            background: 'rgba(0,66,117,0.05)', border: '1px solid rgba(0,66,117,0.18)',
-            borderRadius: 10, padding: '10px 14px',
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
-          }}>
-            <div>
-              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--on-surface-3)', textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'Manrope, sans-serif' }}>Estimation catalogue</div>
-              <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--primary)', fontFamily: 'Epilogue, sans-serif', marginTop: 2 }}>
-                ~{estimation.toFixed(2)} €
-              </div>
-              <div style={{ fontSize: 11, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif', marginTop: 2 }}>Indicatif — non contractuel</div>
-            </div>
-            {mode === 'interne' && canPrixEstime && (
-              <button
-                onClick={() => set('prixEstime', estimation.toFixed(2))}
-                style={{
-                  padding: '8px 14px', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: 'pointer',
-                  background: 'var(--primary)', color: '#fff', border: 'none',
-                  fontFamily: 'Manrope, sans-serif', whiteSpace: 'nowrap', flexShrink: 0,
-                }}
-              >
-                Utiliser cette estimation
-              </button>
-            )}
-          </div>
-        )}
 
         <Field label="Instructions spéciales / Allergènes">
           <textarea className="input" rows={2} style={{ resize: 'none' }} value={form.instructionsSpeciales} onChange={e => set('instructionsSpeciales', e.target.value)} placeholder="Optionnel" />
