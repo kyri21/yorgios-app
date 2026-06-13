@@ -6,23 +6,14 @@
 
 # CLAUDE.md — Matias PWA (mis à jour 2026-06-12)
 
-## 🔍 AUDIT COMPLET EN COURS (démarré 2026-06-12) — RIEN NE SE CORRIGE SANS ACCORD D'ARTHUR
+## ✅ AUDIT COMPLET — CLOS 2026-06-13
 
-- **Correctifs DÉPLOYÉS 2026-06-12** : Lot A sécurité (secret HMAC, sendPasswordReset admin-only, token 64c, anti-spam tél.), A6 anti-escalade users, B4 settings écriture managers, G1 consentement RGPD /commande. Reste A5 (Arthur change son mdp). Détails `docs/audit/04-SYNTHESE-DECISIONS.md`.
-- **D1 (permissions UI+rules)** : ✅ **DÉPLOYÉ 2026-06-12 soir** — UI câblée (`can(role,key)` dans Commandes/Livraison/Fabrication/Livraisons cuisine/Temperatures ×2) + rules `permAllows()` **fail-open** sur les 4 delete (lots_cuisine, livraisons, non_conformites→clé `action_delete_ac`, actions_correctives). 36/36 tests émulateur (`tests/rules/d1-permissions.test.mjs`, Java 21 requis : `~/.local/jdk`). `firestore.rules` passé au wildcard `{database}` (équivalent, déploiement cible DB `test`). Reste : vérif prod 3 comptes audit + état doc `settings/permissions` dans /admin/permissions. Détails `docs/audit/05-D1-plan.md`.
-- **LOT C (perf mobile) — ✅ DÉPLOYÉ EN PROD 2026-06-13** : merge `--ff-only perf/lot-c` → main (`fd0e094`), build vert (33.7s, 0 erreur), `firebase deploy --only hosting` OK (29/40 fichiers ré-uploadés, 11 chunks vendor inchangés = bénéfice C1 confirmé côté CDN). C1 vendor chunks (vite.config) → `react-vendor` 165KB / `firebase` 304KB / `firebase-firestore` 381KB séparés et hash-stables ; C2 `persistentLocalCache` global (config.ts) + planning cache-first/parallèle + états honnêtes (timeout 8s/erreur/Réessayer) ; C3 Livraison N+1 ACs → `fetchLivAcsBatch` where-in/30. **Revu Codex (P1/P2/P3 corrigés) + LLM Council 4 modèles (rien de bloquant)**. **VALIDÉ MobAI iPhone 13 Pro 2026-06-13** : ✅ cache-first instantané (kill+relaunch → planning peuplé à ~2.8s, plus de skeleton 30s) ; ✅ non-perte d'édition (Wahib 8h-12h→8h-13h sauvé, kill+relaunch → 8h-13h conservé puis reverté) ; ⚠️ états honnêtes (timeout 8s/Réessayer) non déclenchés on-device (cache chaud bypasse le chemin) — vérifiés code seulement. Preuve : `docs/audit/lotc-planning-cachefirst-validated.png`. ⚠️ Multi-PWA : tous les standalone partagent bundle `com.apple.webapp` → lancer Matias via Spotlight (cf. skill matias-pwa). Détails : mémoire `project_lot_c_resume.md` + `project_firestore_persistence.md`. ⚠️ getDoc reste server-first même avec persistence ; cache-first = `getDocFromCache`.
-- **Plan en 5 phases** : 0-Cartographie ✅ · 1-Statique ✅ · 2-Web+Mobile ✅ (3 rôles testés) · 3-UX 🟡 (analyse faite, reste passe visuelle /impeccable + Lot C ci-dessus) · 4-Synthèse ✅ (registre A-G ; GO exécutés)
-- **Livrables** : `docs/audit/` → `00-SYNTHESE` · `01-statique.md` · `02-dynamique-web.md` · `02-dynamique-mobile.md` · `03-ux-architecture.md` · 5 `cartographie-*.md` + `PRODUCT.md` (racine)
-- **Comptes test** (à supprimer en fin d'audit) : `audit.corner@`, `audit.cuisine@`, `audit.manager@yorgios.fr`
-- **Isolation rôles** : routing OK pour corner/cuisine/manager. **W5/U4** : manager peut ouvrir /admin/settings mais les rules bloquent l'écriture settings → échec silencieux.
-- **Phase 3** : 17 items UX/archi priorisés (U1-U17), top = vitesse perçue (bundle 1 Mo + skeleton 30s), échecs silencieux, permissions cosmétiques, RGPD à deux vitesses, 12 produits périmés en vitrine en prod
-- **Base auditée** : commit `9cc9137` ; docs aux commits e8efaa8/a07e768/f6abd13
-- **Confirmés P0 sécurité** : secret fallback `'matias-fallback-secret'` (functions/src/index.ts:52) ; `sendPasswordReset` sans auth/rôle (index.ts:877) ; token HMAC tronqué 32c (53) ; anti-spam commandes contournable tél. vide (189) ; RGPD /commande sans consentement (CommandePublique:158)
-- **Découverte clé** : permissions cosmétiques — les rules Firestore ne lisent pas `settings/permissions`, les permKeys action_*/field_* ne sont câblées nulle part
-- **Phase 2-web** : socle sain (0 erreur console login/planning/corner), bundle JS ≈ 1 Mo (cible perf), bottom-nav visible en desktop 1280px
-- **Faux positifs écartés** : ActionCorrectiveModal existe ; PermissionsProvider branché (App.tsx:9) ; `/pointage` concorde
-- **Reprise** : prompt complet en bas de `docs/audit/00-SYNTHESE-CARTOGRAPHIE.md` → Phase 2-mobile (MobAI iPhone)
-- ⚠️ Prod : jamais « On s'en occupe », pas de viewed:true ruptures, pas d'action qui envoie emails/FCM réels (REFUSE, NC, congés, commande)
+Audit complet de la PWA mené les 2026-06-12/13 (5 phases : cartographie, statique, dynamique web+mobile, UX, synthèse). Tous les correctifs validés par Arthur ont été déployés en prod : Lot A sécurité (secret HMAC, sendPasswordReset admin-only, token 64c, anti-spam) + A6/B4/G1, D1 permissions (UI `can()` + rules `permAllows()` fail-open), Lot C perf mobile (cache-first + vendor chunks), correctifs échecs silencieux, refonte /impeccable (Dashboard, Livraison, Planning mobile, Commandes), Catalogue accessible mobile. **Comptes de test supprimés, prod nettoyée (0 trace).**
+
+- **Reste (manuel, Arthur)** : A5 — changer son propre mot de passe via `/admin/users` → section « Mot de passe ».
+- **Archive des findings** : `docs/audit/` (synthèses, décisions A-G, 5 `cartographie-*.md` du code) + `PRODUCT.md` (racine).
+- ⚠️ **Règle de test en prod (durable)** : jamais « On s'en occupe », pas de `viewed:true` sur ruptures, aucune action déclenchant emails/FCM réels (REFUSE, NC, congés, commande).
+- ⚠️ **12 produits périmés en vitrine prod** : à traiter par les équipes terrain, pas en code.
 
 ## Fonctionnalités déployées session 2026-06-04
 
