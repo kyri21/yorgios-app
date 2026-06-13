@@ -248,7 +248,6 @@ export function MobilePlanningView({
                   onClick={() => openSheet(emp.id)}
                   style={{
                     background: 'var(--surface-low)', borderRadius: 14, padding: '13px 14px',
-                    borderLeft: `4px solid ${emp.color}`,
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                     cursor: canEdit ? 'pointer' : 'default', WebkitTapHighlightColor: 'transparent',
                   }}
@@ -294,7 +293,6 @@ export function MobilePlanningView({
                   onClick={() => openSheet(emp.id)}
                   style={{
                     background: 'var(--surface-low)', borderRadius: 14, padding: '13px 14px',
-                    borderLeft: `4px solid ${meta.color}`,
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, opacity: 0.85,
                     cursor: canEdit ? 'pointer' : 'default', WebkitTapHighlightColor: 'transparent',
                   }}
