@@ -10,6 +10,7 @@
 
 Audit complet de la PWA mené les 2026-06-12/13 (5 phases : cartographie, statique, dynamique web+mobile, UX, synthèse). Tous les correctifs validés par Arthur ont été déployés en prod : Lot A sécurité (secret HMAC, sendPasswordReset admin-only, token 64c, anti-spam) + A6/B4/G1, D1 permissions (UI `can()` + rules `permAllows()` fail-open), Lot C perf mobile (cache-first + vendor chunks), correctifs échecs silencieux, refonte /impeccable (Dashboard, Livraison, Planning mobile, Commandes), Catalogue accessible mobile. **Comptes de test supprimés, prod nettoyée (0 trace).**
 
+- 📄 **RAPPORT FINAL** (ce qui a été modifié/amélioré, par zone, avec commits) : `docs/audit/06-RAPPORT-FINAL.md` — **lire en premier pour reprendre le contexte audit.**
 - **Reste (manuel, Arthur)** : A5 — changer son propre mot de passe via `/admin/users` → section « Mot de passe ».
 - **Archive des findings** : `docs/audit/` (synthèses, décisions A-G, 5 `cartographie-*.md` du code) + `PRODUCT.md` (racine).
 - ⚠️ **Règle de test en prod (durable)** : jamais « On s'en occupe », pas de `viewed:true` sur ruptures, aucune action déclenchant emails/FCM réels (REFUSE, NC, congés, commande).
