@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.onCongesDemande = exports.onCongesStatutChange = exports.clearRupturesAt13h = exports.incomingSms = exports.createPointage = exports.validatePromoCodePublic = exports.validatePromoCode = exports.syncContactToBrevo = exports.previewNightlyRuptures = exports.sendNightlyRupturesNow = exports.notifNightlyRuptures = exports.gmaoWeeklyReminder = exports.sendGmaoEmail = exports.weeklyHygieneRecap = exports.notifCostas = exports.notifHygieneMensuel = exports.notifHygieneHebdo = exports.notifTemperaturesEvening = exports.notifUrgences = exports.onNonConformiteCreated = exports.onLivraisonReception = exports.onLivraisonTemperature = exports.autoCheckoutSortie = exports.onPointageLate = exports.notifPlatsJour = exports.notifCartonsChambrefroide = exports.notifTooGoodToGo = exports.notifTemperatures = exports.setUserDisabled = exports.updateUserEmail = exports.updateUserPassword = exports.deleteUser = exports.createUser = exports.sendPasswordReset = exports.purgeOldMessages = exports.relanceCommandes = exports.updateCommandeStatus = exports.onCommandePrete = exports.notifCommandesJ7 = exports.notifCommandesJJ = exports.notifCommandesJ2 = exports.onCommandeUpdated = exports.onNewCommande = exports.onNewMessage = void 0;
+exports.onCongesDemande = exports.onCongesStatutChange = exports.clearRupturesAt13h = exports.incomingSms = exports.createPointage = exports.validatePromoCodePublic = exports.validatePromoCode = exports.syncContactToBrevo = exports.previewNightlyRuptures = exports.sendNightlyRupturesNow = exports.notifNightlyRuptures = exports.gmaoWeeklyReminder = exports.sendGmaoEmail = exports.weeklyHygieneRecap = exports.notifCostas = exports.notifHygieneMensuel = exports.notifHygieneHebdo = exports.notifTemperaturesEvening = exports.notifUrgences = exports.onNonConformiteCreated = exports.onLivraisonReception = exports.onLivraisonTemperature = exports.detectNoShow = exports.autoCheckoutSortie = exports.onPointageLate = exports.notifPlatsJour = exports.notifCartonsChambrefroide = exports.notifTooGoodToGo = exports.notifTemperatures = exports.setUserDisabled = exports.updateUserEmail = exports.updateUserPassword = exports.deleteUser = exports.createUser = exports.sendPasswordReset = exports.purgeOldMessages = exports.relanceCommandes = exports.updateCommandeStatus = exports.onCommandePrete = exports.notifCommandesJ7 = exports.notifCommandesJJ = exports.notifCommandesJ2 = exports.onCommandeUpdated = exports.onNewCommande = exports.onNewMessage = void 0;
 // Node.js 22
 const app_1 = require("firebase-admin/app");
 const firestore_1 = require("firebase-admin/firestore");
@@ -1176,6 +1176,125 @@ exports.autoCheckoutSortie = (0, scheduler_1.onSchedule)({ schedule: '*/30 7-23 
             _serverValidated: true,
         });
         console.log(`[auto-checkout] Sortie créée pour ${userName} — shift fin ${shift.lastHour + 1}h`);
+    }
+});
+// ─────────────────────────────────────────────────────────────────
+// DÉTECTION NO-SHOW — Toutes les 30 min : un employé PRÉVU au planning
+// qui n'a jamais pointé son arrivée (≥ 30 min après l'heure de début).
+// Comble le trou : onPointageLate ne se déclenche QUE s'il y a un pointage,
+// donc "ne rien faire" rendait l'absent invisible. Ici on part du planning.
+// Action = ALERTE SEULEMENT (FCM + email) — aucun événement écrit dans le
+// planning : le manager qualifie lui-même (absence / congé / oubli de pointage).
+// ─────────────────────────────────────────────────────────────────
+const NO_SHOW_GRACE_MIN = 30;
+exports.detectNoShow = (0, scheduler_1.onSchedule)({ schedule: '*/30 7-23 * * *', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
+    var _a, _b, _c, _d, _e;
+    const today = new Date().toLocaleDateString('fr-CA', { timeZone: 'Europe/Paris' });
+    const parisNow = new Date().toLocaleString('fr-FR', {
+        timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit', hour12: false,
+    });
+    const [nowH, nowM] = parisNow.split(':').map(Number);
+    const nowTotalMin = nowH * 60 + nowM;
+    // weekId + dayIndex d'aujourd'hui (même calcul que getEmployeeShift)
+    const dateObj = new Date(today + 'T12:00:00Z');
+    const jsDay = dateObj.getUTCDay();
+    const dayIndex = jsDay === 0 ? 6 : jsDay - 1;
+    const monday = new Date(dateObj);
+    monday.setUTCDate(monday.getUTCDate() - dayIndex);
+    const weekId = monday.toISOString().slice(0, 10);
+    const daySnap = await db.doc(`planningWeeks/${weekId}/days/${dayIndex}`).get();
+    if (!daySnap.exists)
+        return;
+    const hoursMap = (_a = daySnap.data()) === null || _a === void 0 ? void 0 : _a.hours;
+    if (!hoursMap)
+        return;
+    // Heure de début prévue par employé (1re heure travaillée)
+    const firstHourByEmp = {};
+    for (const [h, emps] of Object.entries(hoursMap)) {
+        const hour = parseInt(h);
+        for (const empId of emps) {
+            if (firstHourByEmp[empId] === undefined || hour < firstHourByEmp[empId])
+                firstHourByEmp[empId] = hour;
+        }
+    }
+    const scheduledEmpIds = Object.keys(firstHourByEmp);
+    if (!scheduledEmpIds.length)
+        return;
+    // Employés déjà couverts par une absence/congé/maladie ce jour → exclus (pas de no-show)
+    const eventsSnap = await db.doc(`planningWeeks/${weekId}/events/${today}`).get();
+    const dayEvents = eventsSnap.exists ? ((_c = (_b = eventsSnap.data()) === null || _b === void 0 ? void 0 : _b.events) !== null && _c !== void 0 ? _c : []) : [];
+    const coveredEmps = new Set(dayEvents
+        .filter((e) => ['conge', 'malade', 'absence', 'sans_solde', 'jour_off'].includes(e.type))
+        .map((e) => e.empId));
+    for (const empId of scheduledEmpIds) {
+        if (coveredEmps.has(empId))
+            continue;
+        const firstHour = firstHourByEmp[empId];
+        // Pas encore l'heure (+ grâce) → on attend
+        if (nowTotalMin < firstHour * 60 + NO_SHOW_GRACE_MIN)
+            continue;
+        // Idempotence : déjà alerté aujourd'hui pour cet employé ?
+        const markerRef = db.doc(`pointages_noshow/${today}_${empId}`);
+        if ((await markerRef.get()).exists)
+            continue;
+        // Retrouver le compte utilisateur lié (nécessaire pour vérifier le pointage)
+        const usersSnap = await db.collection('users').where('employeeId', '==', empId).limit(1).get();
+        if (usersSnap.empty) {
+            // Employé non lié à un compte → ne peut pas pointer → on n'alerte pas (sinon bruit quotidien)
+            console.log(`[no-show] ${empId} sans compte lié — ignoré.`);
+            continue;
+        }
+        const userId = usersSnap.docs[0].id;
+        // A-t-il pointé son arrivée aujourd'hui ?
+        const arrSnap = await db.collection('pointages')
+            .where('userId', '==', userId)
+            .where('date', '==', today)
+            .where('typePointage', '==', 'arrivée')
+            .where('statut', '==', 'validé')
+            .limit(1)
+            .get();
+        if (!arrSnap.empty)
+            continue; // présent → onPointageLate gère l'éventuel retard
+        // → NO-SHOW confirmé. Nom de l'employé pour l'alerte.
+        const empSnap = await db.doc(`employees/${empId}`).get();
+        const empName = ((_d = empSnap.data()) === null || _d === void 0 ? void 0 : _d.name) || ((_e = usersSnap.docs[0].data()) === null || _e === void 0 ? void 0 : _e.displayName) || 'Employé';
+        const dayLabel = new Date(today + 'T12:00:00Z').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
+        // Marqueur AVANT l'envoi (évite double alerte si l'envoi traîne sur deux ticks)
+        await markerRef.set({
+            date: today, employeeId: empId, employeeName: empName,
+            plannedStartHour: firstHour, alertedAt: firestore_1.Timestamp.now(),
+        });
+        await notifyRoles(`🚫 Absent non pointé — ${empName}`, `Prévu ${firstHour}h00, toujours pas pointé (+${nowTotalMin - firstHour * 60} min). À vérifier.`, '/admin/pointages', ['patron', 'administrateur', 'manager']);
+        const gmailUser = process.env.GMAIL_USER;
+        const gmailPass = process.env.GMAIL_APP_PASSWORD;
+        if (!gmailUser || !gmailPass) {
+            console.log(`[no-show] ${empName} — alerte FCM seule (pas d'email configuré).`);
+            continue;
+        }
+        const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPass } });
+        const html = `
+        <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto">
+          <div style="background:#c0392b;padding:18px 22px;border-radius:10px 10px 0 0">
+            <h2 style="color:#fff;margin:0;font-size:18px">🚫 Absent non pointé — ${empName}</h2>
+            <p style="color:rgba(255,255,255,0.85);margin:4px 0 0;font-size:13px">Yorgios · ${dayLabel}</p>
+          </div>
+          <div style="background:#fff;border:1px solid #e5e5e5;border-top:none;padding:22px;border-radius:0 0 10px 10px">
+            <table style="width:100%;border-collapse:collapse;margin-bottom:18px">
+              <tr><td style="padding:7px 0;color:#666;font-size:13px;width:160px">Employé</td><td style="font-weight:700;color:#1a1a1a">${empName}</td></tr>
+              <tr style="background:#fafafa"><td style="padding:7px 0;color:#666;font-size:13px">Heure prévue</td><td style="font-weight:600;color:#1a1a1a">${firstHour}h00</td></tr>
+              <tr><td style="padding:7px 0;color:#666;font-size:13px">Statut</td><td style="font-weight:700;color:#c0392b">Aucun pointage d'arrivée</td></tr>
+            </table>
+            <p style="margin:0;font-size:12px;color:#999">Alerte automatique. Aucune absence n'a été inscrite au planning — à qualifier manuellement (absence, congé, ou simple oubli de pointage).</p>
+          </div>
+        </div>`;
+        const alertTo = await getAlertEmails();
+        await transporter.sendMail({
+            from: `"Matias" <${gmailUser}>`,
+            to: alertTo,
+            subject: `🚫 Absent non pointé — ${empName} (${dayLabel})`,
+            html,
+        }).catch((e) => console.error('[no-show] Email error:', e));
+        console.log(`[no-show] Alerte envoyée pour ${empName} (prévu ${firstHour}h, non pointé).`);
     }
 });
 // ─────────────────────────────────────────────────────────────────

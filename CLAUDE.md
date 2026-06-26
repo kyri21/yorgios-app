@@ -29,6 +29,12 @@ Audit complet de la PWA mené les 2026-06-12/13 (5 phases : cartographie, statiq
 - ⚠️ **Limites** : ne capture qu'à partir du déploiement (ne reconstitue pas le passé du litige). +2 lectures par sauvegarde (capture du `before`). NE PAS confondre avec le bouton ↩ existant (`planning.history`) = undo de session volatil.
 - **Déployé en prod** ✅ (rules + index + hosting le 2026-06-26)
 
+### Pointages — détection no-show (CF `detectNoShow`)
+- **Faille comblée** : la détection de retard était 100 % réactive — `onPointageLate` est un trigger sur création de `pointages/{id}`, donc un employé qui ne pointe JAMAIS n'était signalé nulle part (cas Oreline 2026-06-26). `autoCheckoutSortie` ne boucle que sur les arrivées existantes → angle mort.
+- **Fix** : CF planifiée `detectNoShow` (`*/30 7-23 * * *` Paris) qui part du **planning** (pas des pointages). Pour chaque employé prévu, début + 30 min dépassé, sans arrivée pointée et non couvert par congé/maladie/absence → **alerte FCM + email** (rien écrit au planning, le manager qualifie). Idempotent via `pointages_noshow/{date}_{empId}`.
+- ⚠️ **Prérequis** : l'employé doit être **lié à un compte** (`users.employeeId`) — sinon il ne peut pas pointer et serait un no-show quotidien → la CF le skip (anti-bruit). Volet organisationnel : lier tout employé planifiable via `/admin/users`.
+- **Déployé en prod** ✅ (functions le 2026-06-26)
+
 ### Couche 2 — validation patron (NON FAITE, à activer sur demande)
 - Workflow `draft → soumis → validé` : réutiliser le champ **`locked`** déjà présent dans `planningWeeks/{weekId}`. Manager « Soumettre », patron « Valider » (+ FCM via CF type `onPlanningSubmitted`). Modif après validation → entrée audit taguée `afterValidation`.
 - S'appuie sur la Couche 1 (déjà en prod), aucune migration. Plan détaillé en mémoire projet.
@@ -601,6 +607,7 @@ functions/src/
 | `onPointageLate` | Firestore create `pointages/{id}` | Email HTML à `settings/alert_emails.responsables` si retard > 10 min + event `retard` dans `planningWeeks` |
 | `createPointage` | httpsCallable | Validation GPS Haversine, anti-doublon, bloc sortie < 1h, overtime auto-checkout |
 | `autoCheckoutSortie` | Scheduler `*/30 7-23 * * *` Paris | Auto-checkout 1h après fin shift si pas de départ manuel. Timestamp = heure fin prévue |
+| `detectNoShow` | Scheduler `*/30 7-23 * * *` Paris | **No-show** : employé prévu au planning, non pointé ≥ 30 min après début → FCM + email `alert_emails`. ALERTE SEULEMENT (rien écrit au planning). Idempotent via `pointages_noshow/{date}_{empId}`. Skip si couvert par congé/maladie/absence, si déjà pointé, ou si employé non lié à un compte |
 | `notifTemperatures` | Scheduler 8h30 | FCM si frigos matin non saisis |
 | `notifTemperaturesEvening` | Scheduler 22h00 | FCM si frigos soir non saisis |
 | `notifCartonsChambrefroide` | Scheduler 9h30 | FCM corner+patron+admin+manager (cuisine exclue) |
@@ -960,7 +967,7 @@ Pastilles DLC : AUJ. = orange, DEMAIN = violet.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **yorgios-app** (5510 symbols, 8426 relationships, 204 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **yorgios-app** (5635 symbols, 8675 relationships, 224 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
