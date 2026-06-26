@@ -134,7 +134,9 @@ export interface HistoryEntry {
   weekEvents: WeekEvents
 }
 
-export function usePlanning(user: { uid: string } | null) {
+export function usePlanning(user: { uid: string; displayName?: string; email?: string } | null) {
+  // Nom figé dans le journal d'audit (reste lisible même si le compte est renommé/supprimé).
+  const authorName = user ? (user.displayName || user.email || '') : ''
   const [monday, setMondayState] = useState<Date>(() => mondayOf(new Date()))
   const setMonday = (d: Date) => { mondayRef.current = d; setMondayState(d) }
   const [draft, setDraft] = useState<WeekDraft>(emptyWeekDraft)
@@ -342,7 +344,7 @@ export function usePlanning(user: { uid: string } | null) {
       wDates.forEach(iso => {
         events[iso] = [...(events[iso] ?? []).filter(e => !(e.empId === empId && e.type === type)), event]
       })
-      await saveWeekEvents(mon, events, user.uid)
+      await saveWeekEvents(mon, events, user.uid, authorName)
     }
   }, [user])
 
@@ -367,7 +369,7 @@ export function usePlanning(user: { uid: string } | null) {
       if (wid === currentWid) continue
       const events = await loadWeekEvents(mon)
       wDates.forEach(iso => { events[iso] = (events[iso] ?? []).filter(e => e.empId !== empId) })
-      await saveWeekEvents(mon, events, user.uid)
+      await saveWeekEvents(mon, events, user.uid, authorName)
     }
   }, [user])
 
@@ -382,7 +384,7 @@ export function usePlanning(user: { uid: string } | null) {
       draft: JSON.parse(JSON.stringify(draft)),
       weekEvents: JSON.parse(JSON.stringify(weekEvents)),
     }
-    await Promise.all([saveWeek(monday, draft, user.uid), saveWeekEvents(monday, weekEvents, user.uid)])
+    await Promise.all([saveWeek(monday, draft, user.uid, authorName), saveWeekEvents(monday, weekEvents, user.uid, authorName)])
     setHistory(prev => [snap, ...prev].slice(0, 10))
     setSaving(false)
     setDirty(false)
@@ -395,7 +397,7 @@ export function usePlanning(user: { uid: string } | null) {
     mondayRef.current = entry.monday
     setDraft(entry.draft)
     setWeekEvents(entry.weekEvents)
-    await Promise.all([saveWeek(entry.monday, entry.draft, user.uid), saveWeekEvents(entry.monday, entry.weekEvents, user.uid)])
+    await Promise.all([saveWeek(entry.monday, entry.draft, user.uid, authorName), saveWeekEvents(entry.monday, entry.weekEvents, user.uid, authorName)])
     setHistory(prev => prev.filter(h => h.timestamp < entry.timestamp))
     setSaving(false)
     setDirty(false)
@@ -412,7 +414,7 @@ export function usePlanning(user: { uid: string } | null) {
       }
       setDraft(empty)
       setWeekEvents(emptyEvents)
-      await clearWeek(mondayRef.current, user.uid)
+      await clearWeek(mondayRef.current, user.uid, authorName)
       setDirty(false)
     } finally {
       setSaving(false)

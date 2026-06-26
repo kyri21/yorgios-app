@@ -52,6 +52,14 @@ service cloud.firestore {
       allow read:  if isAnyRole();
       allow write: if isPatronOrManager();
     }
+    // Journal d'audit du planning — APPEND-ONLY (valeur probante en cas de litige).
+    // Lecture + création réservées patron/admin/manager ; update/delete INTERDITS à tous,
+    // y compris le patron → trace inviolable, impossible à effacer ou falsifier.
+    match /planning_audit/{id} {
+      allow read:   if isPatronOrManager();
+      allow create: if isPatronOrManager();
+      allow update, delete: if false;
+    }
 
     // ─── Cuisine ────────────────────────────────────────────────
     match /receptions/{doc} {

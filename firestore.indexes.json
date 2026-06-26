@@ -1,6 +1,14 @@
 {
   "indexes": [
     {
+      "collectionGroup": "planning_audit",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "weekId", "order": "ASCENDING" },
+        { "fieldPath": "at",     "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "lots_cuisine",
       "queryScope": "COLLECTION",
       "fields": [

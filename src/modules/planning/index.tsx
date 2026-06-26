@@ -16,6 +16,7 @@ import { mondayOf, duplicateWeek } from './firebase/planning'
 import { exportCSV, exportICS } from './utils/exports'
 import { signOut } from './firebase/auth'
 import { MobilePlanningView } from './components/Mobile/MobilePlanningView'
+import { PlanningHistory } from './components/History/PlanningHistory'
 
 // ─── Carte employé ─────────────────────────────────────────────────────────
 interface EmpCardProps {
@@ -203,6 +204,7 @@ export default function PlanningModule() {
   const [eventModalDate, setEventModalDate] = useState<string | null>(null)
   const [showImport, setShowImport]         = useState(false)
   const [showHistory, setShowHistory]       = useState(false)
+  const [showJournal, setShowJournal]       = useState(false)
   const [currentMonth, setCurrentMonth]     = useState<Date>(() => {
     const now = new Date()
     return new Date(now.getFullYear(), now.getMonth(), 1)
@@ -241,7 +243,7 @@ export default function PlanningModule() {
     setDuplicateMsg('')
     try {
       const dst = mondayOf(new Date(duplicateTarget + 'T12:00:00'))
-      await duplicateWeek(planning.monday, dst, user.uid)
+      await duplicateWeek(planning.monday, dst, user.uid, user.displayName || user.email || '')
       setDuplicateMsg('Semaine copiée !')
       setTimeout(() => { setShowDuplicate(false); setDuplicateMsg('') }, 1500)
     } catch {
@@ -439,6 +441,9 @@ export default function PlanningModule() {
         {isEditor && (
           <button onClick={() => setShowImport(true)} style={btnStyle} title="Importer un planning (CSV/ICS)">📥</button>
         )}
+        {isEditor && view === 'week' && (
+          <button onClick={() => setShowJournal(true)} style={btnStyle} title="Journal des modifications (qui a changé quoi)">🕓</button>
+        )}
         <button onClick={() => setShowExports(v => !v)} style={btnStyle}>📤</button>
         <button onClick={signOut} style={{ ...btnStyle, color: 'var(--danger)' }}>⏏</button>
       </div>
@@ -542,6 +547,16 @@ export default function PlanningModule() {
       {/* ── Modal extra rapide ─────────────────────────────────────── */}
       {showQuickExtra && (
         <QuickExtraModal onClose={() => setShowQuickExtra(false)} />
+      )}
+
+      {/* ── Journal des modifications (audit) ───────────────────────── */}
+      {showJournal && (
+        <PlanningHistory
+          monday={planning.monday}
+          isMobile={isMobile}
+          employees={employees}
+          onClose={() => setShowJournal(false)}
+        />
       )}
 
       {/* ── Modal import CSV/ICS ────────────────────────────────────── */}

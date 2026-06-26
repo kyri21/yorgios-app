@@ -16,6 +16,23 @@ Audit complet de la PWA mené les 2026-06-12/13 (5 phases : cartographie, statiq
 - ⚠️ **Règle de test en prod (durable)** : jamais « On s'en occupe », pas de `viewed:true` sur ruptures, aucune action déclenchant emails/FCM réels (REFUSE, NC, congés, commande).
 - ⚠️ **12 produits périmés en vitrine prod** : à traiter par les équipes terrain, pas en code.
 
+## Fonctionnalités déployées session 2026-06-26
+
+### Planning — Journal d'audit (qui a modifié quoi/quand) — COUCHE 1
+- **But** : le patron contrôle le travail du manager (+ litige employé « erreur camouflée »). Choix retenu : **audit a posteriori seul** (pas de validation a priori — voir Couche 2 ci-dessous, NON faite).
+- **Collection `planning_audit`** : `{ weekId, mondayDate, kind: 'hours'|'events', authorUid, authorName, at: serverTimestamp, before, after }`. `before`/`after` = snapshot COMPLET de la semaine.
+- **Capture** dans le goulot unique `saveWeek`/`saveWeekEvents` (`firebase/planning.ts`) via `appendAudit()`, **dans le même writeBatch** que la donnée → atomique. Skip si `before===after`. `loadAuditEntries(monday)` pour lire (tri `at desc`).
+- **`usePlanning`** : `authorName = displayName || email` propagé sur tous les chemins d'écriture (save, undoTo, setEventRange, removeEventRange, clearWeek, duplicateWeek).
+- **UI** : `src/modules/planning/components/History/PlanningHistory.tsx` — bouton 🕓 toolbar (vue semaine, `isEditor`), **drawer desktop / bottom-sheet mobile**, diff lisible (« Markella · Mar : +14h,15h −18h »). iPhone + web.
+- **Règles** : `planning_audit` read+create `isPatronOrManager()`, **update/delete = `false`** (inviolable, même patron). Index composite `weekId ASC + at DESC`.
+- ⚠️ **PIÈGE ATOMICITÉ** : l'audit étant dans le même batch que la sauvegarde, déployer `firestore:rules` AVANT le code/hosting — sinon le create `planning_audit` refusé fait échouer TOUT le batch → la sauvegarde du planning casse.
+- ⚠️ **Limites** : ne capture qu'à partir du déploiement (ne reconstitue pas le passé du litige). +2 lectures par sauvegarde (capture du `before`). NE PAS confondre avec le bouton ↩ existant (`planning.history`) = undo de session volatil.
+- **Déployé en prod** ✅ (rules + index + hosting le 2026-06-26)
+
+### Couche 2 — validation patron (NON FAITE, à activer sur demande)
+- Workflow `draft → soumis → validé` : réutiliser le champ **`locked`** déjà présent dans `planningWeeks/{weekId}`. Manager « Soumettre », patron « Valider » (+ FCM via CF type `onPlanningSubmitted`). Modif après validation → entrée audit taguée `afterValidation`.
+- S'appuie sur la Couche 1 (déjà en prod), aucune migration. Plan détaillé en mémoire projet.
+
 ## Fonctionnalités déployées session 2026-06-04
 
 ### Planning — création d'employé corrigée (bug "le bouton ne marche pas")
@@ -516,6 +533,7 @@ functions/src/
 | `users` | own + patron/admin/manager | profils, role, fcmToken |
 | `employees` | patron/admin/manager | employés planning |
 | `planningWeeks` | lecture tous, écriture patron/admin/manager | semaines planning |
+| `planning_audit` | read+create isPatronOrManager, **update/delete = false** | journal d'audit append-only — `{ weekId, kind, authorUid, authorName, at, before, after }`. Index `weekId ASC + at DESC` |
 | `catalogue` | lecture isAnyRole, écriture isPatronOrManager | 104 produits — `name`, `abrv`, `defaultCategory`, `gepCategory`, `dlcDays`, `priority`, `active`, `inVitrine`, `inReception`, `inFabrication`, `allergenes[]` |
 | `receptions` | cuisine | réceptions HACCP |
 | `lots_cuisine` | lecture isAnyRole, create cuisine, update isAnyRole, delete isAnyRole | lots fabrication — `receptionId`, `fournisseur` pour traçabilité |

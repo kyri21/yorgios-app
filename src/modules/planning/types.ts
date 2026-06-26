@@ -72,6 +72,27 @@ export interface DayEvent {
 
 export type WeekEvents = Record<string, DayEvent[]>
 
+// ─── Journal d'audit (planning_audit) ────────────────────────────
+// Snapshot des horaires d'une semaine : { "0": HoursMap, ..., "6": HoursMap }
+export type HoursSnapshot = Record<string, HoursMap>
+
+export type AuditKind = 'hours' | 'events'
+
+// Une entrée du journal = la trace immuable d'une sauvegarde.
+// before/after sont le snapshot COMPLET de la semaine avant/après l'écriture :
+// HoursSnapshot pour kind='hours', WeekEvents pour kind='events'.
+export interface AuditEntry {
+  id: string
+  weekId: string
+  mondayDate: string
+  kind: AuditKind
+  authorUid: string
+  authorName: string
+  at: Date | null
+  before: HoursSnapshot | WeekEvents
+  after: HoursSnapshot | WeekEvents
+}
+
 export interface EmpWeekCounter {
   empId: string
   heuresTravaillees: number
