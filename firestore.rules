@@ -52,6 +52,11 @@ service cloud.firestore {
       allow read:  if isAnyRole();
       allow write: if isPatronOrManager();
     }
+    // No-shows détectés par detectNoShow — lecture + qualification patron/manager.
+    // (création par la CF via admin SDK ; update = marquage "qualifié" côté client)
+    match /pointages_noshow/{id} {
+      allow read, write: if isPatronOrManager();
+    }
     // Journal d'audit du planning — APPEND-ONLY (valeur probante en cas de litige).
     // Lecture + création réservées patron/admin/manager ; update/delete INTERDITS à tous,
     // y compris le patron → trace inviolable, impossible à effacer ou falsifier.

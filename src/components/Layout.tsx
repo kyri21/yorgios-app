@@ -162,7 +162,7 @@ function sidebarItemStyle(isActive: boolean): React.CSSProperties {
   }
 }
 
-type NotifBanner = { title: string; body: string; from?: string }
+type NotifBanner = { title: string; body: string; from?: string; link?: string }
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const { user } = useAuth()
@@ -309,7 +309,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     const unsub = onForegroundMessage((payload: any) => {
       const title = payload?.notification?.title || 'Matias'
       const body  = payload?.notification?.body  || ''
-      showBanner({ title, body })
+      showBanner({ title, body, link: payload?.data?.link })
     })
     return unsub
   }, [])
@@ -353,7 +353,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       {/* ── Bandeau notification ── */}
       {notifBanner && (
         <div
-          onClick={() => { setNotifBanner(null); navigate('/messages') }}
+          onClick={() => { const to = notifBanner.link || '/messages'; setNotifBanner(null); navigate(to) }}
           style={{
             position: 'fixed', top: 0, left: 0, right: 0, zIndex: 500,
             background: 'var(--surface)',

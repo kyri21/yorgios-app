@@ -1,6 +1,26 @@
 import { useEffect, useState } from 'react'
-import { collection, getDocs, query, where } from 'firebase/firestore'
+import { collection, getDocs, query, where, doc, getDoc, setDoc, updateDoc, Timestamp } from 'firebase/firestore'
 import { db } from '../firebase/config'
+import { useAuth } from '../auth/useAuth'
+
+// ── No-show (alertes detectNoShow à qualifier) ──────────────────────────────────
+type NoShowDoc = {
+  id: string
+  date: string
+  employeeId: string
+  employeeName: string
+  plannedStartHour: number
+  resolved?: boolean
+  resolution?: 'retard' | 'absence' | 'present'
+}
+
+// weekId (lundi local) d'une date — doit matcher mondayOf/weekId du module planning
+function weekIdOf(dateStr: string): string {
+  const d = new Date(dateStr + 'T12:00:00')
+  const day = d.getDay()
+  d.setDate(d.getDate() + (day === 0 ? -6 : 1 - day))
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 type PointageDoc = {
@@ -166,6 +186,11 @@ export default function AdminPointages() {
   const [docs, setDocs] = useState<PointageDoc[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { user } = useAuth()
+  const [noShows, setNoShows] = useState<NoShowDoc[]>([])
+  const [retardRow, setRetardRow] = useState<string | null>(null)   // id du no-show en saisie retard
+  const [retardMin, setRetardMin] = useState<number>(15)
+  const [busyId, setBusyId] = useState<string | null>(null)
 
   const bounds = mode === 'semaine' ? getWeekBounds(offset) : getMonthBounds(offset)
   const days = groupByDateAndEmployee(docs)
@@ -208,6 +233,64 @@ export default function AdminPointages() {
     }
     load()
   }, [bounds.start, bounds.end])
+
+  // ── Chargement des no-shows (alertes detectNoShow) de la période ──
+  useEffect(() => {
+    async function loadNoShows() {
+      try {
+        const q = query(
+          collection(db, 'pointages_noshow'),
+          where('date', '>=', bounds.start),
+          where('date', '<=', bounds.end),
+        )
+        const snap = await getDocs(q)
+        setNoShows(snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })))
+      } catch {
+        // pas bloquant pour la page (collection peut être vide / index)
+        setNoShows([])
+      }
+    }
+    loadNoShows()
+  }, [bounds.start, bounds.end])
+
+  const pendingNoShows = noShows
+    .filter(n => !n.resolved)
+    .sort((a, b) => b.date.localeCompare(a.date) || a.employeeName.localeCompare(b.employeeName, 'fr'))
+
+  // Écrit un événement planning (retard/absence) — même cible que l'EventModal et onPointageLate
+  async function writePlanningEvent(date: string, empId: string, type: 'retard' | 'absence', minutes?: number) {
+    const wid = weekIdOf(date)
+    const ref = doc(db, 'planningWeeks', wid, 'events', date)
+    const snap = await getDoc(ref)
+    const existing: any[] = snap.exists() ? (snap.data()?.events ?? []) : []
+    const filtered = existing.filter(e => !(e.empId === empId && e.type === type))
+    const ev: any = { empId, type }
+    if (minutes != null) ev.minutes = minutes
+    filtered.push(ev)
+    await setDoc(ref, { date, events: filtered, updatedAt: Timestamp.now(), updatedBy: user?.uid ?? 'system' }, { merge: true })
+  }
+
+  async function resolveNoShow(n: NoShowDoc, resolution: 'retard' | 'absence' | 'present', minutes?: number) {
+    if (busyId) return
+    setBusyId(n.id)
+    try {
+      if (resolution === 'retard') await writePlanningEvent(n.date, n.employeeId, 'retard', minutes ?? 0)
+      else if (resolution === 'absence') await writePlanningEvent(n.date, n.employeeId, 'absence')
+      await updateDoc(doc(db, 'pointages_noshow', n.id), {
+        resolved: true,
+        resolution,
+        resolvedBy: user?.uid ?? null,
+        resolvedByName: user?.displayName || user?.email || '',
+        resolvedAt: Timestamp.now(),
+      })
+      setNoShows(prev => prev.map(x => x.id === n.id ? { ...x, resolved: true, resolution } : x))
+      setRetardRow(null)
+    } catch (e: any) {
+      setError('Qualification impossible. ' + (e?.message ?? ''))
+    } finally {
+      setBusyId(null)
+    }
+  }
 
   function switchMode(m: Mode) {
     setMode(m)
@@ -281,6 +364,59 @@ export default function AdminPointages() {
           <IconChevron dir="right" />
         </button>
       </div>
+
+      {/* À qualifier — no-shows détectés (detectNoShow) */}
+      {pendingNoShows.length > 0 && (
+        <div className="card" style={{ padding: 0, overflow: 'hidden', outline: '1px solid rgba(192,57,43,0.25)', outlineOffset: -1 }}>
+          <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border-soft)', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--danger)', fontFamily: 'Manrope, sans-serif' }}>
+              🚫 À qualifier — non pointés ({pendingNoShows.length})
+            </span>
+          </div>
+          {pendingNoShows.map((n, i) => (
+            <div key={n.id} style={{ padding: '12px 16px', borderTop: i > 0 ? '1px solid var(--border-soft)' : 'none' }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+                <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--on-surface)', fontFamily: 'Manrope, sans-serif' }}>{n.employeeName}</span>
+                <span style={{ fontSize: 11, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif' }}>
+                  prévu {n.plannedStartHour}h · {formatDateLabel(n.date)}
+                </span>
+              </div>
+              {retardRow === n.id ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <input
+                    type="number" min={1} step={5} value={retardMin}
+                    onChange={e => setRetardMin(Math.max(0, parseInt(e.target.value) || 0))}
+                    className="input" style={{ width: 90 }} autoFocus
+                  />
+                  <span style={{ fontSize: 12, color: 'var(--on-surface-2)' }}>min de retard</span>
+                  <button className="btn-primary" disabled={busyId === n.id} style={{ padding: '6px 12px', fontSize: 13 }}
+                    onClick={() => resolveNoShow(n, 'retard', retardMin)}>Valider</button>
+                  <button className="btn-secondary" style={{ padding: '6px 12px', fontSize: 13 }}
+                    onClick={() => setRetardRow(null)}>Annuler</button>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button disabled={busyId === n.id} onClick={() => { setRetardMin(15); setRetardRow(n.id) }}
+                    style={{ padding: '6px 12px', fontSize: 13, fontWeight: 600, borderRadius: 8, cursor: 'pointer', fontFamily: 'Manrope, sans-serif', background: 'rgba(180,83,9,0.10)', color: 'var(--warning)', border: '1px solid rgba(180,83,9,0.25)' }}>
+                    ⏰ Retard…
+                  </button>
+                  <button disabled={busyId === n.id} onClick={() => resolveNoShow(n, 'absence')}
+                    style={{ padding: '6px 12px', fontSize: 13, fontWeight: 600, borderRadius: 8, cursor: 'pointer', fontFamily: 'Manrope, sans-serif', background: 'rgba(192,57,43,0.10)', color: 'var(--danger)', border: '1px solid rgba(192,57,43,0.25)' }}>
+                    🚫 Absence
+                  </button>
+                  <button disabled={busyId === n.id} onClick={() => resolveNoShow(n, 'present')}
+                    style={{ padding: '6px 12px', fontSize: 13, fontWeight: 600, borderRadius: 8, cursor: 'pointer', fontFamily: 'Manrope, sans-serif', background: 'rgba(45,122,79,0.10)', color: 'var(--success)', border: '1px solid rgba(45,122,79,0.25)' }}>
+                    ✓ Présent (RAS)
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+          <div style={{ padding: '8px 16px', borderTop: '1px solid var(--border-soft)', fontSize: 11, color: 'var(--on-surface-3)', fontFamily: 'Manrope, sans-serif' }}>
+            « Retard » et « Absence » écrivent l'événement dans le planning (récap mensuel). « Présent » classe sans rien inscrire.
+          </div>
+        </div>
+      )}
 
       {/* Stats */}
       {!loading && days.length > 0 && (

@@ -33,7 +33,10 @@ Audit complet de la PWA mené les 2026-06-12/13 (5 phases : cartographie, statiq
 - **Faille comblée** : la détection de retard était 100 % réactive — `onPointageLate` est un trigger sur création de `pointages/{id}`, donc un employé qui ne pointe JAMAIS n'était signalé nulle part (cas Oreline 2026-06-26). `autoCheckoutSortie` ne boucle que sur les arrivées existantes → angle mort.
 - **Fix** : CF planifiée `detectNoShow` (`*/30 7-23 * * *` Paris) qui part du **planning** (pas des pointages). Pour chaque employé prévu, début + 30 min dépassé, sans arrivée pointée et non couvert par congé/maladie/absence → **alerte FCM + email** (rien écrit au planning, le manager qualifie). Idempotent via `pointages_noshow/{date}_{empId}`.
 - ⚠️ **Prérequis** : l'employé doit être **lié à un compte** (`users.employeeId`) — sinon il ne peut pas pointer et serait un no-show quotidien → la CF le skip (anti-bruit). Volet organisationnel : lier tout employé planifiable via `/admin/users`.
-- **Déployé en prod** ✅ (functions le 2026-06-26)
+- **Matérialisation alerte** : notif push système (tap → `/admin/pointages`) + bannière in-app avant-plan (`Layout.tsx`, clic suit désormais `data.link` du push au lieu de `/messages` en dur) + email `alert_emails`.
+- **Qualification** (`AdminPointages.tsx`, page où atterrit le push) : panneau « 🚫 À qualifier » listant les `pointages_noshow` non résolus de la période. 3 actions inline : **⏰ Retard** (saisie min) / **🚫 Absence** → écrivent l'event dans `planningWeeks/{weekId}/events/{date}` (même cible qu'EventModal/onPointageLate) ; **✓ Présent (RAS)** → classe sans rien inscrire. Marque `resolved/resolution/resolvedBy/resolvedAt` sur le marqueur (= trace de qui a qualifié).
+- **Règle** `pointages_noshow` : read+write `isPatronOrManager()`. `notifyRoles` envoie maintenant aussi `data: { link }`.
+- **Déployé en prod** ✅ (rules + functions:detectNoShow + hosting le 2026-06-26). Chemin de données vérifié end-to-end via script admin (requête période / merge events / résolution).
 
 ### Couche 2 — validation patron (NON FAITE, à activer sur demande)
 - Workflow `draft → soumis → validé` : réutiliser le champ **`locked`** déjà présent dans `planningWeeks/{weekId}`. Manager « Soumettre », patron « Valider » (+ FCM via CF type `onPlanningSubmitted`). Modif après validation → entrée audit taguée `afterValidation`.
@@ -540,6 +543,7 @@ functions/src/
 | `employees` | patron/admin/manager | employés planning |
 | `planningWeeks` | lecture tous, écriture patron/admin/manager | semaines planning |
 | `planning_audit` | read+create isPatronOrManager, **update/delete = false** | journal d'audit append-only — `{ weekId, kind, authorUid, authorName, at, before, after }`. Index `weekId ASC + at DESC` |
+| `pointages_noshow` | read+write isPatronOrManager (create par CF) | marqueurs no-show `detectNoShow` — doc ID `{date}_{empId}`, `{ date, employeeId, employeeName, plannedStartHour, alertedAt, resolved?, resolution?, resolvedBy?, resolvedAt? }`. Idempotence + qualification |
 | `catalogue` | lecture isAnyRole, écriture isPatronOrManager | 104 produits — `name`, `abrv`, `defaultCategory`, `gepCategory`, `dlcDays`, `priority`, `active`, `inVitrine`, `inReception`, `inFabrication`, `allergenes[]` |
 | `receptions` | cuisine | réceptions HACCP |
 | `lots_cuisine` | lecture isAnyRole, create cuisine, update isAnyRole, delete isAnyRole | lots fabrication — `receptionId`, `fournisseur` pour traçabilité |

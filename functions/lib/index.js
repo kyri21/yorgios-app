@@ -66,6 +66,7 @@ async function notifyRoles(title, body, link, roles = ['patron', 'manager', 'cui
     await (0, messaging_1.getMessaging)().sendEachForMulticast({
         tokens,
         notification: { title, body },
+        data: { link },
         webpush: {
             notification: { icon: '/icons/icon-192.png', badge: '/icons/icon-192.png', tag: 'yorgios-cmd', renotify: true },
             fcmOptions: { link },
