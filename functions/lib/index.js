@@ -1265,7 +1265,8 @@ exports.detectNoShow = (0, scheduler_1.onSchedule)({ schedule: '*/30 7-23 * * *'
             date: today, employeeId: empId, employeeName: empName,
             plannedStartHour: firstHour, alertedAt: firestore_1.Timestamp.now(),
         });
-        await notifyRoles(`🚫 Absent non pointé — ${empName}`, `Prévu ${firstHour}h00, toujours pas pointé (+${nowTotalMin - firstHour * 60} min). À vérifier.`, '/admin/pointages', ['patron', 'administrateur', 'manager']);
+        // No-show : réservé patron/admin — le manager n'est PAS alerté (décision Arthur 2026-06-27)
+        await notifyRoles(`🚫 Absent non pointé — ${empName}`, `Prévu ${firstHour}h00, toujours pas pointé (+${nowTotalMin - firstHour * 60} min). À vérifier.`, '/admin/pointages', ['patron', 'administrateur']);
         const gmailUser = process.env.GMAIL_USER;
         const gmailPass = process.env.GMAIL_APP_PASSWORD;
         if (!gmailUser || !gmailPass) {
@@ -1288,7 +1289,14 @@ exports.detectNoShow = (0, scheduler_1.onSchedule)({ schedule: '*/30 7-23 * * *'
             <p style="margin:0;font-size:12px;color:#999">Alerte automatique. Aucune absence n'a été inscrite au planning — à qualifier manuellement (absence, congé, ou simple oubli de pointage).</p>
           </div>
         </div>`;
-        const alertTo = await getAlertEmails();
+        // Exclure les managers des destinataires email (no-show réservé patron/admin)
+        const mgrSnap = await db.collection('users').where('role', '==', 'manager').get();
+        const mgrEmails = new Set(mgrSnap.docs.map(d => String(d.data().email || '').toLowerCase()));
+        const alertTo = (await getAlertEmails()).filter(e => !mgrEmails.has(String(e).toLowerCase()));
+        if (!alertTo.length) {
+            console.log(`[no-show] ${empName} — aucun destinataire patron/admin pour l'email.`);
+            continue;
+        }
         await transporter.sendMail({
             from: `"Matias" <${gmailUser}>`,
             to: alertTo,

@@ -1489,11 +1489,12 @@ export const detectNoShow = onSchedule(
         plannedStartHour: firstHour, alertedAt: Timestamp.now(),
       })
 
+      // No-show : réservé patron/admin — le manager n'est PAS alerté (décision Arthur 2026-06-27)
       await notifyRoles(
         `🚫 Absent non pointé — ${empName}`,
         `Prévu ${firstHour}h00, toujours pas pointé (+${nowTotalMin - firstHour * 60} min). À vérifier.`,
         '/admin/pointages',
-        ['patron', 'administrateur', 'manager'],
+        ['patron', 'administrateur'],
       )
 
       const gmailUser = process.env.GMAIL_USER
@@ -1517,7 +1518,11 @@ export const detectNoShow = onSchedule(
           </div>
         </div>`
 
-      const alertTo = await getAlertEmails()
+      // Exclure les managers des destinataires email (no-show réservé patron/admin)
+      const mgrSnap = await db.collection('users').where('role', '==', 'manager').get()
+      const mgrEmails = new Set(mgrSnap.docs.map(d => String(d.data().email || '').toLowerCase()))
+      const alertTo = (await getAlertEmails()).filter(e => !mgrEmails.has(String(e).toLowerCase()))
+      if (!alertTo.length) { console.log(`[no-show] ${empName} — aucun destinataire patron/admin pour l'email.`); continue }
       await transporter.sendMail({
         from: `"Matias" <${gmailUser}>`,
         to: alertTo,
