@@ -35,9 +35,9 @@ gcloud config set project cuisine-yorgios
 gcloud firestore backups schedules create \
   --database=test --recurrence=daily --retention=7d
 
-# 3. Sauvegarde HEBDOMADAIRE, rétention 14 semaines
+# 3. Sauvegarde HEBDOMADAIRE, rétention 14 semaines (--day-of-week obligatoire)
 gcloud firestore backups schedules create \
-  --database=test --recurrence=weekly --retention=14w
+  --database=test --recurrence=weekly --retention=14w --day-of-week=SUN
 
 # 4. PITR — rembobinage à n'importe quelle seconde des 7 derniers jours
 gcloud firestore databases update --database=test --enable-pitr
