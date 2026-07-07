@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { deleteField } from 'firebase/firestore'
 import type { Employee, RestrictionRule, Avenant, SubStatus } from '../../types'
 import { HOURS, DAYS_LABELS } from '../../types'
-import { createEmployee, updateEmployee, deactivateEmployee, subscribeAllEmployees, suspendEmployee } from '../../firebase/employees'
+import { createEmployee, updateEmployee, deactivateEmployee, subscribeAllEmployees, suspendEmployee, subscribeTrashedEmployees, reactivateEmployee } from '../../firebase/employees'
 import { getBareme } from '../../utils/primes'
 
 const PRESET_COLORS = [
@@ -15,6 +15,8 @@ interface Props { onClose: () => void }
 
 export function EmployeeManager({ onClose }: Props) {
   const [allEmployees, setAllEmployees] = useState<Employee[]>([])
+  const [trashed, setTrashed] = useState<Employee[]>([])
+  const [showTrash, setShowTrash] = useState(false)
   const [mode, setMode] = useState<'list' | 'edit'>('list')
 
   useEffect(() => {
@@ -24,6 +26,12 @@ export function EmployeeManager({ onClose }: Props) {
         if (!a.suspended && b.suspended) return -1
         return a.name.localeCompare(b.name)
       }))
+    })
+  }, [])
+
+  useEffect(() => {
+    return subscribeTrashedEmployees(emps => {
+      setTrashed(emps.slice().sort((a, b) => a.name.localeCompare(b.name)))
     })
   }, [])
   const [editing, setEditing] = useState<Employee | null>(null)
@@ -104,8 +112,13 @@ export function EmployeeManager({ onClose }: Props) {
   }
 
   async function handleDelete(emp: Employee) {
-    if (!confirm(`Désactiver définitivement ${emp.name} ?`)) return
+    if (!confirm(`Désactiver ${emp.name} ? Il disparaît du planning, mais reste récupérable dans la Corbeille en bas de cette fenêtre.`)) return
     await deactivateEmployee(emp.id)
+  }
+
+  async function handleReactivate(emp: Employee) {
+    if (!confirm(`Réactiver ${emp.name} ? Il réapparaît dans le planning avec tout son historique.`)) return
+    await reactivateEmployee(emp.id)
   }
 
   return (
@@ -230,6 +243,56 @@ export function EmployeeManager({ onClose }: Props) {
                   </div>
                 ))}
               </div>
+
+              {trashed.length > 0 && (
+                <div style={{ marginTop: 20, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
+                  <button
+                    onClick={() => setShowTrash(v => !v)}
+                    className="flex items-center justify-between w-full"
+                    style={{ color: 'var(--on-surface-2)', fontSize: '0.8rem', fontWeight: 600 }}
+                  >
+                    <span>🗑 Corbeille ({trashed.length})</span>
+                    <span style={{ transform: showTrash ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}>▾</span>
+                  </button>
+                  {showTrash && (
+                    <>
+                      <p style={{ color: 'var(--on-surface-3)', fontSize: '0.72rem', fontStyle: 'italic', margin: '8px 0 10px' }}>
+                        Employés désactivés. Réactiver restaure la fiche et tout son historique de planning.
+                      </p>
+                      <div className="space-y-2">
+                        {trashed.map(emp => (
+                          <div
+                            key={emp.id}
+                            className="flex items-center gap-3 px-3 py-3 rounded-xl"
+                            style={{ background: 'var(--surface-mid)', opacity: 0.85 }}
+                          >
+                            <span style={{
+                              background: 'var(--on-surface-3)', width: 36, height: 36, borderRadius: 8,
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              fontSize: 12, fontWeight: 700, color: '#fff', flexShrink: 0,
+                            }}>
+                              {emp.initials}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <div style={{ color: 'var(--on-surface)', fontSize: '0.875rem', fontWeight: 600 }} className="truncate">
+                                {emp.name}
+                              </div>
+                              <div style={{ color: 'var(--on-surface-3)', fontSize: '0.72rem' }}>Désactivé</div>
+                            </div>
+                            <button
+                              onClick={() => handleReactivate(emp)}
+                              className="btn-secondary"
+                              style={{ fontSize: '0.75rem', padding: '4px 12px', whiteSpace: 'nowrap' }}
+                            >
+                              ♻️ Réactiver
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
             </>
           )}
 

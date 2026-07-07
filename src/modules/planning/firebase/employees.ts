@@ -57,3 +57,19 @@ export async function updateEmployee(id: string, data: Partial<Employee>) {
 export async function deactivateEmployee(id: string) {
   return updateDoc(doc(db, COL, id), { active: false, updatedAt: serverTimestamp() })
 }
+
+// Corbeille : employés désactivés (active:false). Récupérables tant que le doc
+// existe (aucune suppression dure n'est faite dans l'app). L'id ne change jamais,
+// donc réactiver restaure automatiquement tout l'historique de planning associé.
+export function subscribeTrashedEmployees(cb: (emps: Employee[]) => void) {
+  const q = query(collection(db, COL), where('active', '==', false))
+  return onSnapshot(q, snap => {
+    cb(snap.docs.map(d => ({ id: d.id, ...d.data() } as Employee)))
+  })
+}
+
+// Réactive une fiche désactivée : remet active:true et lève une éventuelle
+// suspension résiduelle, pour que l'employé réapparaisse partout (planning + stats).
+export async function reactivateEmployee(id: string) {
+  return updateDoc(doc(db, COL, id), { active: true, suspended: false, updatedAt: serverTimestamp() })
+}
