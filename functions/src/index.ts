@@ -1,6 +1,6 @@
 // Node.js 22
 import { initializeApp } from 'firebase-admin/app'
-import { getFirestore, Timestamp } from 'firebase-admin/firestore'
+import { getFirestore, Timestamp, FieldValue } from 'firebase-admin/firestore'
 import { getMessaging } from 'firebase-admin/messaging'
 import { getAuth } from 'firebase-admin/auth'
 import { onDocumentCreated, onDocumentUpdated } from 'firebase-functions/v2/firestore'
@@ -1279,15 +1279,16 @@ export const onPointageLate = onDocumentCreated(
       { merge: true },
     )
 
-    // Push FCM aux responsables
-    await notifyRoles(
+    // Destinataires configurables dans Paramètres → « Alertes RH » (push + email)
+    const { emails: alertTo, tokens: rhTokens } = await getRhAlertTargets()
+    await notifyTokens(
       `⏰ Retard — ${data.userName}`,
       `Prévu ${shift.firstHour}h00, pointé ${parisLocale} (+${lateMinutes} min)`,
       '/admin/pointages',
-      ['patron', 'administrateur', 'manager'],
+      rhTokens,
     )
 
-    // Email HTML à tous les responsables
+    // Email HTML aux mêmes destinataires
     const gmailUser = process.env.GMAIL_USER
     const gmailPass = process.env.GMAIL_APP_PASSWORD
     if (!gmailUser || !gmailPass) return
@@ -1313,7 +1314,6 @@ export const onPointageLate = onDocumentCreated(
         </div>
       </div>`
 
-    const alertTo = await getAlertEmails()
     await transporter.sendMail({
       from: `"Matias" <${gmailUser}>`,
       to: alertTo,
@@ -1489,12 +1489,13 @@ export const detectNoShow = onSchedule(
         plannedStartHour: firstHour, alertedAt: Timestamp.now(),
       })
 
-      // No-show : réservé patron/admin — le manager n'est PAS alerté (décision Arthur 2026-06-27)
-      await notifyRoles(
+      // Destinataires configurables dans Paramètres → « Alertes RH » (email + push).
+      const { emails: alertTo, tokens: rhTokens } = await getRhAlertTargets()
+      await notifyTokens(
         `🚫 Absent non pointé — ${empName}`,
         `Prévu ${firstHour}h00, toujours pas pointé (+${nowTotalMin - firstHour * 60} min). À vérifier.`,
         '/admin/pointages',
-        ['patron', 'administrateur'],
+        rhTokens,
       )
 
       const gmailUser = process.env.GMAIL_USER
@@ -1518,11 +1519,7 @@ export const detectNoShow = onSchedule(
           </div>
         </div>`
 
-      // Exclure les managers des destinataires email (no-show réservé patron/admin)
-      const mgrSnap = await db.collection('users').where('role', '==', 'manager').get()
-      const mgrEmails = new Set(mgrSnap.docs.map(d => String(d.data().email || '').toLowerCase()))
-      const alertTo = (await getAlertEmails()).filter(e => !mgrEmails.has(String(e).toLowerCase()))
-      if (!alertTo.length) { console.log(`[no-show] ${empName} — aucun destinataire patron/admin pour l'email.`); continue }
+      if (!alertTo.length) { console.log(`[no-show] ${empName} — aucun destinataire RH pour l'email.`); continue }
       await transporter.sendMail({
         from: `"Matias" <${gmailUser}>`,
         to: alertTo,
@@ -1574,6 +1571,56 @@ async function getAlertEmails(): Promise<string[]> {
   const snap = await db.doc('settings/alert_emails').get()
   const list = (snap.data()?.responsables as string[]) ?? []
   return list.length > 0 ? list : RESPONSABLES_EMAILS_FALLBACK
+}
+
+// Destinataires des alertes RH (retard + no-show) — email + tokens FCM.
+// Configurables dans Paramètres → « Alertes RH ». Priorité de repli :
+// rhResponsables → responsables → liste par défaut. Zéro régression si non configuré.
+async function getRhAlertTargets(): Promise<{ emails: string[]; tokens: string[] }> {
+  const cfg = (await db.doc('settings/alert_emails').get()).data() as any
+  const list: string[] =
+    Array.isArray(cfg?.rhResponsables) && cfg.rhResponsables.length ? cfg.rhResponsables
+    : Array.isArray(cfg?.responsables) && cfg.responsables.length ? cfg.responsables
+    : RESPONSABLES_EMAILS_FALLBACK
+  const emailsLower = new Set(list.map((e: string) => String(e).toLowerCase()))
+  const usersSnap = await db.collection('users').get()
+  const tokens: string[] = []
+  for (const u of usersSnap.docs) {
+    const d = u.data()
+    if (d.fcmToken && emailsLower.has(String(d.email || '').toLowerCase())) tokens.push(d.fcmToken)
+  }
+  return { emails: list, tokens }
+}
+
+// Envoie une notif FCM à des tokens précis + purge ceux qui sont périmés (NotRegistered).
+// Évite le piège « token mort = silence permanent » (cas Arthur, 2026-07-12).
+async function notifyTokens(title: string, body: string, link: string, tokens: string[]) {
+  if (!tokens.length) return
+  const resp = await getMessaging().sendEachForMulticast({
+    tokens,
+    notification: { title, body },
+    data: { link },
+    webpush: {
+      notification: { icon: '/icons/icon-192.png', badge: '/icons/icon-192.png', tag: 'yorgios-rh', renotify: true },
+      fcmOptions: { link },
+    },
+  })
+  const dead: string[] = []
+  resp.responses.forEach((r, i) => {
+    const code = r.error?.code
+    if (!r.success && (code === 'messaging/registration-token-not-registered' || code === 'messaging/invalid-registration-token')) {
+      dead.push(tokens[i])
+    }
+  })
+  if (dead.length) {
+    const usersSnap = await db.collection('users').get()
+    await Promise.all(
+      usersSnap.docs
+        .filter(u => dead.includes(u.data().fcmToken))
+        .map(u => u.ref.update({ fcmToken: FieldValue.delete() }).catch(() => {})),
+    )
+    console.log(`[rh-alert] ${dead.length} token(s) FCM périmé(s) purgé(s).`)
+  }
 }
 
 export const onLivraisonReception = onDocumentUpdated(

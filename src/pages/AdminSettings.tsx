@@ -51,6 +51,7 @@ interface NightlyRupturesConfig {
 interface AlertEmailsSettings {
   responsables: string[]
   canOverrideEmails: string[]
+  rhResponsables: string[]
 }
 interface HistoryLimitsSettings {
   lotsJours: number
@@ -94,7 +95,7 @@ const DEFAULT_EMAILS: EmailsSettings = {
   retardDestinataire:  'a.cozzika@gmail.com',
   congesDestinataires: ['a.cozzika@gmail.com', 'kyriazis@outlook.fr'],
 }
-const DEFAULT_ALERT_EMAILS: AlertEmailsSettings = { responsables: [], canOverrideEmails: [] }
+const DEFAULT_ALERT_EMAILS: AlertEmailsSettings = { responsables: [], canOverrideEmails: [], rhResponsables: [] }
 const DEFAULT_HISTORY_LIMITS: HistoryLimitsSettings = { lotsJours: 30, livraisonsJours: 30, temperaturesJours: 365, vitrineJours: 365, hygieneJours: 365 }
 const DEFAULT_COMMANDES_EMAILS: CommandesEmailsSettings = { relanceEnabled: true, destinataires: ['a.cozzika@gmail.com'] }
 const DEFAULT_EXPORTS: ExportsSettings = {
@@ -529,12 +530,55 @@ export default function AdminSettings() {
         </div>
       </div>
 
+      {/* ── Section : Alertes RH (retards + absences non pointées) ── */}
+      <div>
+        <p className="section-label" style={{ marginBottom: 8 }}>Alertes RH — retards & absences non pointées</p>
+        <div className="card" style={{ padding: '14px 16px' }}>
+          <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginBottom: 10 }}>
+            Qui est notifié (email + push) pour : retard de pointage · employé prévu jamais pointé (no-show).
+            Cochez chaque personne à alerter — patron, administrateur ou manager.
+          </div>
+          {managers.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {managers.map(u => {
+                const checked = (alertEmails.rhResponsables ?? []).includes(u.email)
+                return (
+                  <label key={u.email} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox" checked={checked}
+                      onChange={e => {
+                        const next = e.target.checked
+                          ? [...(alertEmails.rhResponsables ?? []), u.email]
+                          : (alertEmails.rhResponsables ?? []).filter(x => x !== u.email)
+                        setAlertEmails(a => ({ ...a, rhResponsables: next }))
+                      }}
+                      style={{ width: 16, height: 16, accentColor: 'var(--primary)', flexShrink: 0 }}
+                    />
+                    <span style={{ fontSize: 13, color: 'var(--on-surface)' }}>
+                      {u.displayName}
+                      <span style={{ fontSize: 11, color: 'var(--on-surface-3)', marginLeft: 6 }}>{u.email} · {u.role}</span>
+                    </span>
+                  </label>
+                )
+              })}
+            </div>
+          ) : (
+            <p style={{ fontSize: 12, color: 'var(--on-surface-3)', margin: 0 }}>Chargement des utilisateurs…</p>
+          )}
+          {(alertEmails.rhResponsables ?? []).length === 0 && managers.length > 0 && (
+            <p style={{ fontSize: 11, color: 'var(--warning)', marginTop: 10, marginBottom: 0 }}>
+              Aucune personne sélectionnée — repli sur les responsables ci-dessous, puis la liste par défaut (Alexandre, Arthur, Sébastien).
+            </p>
+          )}
+        </div>
+      </div>
+
       {/* ── Section : Alertes email — responsables ── */}
       <div>
         <p className="section-label" style={{ marginBottom: 8 }}>Alertes email — responsables</p>
         <div className="card" style={{ padding: '14px 16px' }}>
           <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginBottom: 10 }}>
-            Personnes alertées pour : retards de pointage · livraisons refusées (REFUSE) · non-conformités
+            Personnes alertées pour : livraisons refusées (REFUSE) · non-conformités
           </div>
           {managers.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
