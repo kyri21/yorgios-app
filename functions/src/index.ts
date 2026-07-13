@@ -1245,6 +1245,13 @@ export const onPointageLate = onDocumentCreated(
       return
     }
 
+    // Rôles qui ne pointent pas (patron/admin/manager par défaut) → exemptés de retard (réglable).
+    const exemptRoles = await getExemptRoles()
+    if (exemptRoles.includes(String(userSnap.data()?.role || ''))) {
+      console.log(`[retard] ${data.userName} — rôle exempté de pointage, ignoré.`)
+      return
+    }
+
     const shift = await getEmployeeShift(data.date as string, employeeId)
     if (!shift) return
 
@@ -1448,6 +1455,8 @@ export const detectNoShow = onSchedule(
         .map((e: any) => e.empId),
     )
 
+    const exemptRoles = await getExemptRoles()
+
     for (const empId of scheduledEmpIds) {
       if (coveredEmps.has(empId)) continue
 
@@ -1467,6 +1476,12 @@ export const detectNoShow = onSchedule(
         continue
       }
       const userId = usersSnap.docs[0].id
+
+      // Rôles qui ne pointent pas (patron/admin/manager par défaut) → exemptés (réglable).
+      if (exemptRoles.includes(String(usersSnap.docs[0].data()?.role || ''))) {
+        console.log(`[no-show] ${empId} — rôle exempté de pointage, ignoré.`)
+        continue
+      }
 
       // A-t-il pointé son arrivée aujourd'hui ?
       const arrSnap = await db.collection('pointages')
@@ -1571,6 +1586,13 @@ async function getAlertEmails(): Promise<string[]> {
   const snap = await db.doc('settings/alert_emails').get()
   const list = (snap.data()?.responsables as string[]) ?? []
   return list.length > 0 ? list : RESPONSABLES_EMAILS_FALLBACK
+}
+
+// Rôles exemptés des règles de pointage (retard + no-show) car ils ne pointent pas.
+// Défaut : patron/admin/manager. Réglable dans Paramètres → Alertes RH (rhExemptRoles).
+async function getExemptRoles(): Promise<string[]> {
+  const cfg = (await db.doc('settings/alert_emails').get()).data() as any
+  return Array.isArray(cfg?.rhExemptRoles) ? cfg.rhExemptRoles : ['patron', 'administrateur', 'manager']
 }
 
 // Destinataires des alertes RH (retard + no-show) — email + tokens FCM.

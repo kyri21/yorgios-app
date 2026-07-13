@@ -52,6 +52,7 @@ interface AlertEmailsSettings {
   responsables: string[]
   canOverrideEmails: string[]
   rhResponsables: string[]
+  rhExemptRoles: string[]
 }
 interface HistoryLimitsSettings {
   lotsJours: number
@@ -95,7 +96,7 @@ const DEFAULT_EMAILS: EmailsSettings = {
   retardDestinataire:  'a.cozzika@gmail.com',
   congesDestinataires: ['a.cozzika@gmail.com', 'kyriazis@outlook.fr'],
 }
-const DEFAULT_ALERT_EMAILS: AlertEmailsSettings = { responsables: [], canOverrideEmails: [], rhResponsables: [] }
+const DEFAULT_ALERT_EMAILS: AlertEmailsSettings = { responsables: [], canOverrideEmails: [], rhResponsables: [], rhExemptRoles: ['patron', 'administrateur', 'manager'] }
 const DEFAULT_HISTORY_LIMITS: HistoryLimitsSettings = { lotsJours: 30, livraisonsJours: 30, temperaturesJours: 365, vitrineJours: 365, hygieneJours: 365 }
 const DEFAULT_COMMANDES_EMAILS: CommandesEmailsSettings = { relanceEnabled: true, destinataires: ['a.cozzika@gmail.com'] }
 const DEFAULT_EXPORTS: ExportsSettings = {
@@ -570,6 +571,36 @@ export default function AdminSettings() {
               Aucune personne sélectionnée — repli sur les responsables ci-dessous, puis la liste par défaut (Alexandre, Arthur, Sébastien).
             </p>
           )}
+
+          <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border-soft)' }}>
+            <div style={{ fontSize: 13, color: 'var(--on-surface)', fontWeight: 600, marginBottom: 4 }}>
+              Rôles exemptés de pointage
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--on-surface-3)', marginBottom: 10 }}>
+              Ces rôles ne pointent pas → jamais signalés en retard ni en absence non pointée (no-show),
+              même s'ils figurent au planning.
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {[{ key: 'patron', label: 'Patron' }, { key: 'administrateur', label: 'Administrateur' }, { key: 'manager', label: 'Manager' }].map(r => {
+                const checked = (alertEmails.rhExemptRoles ?? []).includes(r.key)
+                return (
+                  <label key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox" checked={checked}
+                      onChange={e => {
+                        const next = e.target.checked
+                          ? [...(alertEmails.rhExemptRoles ?? []), r.key]
+                          : (alertEmails.rhExemptRoles ?? []).filter(x => x !== r.key)
+                        setAlertEmails(a => ({ ...a, rhExemptRoles: next }))
+                      }}
+                      style={{ width: 16, height: 16, accentColor: 'var(--primary)', flexShrink: 0 }}
+                    />
+                    <span style={{ fontSize: 13, color: 'var(--on-surface)' }}>{r.label}</span>
+                  </label>
+                )
+              })}
+            </div>
+          </div>
         </div>
       </div>
 
