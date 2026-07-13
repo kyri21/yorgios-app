@@ -33,6 +33,8 @@ Audit complet de la PWA mené les 2026-06-12/13 (5 phases : cartographie, statiq
 - **Faille comblée** : la détection de retard était 100 % réactive — `onPointageLate` est un trigger sur création de `pointages/{id}`, donc un employé qui ne pointe JAMAIS n'était signalé nulle part (cas Oreline 2026-06-26). `autoCheckoutSortie` ne boucle que sur les arrivées existantes → angle mort.
 - **Fix** : CF planifiée `detectNoShow` (`*/30 7-23 * * *` Paris) qui part du **planning** (pas des pointages). Pour chaque employé prévu, début + 30 min dépassé, sans arrivée pointée et non couvert par congé/maladie/absence → **alerte FCM + email** (rien écrit au planning, le manager qualifie). Idempotent via `pointages_noshow/{date}_{empId}`.
 - ⚠️ **Prérequis** : l'employé doit être **lié à un compte** (`users.employeeId`) — sinon il ne peut pas pointer et serait un no-show quotidien → la CF le skip (anti-bruit). Volet organisationnel : lier tout employé planifiable via `/admin/users`.
+- ⚠️ **RÈGLE — le management ne pointe pas (Arthur 2026-07-13)** : patron/admin/manager figurent parfois au planning mais **ne pointent jamais** → **JAMAIS** signalés en retard ni no-show. Exemption via `settings/alert_emails.rhExemptRoles` (défaut `['patron','administrateur','manager']`), lue par `getExemptRoles()` ; `detectNoShow` + `onPointageLate` skippent un employé dont le **compte lié** a un rôle exempté. **Réglable dans Paramètres → Alertes RH → « Rôles exemptés de pointage »**. Ne JAMAIS ré-inclure ces rôles comme sujets sans demande explicite (sinon Sébastien+Alexandre flaggés no-show quasi quotidiennement → spam).
+- **Destinataires RH configurables** : `settings/alert_emails.rhResponsables` (par personne) pilote email **et** push du retard + no-show via `getRhAlertTargets()` + `notifyTokens()` (purge des tokens FCM périmés). Réglable dans Paramètres → « Alertes RH ». **Ne pas laisser un destinataire en congé recevoir** (Arthur retiré des listes pendant son congé naissance).
 - **Matérialisation alerte** : notif push système (tap → `/admin/pointages`) + bannière in-app avant-plan (`Layout.tsx`, clic suit désormais `data.link` du push au lieu de `/messages` en dur) + email `alert_emails`. **Destinataires = patron/admin UNIQUEMENT — le manager n'est PAS alerté** (push roles `['patron','administrateur']` + emails managers filtrés de `getAlertEmails`). Décision Arthur 2026-06-27.
 - **Qualification** (`AdminPointages.tsx`, page où atterrit le push) : panneau « 🚫 À qualifier » listant les `pointages_noshow` non résolus de la période. 3 actions inline : **⏰ Retard** (saisie min) / **🚫 Absence** → écrivent l'event dans `planningWeeks/{weekId}/events/{date}` (même cible qu'EventModal/onPointageLate) ; **✓ Présent (RAS)** → classe sans rien inscrire. Marque `resolved/resolution/resolvedBy/resolvedAt` sur le marqueur (= trace de qui a qualifié).
 - **Règle** `pointages_noshow` : read+write `isPatronOrManager()`. `notifyRoles` envoie maintenant aussi `data: { link }`.
@@ -611,7 +613,7 @@ functions/src/
 | `onPointageLate` | Firestore create `pointages/{id}` | Email HTML à `settings/alert_emails.responsables` si retard > 10 min + event `retard` dans `planningWeeks` |
 | `createPointage` | httpsCallable | Validation GPS Haversine, anti-doublon, bloc sortie < 1h, overtime auto-checkout |
 | `autoCheckoutSortie` | Scheduler `*/30 7-23 * * *` Paris | Auto-checkout 1h après fin shift si pas de départ manuel. Timestamp = heure fin prévue |
-| `detectNoShow` | Scheduler `*/30 7-23 * * *` Paris | **No-show** : employé prévu au planning, non pointé ≥ 30 min après début → FCM + email **patron/admin uniquement (PAS manager)**. ALERTE SEULEMENT (rien écrit au planning). Idempotent via `pointages_noshow/{date}_{empId}`. Skip si couvert par congé/maladie/absence, si déjà pointé, ou si employé non lié à un compte |
+| `detectNoShow` | Scheduler `*/30 7-23 * * *` Paris | **No-show** : employé prévu au planning, non pointé ≥ 30 min après début → FCM + email **patron/admin uniquement (PAS manager)**. ALERTE SEULEMENT (rien écrit au planning). Idempotent via `pointages_noshow/{date}_{empId}`. Skip si couvert par congé/maladie/absence, si déjà pointé, si employé non lié à un compte, **ou si rôle exempté** (`rhExemptRoles`, défaut patron/admin/manager). Destinataires + exemptions réglables dans Paramètres → Alertes RH |
 | `notifTemperatures` | Scheduler 8h30 | FCM si frigos matin non saisis |
 | `notifTemperaturesEvening` | Scheduler 22h00 | FCM si frigos soir non saisis |
 | `notifCartonsChambrefroide` | Scheduler 9h30 | FCM corner+patron+admin+manager (cuisine exclue) |
@@ -971,7 +973,7 @@ Pastilles DLC : AUJ. = orange, DEMAIN = violet.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **yorgios-app** (5635 symbols, 8675 relationships, 224 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **yorgios-app** (5864 symbols, 8957 relationships, 223 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
