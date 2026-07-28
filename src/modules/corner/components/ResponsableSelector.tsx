@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { auth } from '../../../firebase/config'
 import type { HygieneKind } from '../utils/hygiene'
 import {
@@ -30,6 +30,16 @@ export default function ResponsableSelector({
 
   const dateKey = date.toISOString().slice(0, 10)
 
+  // `kind`/`dateKey` sont des constantes de la closure de CE rendu : elles ne
+  // changent jamais pendant l'exécution d'un `handleAssign` déjà lancé, même
+  // si React démonte cette closure au profit d'une nouvelle après un re-rendu
+  // (le composant, lui, reste monté — mêmes éléments JSX, seules les props
+  // changent). Comparer une valeur capturée à elle-même ne peut jamais détecter
+  // un changement d'onglet/date pendant l'attente d'un `await` : il faut lire
+  // la période *actuellement affichée*, donc une ref mutée à chaque rendu.
+  const liveRef = useRef({ kind, dateKey })
+  liveRef.current = { kind, dateKey }
+
   useEffect(() => {
     let annule = false
     setLoading(true); setError(''); setEditing(false)
@@ -53,8 +63,12 @@ export default function ResponsableSelector({
     const assignee = users.find(u => u.uid === choix)
     if (!assignee) { setError('Sélectionnez un salarié'); return }
 
-    // Capturer la période intentionnée au moment du clic
-    // pour détecter les changements d'onglet/date pendant l'opération
+    // Capturer la période intentionnée au moment du clic. `kind`/`dateKey` ici
+    // sont figés dans cette closure et ne serviront qu'à savoir CE QUI a été
+    // demandé — la comparaison "a-t-on changé de période ?" doit, elle, se
+    // faire contre `liveRef.current` (mis à jour à chaque rendu), sinon on
+    // compare la valeur capturée à elle-même et la garde ne peut jamais
+    // déclencher.
     const intentKind = kind
     const intentDateKey = dateKey
 
@@ -66,14 +80,15 @@ export default function ResponsableSelector({
         assignedByName: currentUserName,
         current: resp,
       })
-      // Vérifier que la période affichée n'a pas changé depuis le clic
-      if (intentKind !== kind || intentDateKey !== dateKey) {
-        return // Requête périmée, ne pas appliquer le résultat
+      // Vérifier contre l'état RÉELLEMENT affiché maintenant (liveRef), pas
+      // contre la valeur figée dans cette closure.
+      if (liveRef.current.kind !== intentKind || liveRef.current.dateKey !== intentDateKey) {
+        return // Requête périmée (onglet/date changé pendant le 1er await), ne pas appliquer
       }
       const frais = await loadResponsable(intentKind, date)
-      // Vérifier à nouveau après le 2e await
-      if (intentKind !== kind || intentDateKey !== dateKey) {
-        return // Requête périmée, ne pas appliquer le résultat
+      // Revérifier après le 2e await : la période a pu changer pendant la relecture.
+      if (liveRef.current.kind !== intentKind || liveRef.current.dateKey !== intentDateKey) {
+        return // Requête périmée (onglet/date changé pendant le 2e await), ne pas appliquer
       }
       setResp(frais); setEditing(false)
       onAssigned?.()
