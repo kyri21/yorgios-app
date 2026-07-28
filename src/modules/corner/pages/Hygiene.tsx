@@ -1,7 +1,13 @@
 import { useEffect, useState } from 'react'
-import { Timestamp, doc, getDoc, getDocs, collection, query, where, setDoc } from 'firebase/firestore'
+import { Timestamp, doc, getDoc, setDoc } from 'firebase/firestore'
 import { db, auth } from '../../../firebase/config'
 import { useToast } from '../../../hooks/useToast'
+import { useAuth } from '../../../auth/useAuth'
+import ResponsableSelector from '../components/ResponsableSelector'
+import {
+  QUOTIDIEN_IDS, HEBDO_IDS, MENSUEL_IDS,
+  getISOWeek, getISOWeekYear,
+} from '../utils/hygiene'
 
 type CheckType = 'quotidien' | 'hebdo' | 'mensuel' | 'historique' | 'historique'
 type CheckItem = { id: string; label: string }
@@ -65,10 +71,6 @@ function getWeekLabel(offset: number): string {
   return `${parseInt(startD)} ${new Date(dates[0] + 'T12:00:00').toLocaleDateString('fr-FR', { month: 'short' })} – ${parseInt(endD)} ${new Date(dates[6] + 'T12:00:00').toLocaleDateString('fr-FR', { month: 'short', year: 'numeric' })}`
 }
 
-const QUOTIDIEN_IDS = ['plats_service','int_vitrines','ustensiles','meuble_vente','comptoir_balance','micro_ondes','evier_papier','etiquettes','plan_travail','ext_placards','ext_frigo','poubelle','vitres']
-const HEBDO_IDS = ['int_frigos','etageres_materiels','support_papier','placard_hygiene','machine_glacon']
-const MENSUEL_IDS = ['placard_rangement']
-
 const DAY_SHORT = ['L', 'M', 'M', 'J', 'V', 'S', 'D']
 
 function todayISO() {
@@ -76,18 +78,11 @@ function todayISO() {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
 
-function getISOWeek(d: Date) {
-  const date = new Date(d); date.setHours(0, 0, 0, 0)
-  date.setDate(date.getDate() + 3 - (date.getDay() + 6) % 7)
-  const w1 = new Date(date.getFullYear(), 0, 4)
-  return 1 + Math.round(((date.getTime() - w1.getTime()) / 86400000 - 3 + (w1.getDay() + 6) % 7) / 7)
-}
-
 function getDocId(type: CheckType, dateStr: string): string {
   const d = new Date(dateStr + 'T12:00:00')
   const p = (n: number) => String(n).padStart(2, '0')
   if (type === 'quotidien') return `${dateStr}_quotidien`
-  if (type === 'hebdo') return `${d.getFullYear()}-W${p(getISOWeek(d))}_hebdo`
+  if (type === 'hebdo') return `${getISOWeekYear(d)}-W${p(getISOWeek(d))}_hebdo`
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}_mensuel`
 }
 
@@ -106,6 +101,9 @@ function getDateLabel(type: CheckType, dateStr: string): string {
 
 export default function Hygiene() {
   const { show } = useToast()
+  const { user } = useAuth()
+  const canEditResponsable = ['patron', 'administrateur', 'manager'].includes(user?.role ?? '')
+  const currentUserName = user?.displayName || user?.email || '—'
   const today = todayISO()
   const [tab, setTab]                   = useState<CheckType>('quotidien')
   const [selectedDate, setSelectedDate] = useState(today)
@@ -352,6 +350,15 @@ export default function Hygiene() {
         </div>
       ) : tab !== 'historique' ? (
         <>
+          {(tab === 'hebdo' || tab === 'mensuel') && (
+            <ResponsableSelector
+              kind={tab}
+              date={new Date(selectedDate + 'T12:00:00')}
+              canEdit={canEditResponsable}
+              currentUserName={currentUserName}
+            />
+          )}
+
           {/* ── Barre de progression ─────────────────────────────── */}
           <div className="card" style={{ padding: '14px 16px' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
