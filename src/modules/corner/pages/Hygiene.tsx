@@ -9,6 +9,10 @@ import {
   ITEMS_ORIGINE_IDS,
   getISOWeek, getPeriodId,
 } from '../utils/hygiene'
+import {
+  ITEMS_ORIGINE, mergeHygieneItems, itemsPourPeriode, idsAttendus,
+  type HygieneItemsSettings, type ChecklistKind,
+} from '../../../utils/hygieneItems'
 import { loadResponsableHistory, type HygieneResponsable } from '../firebase/hygieneResponsables'
 import { JALON_LABELS, type JalonKey } from '../../../utils/hygieneSettings'
 
@@ -25,35 +29,11 @@ import { JALON_LABELS, type JalonKey } from '../../../utils/hygieneSettings'
 const ROLES_DESIGNATION_HYGIENE = ['patron', 'administrateur', 'manager']
 
 type CheckType = 'quotidien' | 'hebdo' | 'mensuel' | 'historique' | 'historique'
-type CheckItem = { id: string; label: string }
-type SavedCheck = { items: Record<string, boolean>; createdAt: any; createdBy: string }
-
-const ITEMS: Partial<Record<CheckType, CheckItem[]>> = {
-  quotidien: [
-    { id: 'plats_service',       label: 'Plats de service' },
-    { id: 'int_vitrines',        label: 'Intérieur vitrines libre service' },
-    { id: 'ustensiles',          label: 'Ustensiles' },
-    { id: 'meuble_vente',        label: 'Meuble de vente' },
-    { id: 'comptoir_balance',    label: 'Comptoir / balance' },
-    { id: 'micro_ondes',         label: 'Micro-ondes' },
-    { id: 'evier_papier',        label: 'Évier / Distributeur papier' },
-    { id: 'etiquettes',          label: 'Étiquettes' },
-    { id: 'plan_travail',        label: 'Plan de travail' },
-    { id: 'ext_placards',        label: 'Extérieur placards rangement' },
-    { id: 'ext_frigo',           label: 'Extérieur frigo' },
-    { id: 'poubelle',            label: 'Poubelle' },
-    { id: 'vitres',              label: 'Vitres' },
-  ],
-  hebdo: [
-    { id: 'int_frigos',          label: 'Intérieur frigos' },
-    { id: 'etageres_materiels',  label: 'Étagères porte matériels' },
-    { id: 'support_papier',      label: 'Support rouleau papier' },
-    { id: 'placard_hygiene',     label: 'Placard hygiène' },
-    { id: 'machine_glacon',      label: 'Machine à Glaçons' },
-  ],
-  mensuel: [
-    { id: 'placard_rangement',   label: 'Placard rangement' },
-  ],
+type SavedCheck = {
+  items: Record<string, boolean>; createdAt: any; createdBy: string
+  // Liste des identifiants demandés au moment de la première sauvegarde de
+  // la période — absente sur les documents antérieurs à cette évolution.
+  itemsAttendus?: string[]
 }
 
 const TAB_CONFIG: Partial<Record<CheckType, { label: string; icon: string; desc: string }>> = {
@@ -131,7 +111,17 @@ export default function Hygiene() {
   const [saved, setSaved]               = useState<SavedCheck | null>(null)
   const [checked, setChecked]           = useState<Record<string, boolean>>({})
   const [saving, setSaving]             = useState(false)
+  const [saveError, setSaveError]       = useState('')
   const [loadingTab, setLoadingTab]     = useState(false)
+  const [itemsSettings, setItemsSettings] = useState<HygieneItemsSettings>(ITEMS_ORIGINE)
+
+  useEffect(() => {
+    getDoc(doc(db, 'settings', 'hygiene_items'))
+      .then(snap => { if (snap.exists()) setItemsSettings(mergeHygieneItems(snap.data())) })
+      // Repli silencieux sur les items d'origine : la checklist doit rester
+      // utilisable même si les réglages sont illisibles.
+      .catch(e => console.error('[hygiene] réglages des items illisibles', e))
+  }, [])
 
   // Historique state
   const [weekOffset, setWeekOffset]     = useState(0)
@@ -171,9 +161,9 @@ export default function Hygiene() {
         if (snap.exists()) {
           const data = snap.data() as SavedCheck
           const items = data.items || {}
-          const total = ITEMS_ORIGINE_IDS.quotidien.length
-          const done = ITEMS_ORIGINE_IDS.quotidien.filter(id => items[id]).length
-          dayResults[dateStr] = { total, done }
+          const attendus = data.itemsAttendus ?? ITEMS_ORIGINE_IDS.quotidien
+          const done = attendus.filter(id => items[id]).length
+          dayResults[dateStr] = { total: attendus.length, done }
         } else {
           dayResults[dateStr] = null
         }
@@ -186,7 +176,8 @@ export default function Hygiene() {
       if (hebdoSnap.exists()) {
         const data = hebdoSnap.data() as SavedCheck
         const items = data.items || {}
-        setHistHebdo({ total: ITEMS_ORIGINE_IDS.hebdo.length, done: ITEMS_ORIGINE_IDS.hebdo.filter(id => items[id]).length })
+        const attendus = data.itemsAttendus ?? ITEMS_ORIGINE_IDS.hebdo
+        setHistHebdo({ total: attendus.length, done: attendus.filter(id => items[id]).length })
       } else {
         setHistHebdo(null)
       }
@@ -197,7 +188,8 @@ export default function Hygiene() {
       if (mensuelSnap.exists()) {
         const data = mensuelSnap.data() as SavedCheck
         const items = data.items || {}
-        setHistMensuel({ total: ITEMS_ORIGINE_IDS.mensuel.length, done: ITEMS_ORIGINE_IDS.mensuel.filter(id => items[id]).length })
+        const attendus = data.itemsAttendus ?? ITEMS_ORIGINE_IDS.mensuel
+        setHistMensuel({ total: attendus.length, done: attendus.filter(id => items[id]).length })
       } else {
         setHistMensuel(null)
       }
@@ -232,12 +224,13 @@ export default function Hygiene() {
       // rendu la traite comme "statut indisponible", pas comme "non fait".
       const statuts: Record<string, { done: number; total: number }> = {}
       const results = await Promise.allSettled(toutes.map(async r => {
-        const ids = r.kind === 'hebdo' ? ITEMS_ORIGINE_IDS.hebdo : ITEMS_ORIGINE_IDS.mensuel
+        const origine = r.kind === 'hebdo' ? ITEMS_ORIGINE_IDS.hebdo : ITEMS_ORIGINE_IDS.mensuel
         const snap = await getDoc(doc(db, 'hygiene_corner', r.periodId))
-        const items = snap.exists() ? (snap.data() as SavedCheck).items : undefined
+        const data = snap.exists() ? (snap.data() as SavedCheck) : undefined
+        const ids = data?.itemsAttendus ?? origine
         return {
           periodId: r.periodId,
-          done: ids.filter(id => items?.[id]).length,
+          done: ids.filter(id => data?.items?.[id]).length,
           total: ids.length,
         }
       }))
@@ -270,18 +263,41 @@ export default function Hygiene() {
 
   async function saveCheck() {
     setSaving(true)
+    setSaveError('')
     try {
       const uid = auth.currentUser?.uid || ''
-      const data: SavedCheck = { items: checked, createdAt: Timestamp.now(), createdBy: uid }
+      // Écrit une seule fois, à la première sauvegarde de la période : une
+      // resauvegarde ne doit pas rebattre les cartes en cours de semaine.
+      const attendus = saved?.itemsAttendus ?? idsAttendus(
+        itemsSettings,
+        tab as ChecklistKind,
+        new Date(selectedDate + 'T12:00:00'),
+      )
+      const data: SavedCheck = {
+        items: checked,
+        createdAt: Timestamp.now(),
+        createdBy: uid,
+        itemsAttendus: attendus,
+      }
       await setDoc(doc(db, 'hygiene_corner', getDocId(tab, selectedDate)), data)
       setSaved(data)
       show('Checklist sauvegardée')
-    } catch (e: any) { alert(e?.message) }
-    finally { setSaving(false) }
+    } catch (e: any) {
+      // Le bandeau rouge est la seule preuve visible qu'une écriture a été
+      // refusée — une alerte native se perd sur mobile.
+      setSaveError(e?.message || 'Enregistrement impossible')
+    } finally { setSaving(false) }
   }
 
   const histWeekDates = getWeekDates(weekOffset)
-  const items = tab !== 'historique' ? (ITEMS[tab as Exclude<CheckType, 'historique'>] ?? []) : []
+  const items = tab !== 'historique'
+    ? itemsPourPeriode(
+        itemsSettings,
+        tab as ChecklistKind,
+        new Date(selectedDate + 'T12:00:00'),
+        saved?.itemsAttendus,
+      )
+    : []
   const doneCount = items.filter(i => checked[i.id]).length
   const allDone = items.length > 0 && doneCount === items.length
   const pct = items.length > 0 ? Math.round((doneCount / items.length) * 100) : 0
@@ -642,6 +658,16 @@ export default function Hygiene() {
           <button onClick={saveCheck} disabled={saving} className="btn-primary">
             {saving ? 'Sauvegarde…' : 'Sauvegarder la check-list'}
           </button>
+
+          {saveError && (
+            <div style={{
+              padding: '10px 12px', borderRadius: 10,
+              background: 'rgba(192,57,43,0.08)', color: 'var(--danger)',
+              fontSize: 12, fontWeight: 600,
+            }}>
+              ⚠️ {saveError}
+            </div>
+          )}
 
           {saved?.createdAt && (
             <p style={{ textAlign: 'center', color: 'var(--on-surface-3)', fontSize: 12, margin: 0 }}>
