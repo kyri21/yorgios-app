@@ -314,8 +314,11 @@ export default function Dashboard() {
   /** Une ligne d'hygiène périodique n'apparaît que si elle est attribuée
    *  ou en retard : attribuée et faite, elle reste visible pour montrer
    *  qui s'en est chargé ; ni attribuée ni faite, elle signale l'oubli
-   *  de désignation. Statut de désignation illisible → aucune ligne :
-   *  mieux vaut ne rien dire que d'accuser d'un oubli qui n'existe pas.
+   *  de désignation. Statut de désignation illisible → la ligne reste
+   *  affichée si la checklist est en retard, mais sans seconde ligne :
+   *  on n'accuse pas d'un oubli de désignation qu'on n'a pas pu vérifier,
+   *  et on ne fait pas disparaître une alerte réelle sur un simple échec
+   *  de lecture.
    *
    *  Le responsable part sur une seconde ligne (`sub`), hors de la zone
    *  tronquée par l'ellipse : sur un iPhone 375 px, un libellé d'un seul
@@ -325,7 +328,11 @@ export default function Dashboard() {
     fait: boolean | null,
     etat: EtatResponsable,
   ): TaskItem[] {
-    if (etat.statut === 'inconnu') return []
+    if (etat.statut === 'inconnu') {
+      return fait === false
+        ? [{ label: libelle, status: 'ko', nav: 'hygiene', checkKey: null }]
+        : []
+    }
     const resp = etat.statut === 'connu' ? etat.resp : null
     if (fait !== false && !resp) return []
     const estMoi = !!resp && resp.assigneeUid === uid
