@@ -16,6 +16,30 @@ Audit complet de la PWA mené les 2026-06-12/13 (5 phases : cartographie, statiq
 - ⚠️ **Règle de test en prod (durable)** : jamais « On s'en occupe », pas de `viewed:true` sur ruptures, aucune action déclenchant emails/FCM réels (REFUSE, NC, congés, commande).
 - ⚠️ **12 produits périmés en vitrine prod** : à traiter par les équipes terrain, pas en code.
 
+## Fonctionnalités déployées session 2026-07-28
+
+### Hygiène corner — responsable désigné par période
+- **But** : les checklists d'hygiène hebdo et mensuelle n'étaient attribuées à personne ; le rappel arrosait tout le corner et personne ne se sentait tenu de le traiter.
+- **Collection `hygiene_responsables`** : un doc par période, ID `2026-W31_hebdo` / `2026-07_mensuel`. `{ periodId, kind, periodStart, periodEnd, assigneeUid/Name/Email, assignedBy/Name, assignedAt, previousAssignees[], notifiedAt, remindersSent[], escalatedAt }`. Nom et email **dénormalisés** : l'historique doit survivre à la suppression d'un compte.
+- **Pourquoi une collection dédiée** : la convention « le doc `hygiene_corner` existe = la tâche est faite » est câblée dans 4 endroits. Stocker le responsable dedans l'aurait fait exister avant que la checklist soit faite → Dashboard ✅ et rappels muets.
+- **UI** : bloc « Responsable » dans les onglets Hebdo/Mensuel (`ResponsableSelector.tsx`), nom + badge « toi » au Dashboard corner, section dépliable « Historique des responsables » (12 périodes) dans l'onglet Historique.
+- **CF `onHygieneResponsableAssigned`** (trigger) + **`hygieneRappelsResponsables`** (`0 * * * *`) : 2 rappels ciblés puis escalade. ⚠️ **Garde anti-boucle obligatoire** `before.assigneeUid === after.assigneeUid → return` : la fonction écrit `notifiedAt` dans le doc qui la déclenche.
+- **Réglable dans Paramètres → « Nettoyage — responsables »** : jour et heure de chacun des 3 jalons hebdo, jours-avant-fin et heure des 3 mensuels, canaux email/push par type d'événement (désignation / rappel / escalade), destinataires de l'escalade. Droit de désigner via `/admin/permissions` → `action_designer_responsable_hygiene`.
+- ⚠️ **Le filet collectif ne s'efface que devant un ciblé RÉELLEMENT actif** (`rappelsCiblesActifs(config, kind)`) : au moins un jalon actif **avec** un canal ouvert. Tester la seule existence d'un responsable, ou le seul `rappelsEnabled`, ferait qu'un décochage de cases supprime TOUS les rappels d'hygiène en silence.
+- ⚠️ **2h et 3h retirées des heures sélectionnables** : bascules heure d'été à Paris — un jalon placé là partirait en double en octobre et serait sauté en mars.
+- ⚠️ **Tout trigger Firestore doit porter `database: 'test'`** — sans lui il écoute `(default)`, qui n'existe pas : déploiement en échec, et s'il passait, silence total.
+
+### Deux corrections de fond livrées au passage
+- **Identifiant de semaine ISO** : `getDocId`/`hygieneHebdoId` utilisaient `getFullYear()` (année civile) avec un numéro de semaine ISO. La semaine à cheval sur le 31 décembre s'écrivait dans **deux documents** selon le jour de consultation. Corrigé via `getISOWeekYear()` — l'année du jeudi de la semaine. Était dupliqué dans `Hygiene.tsx` ET `Dashboard.tsx`.
+- **« Tâche faite » = tous les items cochés**, quotidien inclus (arbitré par Arthur). Avant : « le document existe » — cocher 2 items sur 13 et sauvegarder éteignait les rappels et affichait ✅. Migré dans `Dashboard.tsx`, `notifHygieneHebdo`, `notifHygieneMensuel` et `weeklyHygieneRecap`. ⚠️ **Effet visible** : des périodes passées à moitié cochées basculent de ✅ à ❌, et le panneau d'accueil corner reste en « Actions requises » tant que les 13 items quotidiens ne sont pas cochés.
+
+### Logique pure testée (vitest introduit dans le projet)
+- `src/modules/corner/utils/hygiene.ts` + `src/utils/hygieneSettings.ts` (client), `functions/src/hygiene/periods.ts` (fonctions). 74 tests, `npm test`.
+- ⚠️ **Duplication assumée client / functions** (pas d'import cross-package dans ce projet). Les valeurs par défaut et l'ordre de gravité des jalons sont **verrouillés par des tests miroirs des deux côtés** — une divergence casse immédiatement. L'ordre de `JALONS` (client) est l'**inverse** de `parGravite` (functions) : c'est ce qui fait que l'avertissement de collision nomme le jalon que le serveur enverra vraiment.
+- ⚠️ **Toute valeur lue depuis `settings/` est convertie et bornée** (`mergeHygieneSettings`) : un `heure: "10"` en chaîne, saisi à la main dans la console Firebase, tuerait un rappel définitivement sans erreur ni log.
+- 📄 Spec : `docs/superpowers/specs/2026-07-28-hygiene-responsables-design.md` (révision 2). Plans : `docs/superpowers/plans/2026-07-28-hygiene-responsables*.md`.
+- **Déployé en prod** ✅ (rules + indexes + 5 functions + hosting le 2026-07-28)
+
 ## Fonctionnalités déployées session 2026-06-26
 
 ### Planning — Journal d'audit (qui a modifié quoi/quand) — COUCHE 1
@@ -553,7 +577,8 @@ functions/src/
 | `livraisons` | lecture isAnyRole, create cuisine, update isAnyRole, delete isCuisine | livraisons cuisine — corner |
 | `temperatures` | lecture isAnyRole, create/update isAnyRole, delete patron/manager | relevés frigos — doc ID `{YYYY-MM-DD}_{fridgeId}_{session}` |
 | `archives` | cuisine | archives mensuelles |
-| `hygiene_corner` | corner | checklists — `{date}_quotidien` / `{YYYY-WXX}_hebdo` / `{YYYY-MM}_mensuel` |
+| `hygiene_corner` | corner | checklists — `{date}_quotidien` / `{YYYY-WXX}_hebdo` / `{YYYY-MM}_mensuel`. ⚠️ « faite » = **tous** les items cochés, plus « le doc existe » |
+| `hygiene_responsables` | read isAnyRole, create/update isPatronOrManager + `permAllows('action_designer_responsable_hygiene')`, **delete = false** | responsable d'hygiène par période — doc ID `{YYYY}-W{WW}_hebdo` / `{YYYY}-{MM}_mensuel`. Nom et email dénormalisés (survit à la suppression du compte). Index `kind ASC + periodStart DESC` |
 | `corner_stock` | corner | produits vitrine avec DLC |
 | `stockage_frigo` | corner | stock frigos corner (mutuellement exclusif avec corner_stock) |
 | `ruptures_actives` | create corner, update cuisine/patron/admin/manager | `{ ruptures[], presqueRuptures[], personne, createdAt, viewed }` |
@@ -594,6 +619,7 @@ functions/src/
 | `settings/commandes_emails` | `relanceEnabled: boolean`, `destinataires: string[]` | Relance commandes 6h/12h/18h + email immédiat nouvelle commande. Défaut : `a.cozzika@gmail.com` |
 | `settings/notifications` | `costas: boolean`, `weeklyHygieneLundi.email: boolean`, `gmaoRappelLundi.email: boolean` | Toggles notifications |
 | `settings/priority_levels` | levels[] | Niveaux de priorité catalogue |
+| `settings/hygiene_responsables` | `rappelsEnabled`, `escaladeDestinataires[]`, `hebdo/mensuel.{rappel1,rappel2,escalade}`, `canaux.{designation,rappel,escalade}.{email,push}` | Rappels d'hygiène : jour/heure/activation de chaque jalon, canaux par événement, destinataires de l'escalade. Lu par `mergeHygieneSettings` qui **borne et convertit** chaque valeur. Absent = comportement par défaut (jeu 10h, sam 10h, dim 18h) |
 
 ---
 
@@ -620,9 +646,11 @@ functions/src/
 | `notifPlatsJour` | Scheduler 11h00 | FCM corner+patron+admin+manager (cuisine exclue) |
 | `notifUrgences` | Scheduler 15h00 | FCM employés pointés |
 | `notifCostas` | Scheduler dimanche 10h | FCM corner+patron+admin+manager (si `settings/notifications.costas`) |
-| `notifHygieneHebdo` | Scheduler samedi 18h | FCM si checklist hebdo non faite |
-| `notifHygieneMensuel` | Scheduler 28-31 du mois 18h | FCM si checklist mensuelle non faite |
-| `weeklyHygieneRecap` | Scheduler lundi 8h | Email récap températures + hygiène (si `settings/notifications.weeklyHygieneLundi.email`) |
+| `notifHygieneHebdo` | Scheduler samedi 18h | FCM si checklist hebdo **incomplète**. ⚠️ Se tait uniquement si un responsable est désigné **ET** que le ciblé est réellement actif (`rappelsCiblesActifs`) — sinon un décochage de cases supprimerait tous les rappels en silence |
+| `notifHygieneMensuel` | Scheduler 28-31 du mois 18h | Idem pour le mensuel, même double condition |
+| `weeklyHygieneRecap` | Scheduler lundi 8h | Email récap températures + hygiène (si `settings/notifications.weeklyHygieneLundi.email`). Juge la complétude réelle des items, plus l'existence du doc |
+| `onHygieneResponsableAssigned` | Firestore write `hygiene_responsables/{periodId}` (**base `test`**) | Notifie le salarié désigné (canaux `designation`). ⚠️ Garde `before.assigneeUid === after.assigneeUid → return` **obligatoire** : la fonction écrit `notifiedAt` dans le doc qui la déclenche. Push isolé dans son `catch` — l'email est le canal garanti |
+| `hygieneRappelsResponsables` | Scheduler `0 * * * *` Paris | 2 rappels ciblés puis escalade, jours/heures/canaux depuis `settings/hygiene_responsables`. Idempotent via `remindersSent[]`, écrit **même canaux coupés** (sinon rallumer un canal rejouerait le passé). Si aucun responsable : email aux encadrants au premier jalon actif |
 | `notifNightlyRuptures` | Scheduler 21h30 | Email Timour groupé par priorité. Vérifie `settings/nightly_ruptures.enabled` + pause vacances |
 | `previewNightlyRuptures` | httpsCallable (patron/admin) | Aperçu email ruptures sans envoi — retourne `{ items, commandes, hasContent, emailHtml }` |
 | `createUser` | httpsCallable (patron/admin) | Créer compte utilisateur |
@@ -973,7 +1001,7 @@ Pastilles DLC : AUJ. = orange, DEMAIN = violet.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **yorgios-app** (5864 symbols, 8957 relationships, 223 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **yorgios-app** (6153 symbols, 9449 relationships, 242 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
