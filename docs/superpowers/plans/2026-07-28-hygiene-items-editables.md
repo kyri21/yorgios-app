@@ -780,6 +780,23 @@ export default function HygieneItemsSection({ value, onChange }: Props) {
   const majItem = (kind: ChecklistKind, id: string, patch: Partial<HygieneItem>) =>
     setListe(kind, value[kind].map(it => (it.id === id ? { ...it, ...patch } : it)))
 
+  /** Retirer un item pose sa date de désactivation ; le réactiver l'efface.
+   *
+   *  Cette date est ce qui fait qu'un item retiré continue de compter pour une
+   *  période déjà commencée : retirer un point de contrôle ne doit pas alléger
+   *  rétroactivement une semaine en cours, sinon on peut effacer une exigence
+   *  après coup sur un registre sanitaire. */
+  function basculerActif(kind: ChecklistKind, it: HygieneItem, actif: boolean) {
+    if (actif) {
+      // Jamais `undefined` dans Firestore : on reconstruit l'objet sans la clé.
+      const { desactiveLe, ...reste } = it
+      void desactiveLe
+      setListe(kind, value[kind].map(x => (x.id === it.id ? { ...reste, actif: true } : x)))
+    } else {
+      majItem(kind, it.id, { actif: false, desactiveLe: Timestamp.now() })
+    }
+  }
+
   function deplacer(kind: ChecklistKind, index: number, delta: number) {
     const actifs = value[kind].filter(i => i.actif)
     const cible = index + delta
@@ -838,7 +855,7 @@ export default function HygieneItemsSection({ value, onChange }: Props) {
                     onChange={e => majItem(kind, it.id, { label: e.target.value })}
                   />
                   <button
-                    onClick={() => majItem(kind, it.id, { actif: false })}
+                    onClick={() => basculerActif(kind, it, false)}
                     title="Retirer des prochaines checklists"
                     style={{ ...btnOrdre, width: 36, color: 'var(--danger)' }}
                   >✕</button>
@@ -878,7 +895,7 @@ export default function HygieneItemsSection({ value, onChange }: Props) {
                         {it.label}
                       </span>
                       <button
-                        onClick={() => majItem(kind, it.id, { actif: true })}
+                        onClick={() => basculerActif(kind, it, true)}
                         className="btn-secondary"
                         style={{ minHeight: 44, fontSize: 12 }}
                       >Réactiver</button>

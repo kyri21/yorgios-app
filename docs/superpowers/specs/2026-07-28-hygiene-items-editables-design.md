@@ -47,11 +47,12 @@ Tout le design découle de là. Sur un registre sanitaire, une modification de l
 
 ```ts
 type HygieneItem = {
-  id: string          // immuable, généré à la création — c'est lui qui rattache l'historique
-  label: string       // renommable librement
-  actif: boolean      // false = retiré des futures checklists, conservé dans l'historique
-  ordre: number       // ordre d'affichage, suit le parcours physique du corner
-  creeLe: Timestamp   // posé automatiquement — pilote l'éligibilité, jamais saisi
+  id: string              // immuable, généré à la création — c'est lui qui rattache l'historique
+  label: string           // renommable librement
+  actif: boolean          // false = retiré des futures checklists, conservé dans l'historique
+  ordre: number           // ordre d'affichage, suit le parcours physique du corner
+  creeLe?: Timestamp      // posé automatiquement — pilote l'éligibilité, jamais saisi
+  desactiveLe?: Timestamp // posé au retrait, effacé à la réactivation
 }
 
 {
@@ -85,8 +86,12 @@ Document absent ou partiel → repli sur les 19 items d'origine, codés en dur c
 **Un item ne s'applique qu'aux périodes qui commencent après sa création.**
 
 ```
-item éligible pour la période P  ⟺  item.creeLe < P.début
+item éligible pour la période P  ⟺  il était actif au début de P
+                                 ⟺  creeLe < P.début
+                                     ET (actif  OU  desactiveLe ≥ P.début)
 ```
+
+**Une date illisible n'est jamais rétroactive.** `creeLe` absent signifie « item d'origine, antérieur à tout » et reste éligible partout. Une valeur corrompue — édition manuelle, migration ratée, sérialisation inattendue — est en revanche traitée comme une création à l'instant présent : elle ne peut donc apparaître dans aucune période passée. En cas de doute sur une date, le doute profite à l'historique.
 
 Le début de période, selon le type :
 
