@@ -71,6 +71,13 @@ describe('getPeriodId', () => {
   it('remplit le numéro de semaine sur deux chiffres', () => {
     expect(getPeriodId('hebdo', at(2026, 1, 8))).toBe('2026-W02_hebdo')
   })
+
+  it('rattache fin décembre 2024 à la semaine 1 de 2025', () => {
+    const avant = getPeriodId('hebdo', at(2024, 12, 30))
+    const apres = getPeriodId('hebdo', at(2025, 1, 2))
+    expect(avant).toBe('2025-W01_hebdo')
+    expect(apres).toBe(avant)
+  })
 })
 
 describe('getPeriodBounds', () => {
