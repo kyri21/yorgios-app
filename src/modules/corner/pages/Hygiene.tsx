@@ -6,7 +6,7 @@ import { useAuth } from '../../../auth/useAuth'
 import ResponsableSelector from '../components/ResponsableSelector'
 import {
   QUOTIDIEN_IDS, HEBDO_IDS, MENSUEL_IDS,
-  getISOWeek, getISOWeekYear,
+  getISOWeek, getPeriodId,
 } from '../utils/hygiene'
 import { loadResponsableHistory, type HygieneResponsable } from '../firebase/hygieneResponsables'
 
@@ -80,11 +80,11 @@ function todayISO() {
 }
 
 function getDocId(type: CheckType, dateStr: string): string {
-  const d = new Date(dateStr + 'T12:00:00')
-  const p = (n: number) => String(n).padStart(2, '0')
   if (type === 'quotidien') return `${dateStr}_quotidien`
-  if (type === 'hebdo') return `${getISOWeekYear(d)}-W${p(getISOWeek(d))}_hebdo`
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}_mensuel`
+  // hebdo / mensuel : délégué à getPeriodId (module partagé) pour garantir
+  // que l'identifiant construit ici correspond toujours à celui stocké en
+  // base par hygieneResponsables.ts — une seule source de vérité.
+  return getPeriodId(type as 'hebdo' | 'mensuel', new Date(dateStr + 'T12:00:00'))
 }
 
 function getDateLabel(type: CheckType, dateStr: string): string {
@@ -122,6 +122,7 @@ export default function Hygiene() {
   const [respHist, setRespHist]         = useState<HygieneResponsable[]>([])
   const [respHistOpen, setRespHistOpen] = useState(false)
   const [respHistDone, setRespHistDone] = useState<Record<string, { done: number; total: number }>>({})
+  const [respHistLoaded, setRespHistLoaded] = useState(false)
 
   async function loadTab(type: CheckType, dateStr: string) {
     setLoadingTab(true); setSaved(null); setChecked({})
@@ -139,7 +140,6 @@ export default function Hygiene() {
   async function loadHistorique(offset: number) {
     setHistLoading(true)
     setHistDays({}); setHistHebdo(null); setHistMensuel(null)
-    setRespHist([]); setRespHistDone({})
     try {
       const dates = getWeekDates(offset)
 
@@ -180,44 +180,61 @@ export default function Hygiene() {
       } else {
         setHistMensuel(null)
       }
-
-      // Historique des responsables : indépendant de la semaine affichée,
-      // on charge les 12 dernières périodes des deux types. Repose sur un
-      // index composite + des règles Firestore pas encore déployés —
-      // un échec ici ne doit jamais empêcher l'affichage des grilles
-      // ci-dessus (quotidien/hebdo/mensuel restent lisibles).
-      try {
-        const [histH, histM] = await Promise.all([
-          loadResponsableHistory('hebdo', 12),
-          loadResponsableHistory('mensuel', 12),
-        ])
-        const toutes = [...histH, ...histM].sort(
-          (a, b) => b.periodStart.toMillis() - a.periodStart.toMillis()
-        )
-        setRespHist(toutes)
-
-        // Statut de chaque période : lecture des documents hygiene_corner
-        // correspondants, bornée aux périodes affichées.
-        const statuts: Record<string, { done: number; total: number }> = {}
-        await Promise.all(toutes.map(async r => {
-          const ids = r.kind === 'hebdo' ? HEBDO_IDS : MENSUEL_IDS
-          const snap = await getDoc(doc(db, 'hygiene_corner', r.periodId))
-          const items = snap.exists() ? (snap.data() as SavedCheck).items : undefined
-          statuts[r.periodId] = {
-            done: ids.filter(id => items?.[id]).length,
-            total: ids.length,
-          }
-        }))
-        setRespHistDone(statuts)
-      } catch (e) {
-        console.error('loadHistorique: historique des responsables illisible', e)
-      }
     } finally {
       setHistLoading(false)
     }
   }
 
+  // Historique des responsables : indépendant de la semaine affichée (les
+  // désignations couvrent 12 périodes glissantes, pas la semaine du
+  // sélecteur ← →). Chargé une seule fois à l'ouverture de l'onglet
+  // Historique — jamais relancé sur simple navigation de semaine, pour ne
+  // pas clignoter une section déjà dépliée ni refaire ~24 lectures inutiles.
+  async function loadResponsableHistorique() {
+    try {
+      const [histH, histM] = await Promise.all([
+        loadResponsableHistory('hebdo', 12),
+        loadResponsableHistory('mensuel', 12),
+      ])
+      const toutes = [...histH, ...histM].sort(
+        (a, b) => b.periodStart.toMillis() - a.periodStart.toMillis()
+      )
+      setRespHist(toutes)
+
+      // Statut de chaque période : lecture des documents hygiene_corner
+      // correspondants. Chaque lecture est isolée via allSettled — l'échec
+      // d'UNE période ne doit jamais faire disparaître le statut des
+      // ~23 autres (Promise.all aurait rejeté en bloc et laissé
+      // respHistDone vide, affichant à tort ❌ partout). Une période dont
+      // la lecture échoue reste simplement absente de `statuts` : le
+      // rendu la traite comme "statut indisponible", pas comme "non fait".
+      const statuts: Record<string, { done: number; total: number }> = {}
+      const results = await Promise.allSettled(toutes.map(async r => {
+        const ids = r.kind === 'hebdo' ? HEBDO_IDS : MENSUEL_IDS
+        const snap = await getDoc(doc(db, 'hygiene_corner', r.periodId))
+        const items = snap.exists() ? (snap.data() as SavedCheck).items : undefined
+        return {
+          periodId: r.periodId,
+          done: ids.filter(id => items?.[id]).length,
+          total: ids.length,
+        }
+      }))
+      for (const res of results) {
+        if (res.status === 'fulfilled') {
+          statuts[res.value.periodId] = { done: res.value.done, total: res.value.total }
+        }
+        // rejected → aucune entrée pour cette période, rendu neutre côté UI
+      }
+      setRespHistDone(statuts)
+    } catch (e) {
+      console.error('loadResponsableHistorique: historique des responsables illisible', e)
+    } finally {
+      setRespHistLoaded(true)
+    }
+  }
+
   useEffect(() => { if (tab === 'historique') loadHistorique(weekOffset) }, [tab, weekOffset])
+  useEffect(() => { if (tab === 'historique' && !respHistLoaded) loadResponsableHistorique() }, [tab, respHistLoaded])
 
   function toggle(id: string) { setChecked(p => ({ ...p, [id]: !p[id] })) }
 
@@ -363,14 +380,18 @@ export default function Hygiene() {
                   <>
                     <div style={{ fontSize: 22 }}>{histHebdo.done === histHebdo.total ? '✅' : histHebdo.done > 0 ? '🟡' : '❌'}</div>
                     <div style={{ fontSize: 12, color: 'var(--on-surface-2)', marginTop: 4 }}>{histHebdo.done}/{histHebdo.total}</div>
-                    {(() => {
-                      const r = respHist.find(x => x.kind === 'hebdo' && x.periodId === getDocId('hebdo', histWeekDates[0]))
-                      return r ? (
-                        <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 4 }}>{r.assigneeName}</div>
-                      ) : null
-                    })()}
                   </>
                 ) : <div style={{ fontSize: 22 }}>❌</div>}
+                {(() => {
+                  // Le responsable est désigné indépendamment de l'existence
+                  // d'une checklist — l'afficher même quand rien n'est
+                  // encore coché (l'état le plus fréquent en début de
+                  // période) : ne dépend donc PAS de histHebdo.
+                  const r = respHist.find(x => x.kind === 'hebdo' && x.periodId === getDocId('hebdo', histWeekDates[0]))
+                  return r ? (
+                    <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 4 }}>{r.assigneeName}</div>
+                  ) : null
+                })()}
               </div>
               <div className="card" style={{ padding: '14px 16px', textAlign: 'center' }}>
                 <p className="section-label" style={{ marginBottom: 8 }}>Mensuel</p>
@@ -378,14 +399,15 @@ export default function Hygiene() {
                   <>
                     <div style={{ fontSize: 22 }}>{histMensuel.done === histMensuel.total ? '✅' : histMensuel.done > 0 ? '🟡' : '❌'}</div>
                     <div style={{ fontSize: 12, color: 'var(--on-surface-2)', marginTop: 4 }}>{histMensuel.done}/{histMensuel.total}</div>
-                    {(() => {
-                      const r = respHist.find(x => x.kind === 'mensuel' && x.periodId === getDocId('mensuel', histWeekDates[0]))
-                      return r ? (
-                        <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 4 }}>{r.assigneeName}</div>
-                      ) : null
-                    })()}
                   </>
                 ) : <div style={{ fontSize: 22 }}>❌</div>}
+                {(() => {
+                  // Idem : indépendant de l'existence d'un document mensuel.
+                  const r = respHist.find(x => x.kind === 'mensuel' && x.periodId === getDocId('mensuel', histWeekDates[0]))
+                  return r ? (
+                    <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 4 }}>{r.assigneeName}</div>
+                  ) : null
+                })()}
               </div>
             </div>
 
@@ -442,8 +464,11 @@ export default function Hygiene() {
                                   </span>
                                 )}
                               </td>
-                              <td style={{ padding: '8px', whiteSpace: 'nowrap' }}>
-                                {complet ? '✅' : '❌'}{s ? ` ${s.done}/${s.total}` : ''}
+                              <td style={{ padding: '8px', whiteSpace: 'nowrap', color: s ? undefined : 'var(--on-surface-3)' }}>
+                                {/* s absent = lecture du statut échouée pour CETTE période
+                                    uniquement (isolée via allSettled dans loadResponsableHistorique) —
+                                    rendu neutre qui n'affirme ni "fait" ni "pas fait". */}
+                                {s ? `${complet ? '✅' : '❌'} ${s.done}/${s.total}` : '– statut indisponible'}
                               </td>
                               <td style={{ padding: '8px', color: 'var(--on-surface-3)' }}>
                                 {rappels.length === 0 ? '—' : rappels.join(', ')}
