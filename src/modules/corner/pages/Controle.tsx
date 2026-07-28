@@ -1,9 +1,13 @@
-import { useState } from 'react'
-import { Timestamp, collection, getDocs, orderBy, query, where } from 'firebase/firestore'
+import { useEffect, useState } from 'react'
+import { Timestamp, collection, doc, getDoc, getDocs, orderBy, query, where } from 'firebase/firestore'
 import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { db } from '../../../firebase/config'
+import {
+  ITEMS_ORIGINE, mergeHygieneItems,
+  type HygieneItemsSettings, type ChecklistKind,
+} from '../../../utils/hygieneItems'
 
 // ─── Types ────────────────────────────────────────────────────────
 type TempDoc = {
@@ -51,34 +55,6 @@ const FRIDGES: { id: string; name: string }[] = [
   { id: 'VITRINE_3',   name: 'Vitrine 3' },
   { id: 'GRAND_FRIGO', name: 'Grand Frigo' },
 ]
-
-const HYGIENE_ITEMS: Record<'quotidien' | 'hebdo' | 'mensuel', Array<{ id: string; label: string }>> = {
-  quotidien: [
-    { id: 'plats_service',    label: 'Plats de service' },
-    { id: 'int_vitrines',     label: 'Int. vitrines' },
-    { id: 'ustensiles',       label: 'Ustensiles' },
-    { id: 'meuble_vente',     label: 'Meuble de vente' },
-    { id: 'comptoir_balance', label: 'Comptoir / balance' },
-    { id: 'micro_ondes',      label: 'Micro-ondes' },
-    { id: 'evier_papier',     label: 'Évier / Papier' },
-    { id: 'etiquettes',       label: 'Étiquettes' },
-    { id: 'plan_travail',     label: 'Plan de travail' },
-    { id: 'ext_placards',     label: 'Ext. placards' },
-    { id: 'ext_frigo',        label: 'Ext. frigo' },
-    { id: 'poubelle',         label: 'Poubelle' },
-    { id: 'vitres',           label: 'Vitres' },
-  ],
-  hebdo: [
-    { id: 'int_frigos',         label: 'Int. frigos' },
-    { id: 'etageres_materiels', label: 'Étagères' },
-    { id: 'support_papier',     label: 'Support papier' },
-    { id: 'placard_hygiene',    label: 'Placard hygiène' },
-    { id: 'machine_glacon',     label: 'Machine glaçons' },
-  ],
-  mensuel: [
-    { id: 'placard_rangement', label: 'Placard rangement' },
-  ],
-}
 
 const TYPE_LABELS: Record<string, string> = {
   quotidien: 'Quotidien', hebdo: 'Hebdomadaire', mensuel: 'Mensuel',
@@ -143,15 +119,41 @@ function buildTempTable(report: Report): { head: string[]; rows: (string | numbe
 }
 
 // 2. Hygiène — pivot : 1 ligne = 1 date, colonnes = items
-function buildHygieneTable(report: Report, type: 'quotidien' | 'hebdo' | 'mensuel'): { head: string[]; rows: string[][] } {
-  const items = HYGIENE_ITEMS[type]
-  const head = ['Période', ...items.map(i => i.label)]
+function buildHygieneTable(
+  report: Report,
+  type: ChecklistKind,
+  itemsSettings: HygieneItemsSettings,
+): { head: string[]; rows: string[][] } {
   const docs = report.hygiene
     .filter(h => h.type === type)
     .sort((a, b) => a.id.localeCompare(b.id))
+
+  const origine = ITEMS_ORIGINE[type].map(i => i.id)
+  const attendusDe = (h: any): string[] =>
+    Array.isArray(h.itemsAttendus) && h.itemsAttendus.length ? h.itemsAttendus : origine
+
+  // Colonnes = union des items attendus sur la période, dans l'ordre des
+  // réglages. Les identifiants inconnus des réglages ferment la marche
+  // plutôt que de disparaître.
+  const vus = new Set<string>()
+  for (const h of docs) attendusDe(h).forEach(id => vus.add(id))
+  const ordre = itemsSettings[type].map(i => i.id)
+  const colonnes = [
+    ...ordre.filter(id => vus.has(id)),
+    ...[...vus].filter(id => !ordre.includes(id)),
+  ]
+
+  const labels = new Map(itemsSettings[type].map(i => [i.id, i.label]))
+  const head = ['Période', ...colonnes.map(id => labels.get(id) ?? id)]
+
   const rows = docs.map(h => {
-    const period = h.id.split('_')[0]
-    return [period, ...items.map(i => (h.items?.[i.id] ? '✓' : '✗'))]
+    const attendus = attendusDe(h)
+    return [
+      h.id.split('_')[0],
+      // « — » distingue « pas demandé ce jour-là » de « demandé et pas fait ».
+      ...colonnes.map(id =>
+        !attendus.includes(id) ? '—' : (h.items?.[id] ? '✓' : '✗')),
+    ]
   })
   return { head, rows }
 }
@@ -216,7 +218,7 @@ function buildLivraisonsTable(report: Report): { head: string[]; rows: string[][
 }
 
 // ─── Export Excel ──────────────────────────────────────────────────
-function exportExcel(report: Report) {
+function exportExcel(report: Report, itemsSettings: HygieneItemsSettings) {
   const wb = XLSX.utils.book_new()
   const periodLabel = `${fmtDate(report.dateFrom)} au ${fmtDate(report.dateTo)}`
 
@@ -234,13 +236,13 @@ function exportExcel(report: Report) {
   const temp = buildTempTable(report)
   addSheet('Températures frigos', temp.head, temp.rows)
 
-  const hyqDaily = buildHygieneTable(report, 'quotidien')
+  const hyqDaily = buildHygieneTable(report, 'quotidien', itemsSettings)
   addSheet('Hygiène Quotidien', hyqDaily.head, hyqDaily.rows)
 
-  const hyqHebdo = buildHygieneTable(report, 'hebdo')
+  const hyqHebdo = buildHygieneTable(report, 'hebdo', itemsSettings)
   addSheet('Hygiène Hebdo', hyqHebdo.head, hyqHebdo.rows)
 
-  const hyqMensuel = buildHygieneTable(report, 'mensuel')
+  const hyqMensuel = buildHygieneTable(report, 'mensuel', itemsSettings)
   addSheet('Hygiène Mensuel', hyqMensuel.head, hyqMensuel.rows)
 
   const vit = buildVitrineTable(report)
@@ -260,7 +262,7 @@ const PDF_ORANGE = [232, 118, 10] as [number, number, number]
 const PDF_DARK   = [30, 30, 30]  as [number, number, number]
 const PDF_GRAY   = [120, 120, 120] as [number, number, number]
 
-function exportPDF(report: Report) {
+function exportPDF(report: Report, itemsSettings: HygieneItemsSettings) {
   const doc = new jsPDF({ orientation: 'landscape', format: 'a4', unit: 'mm' })
   const periodLabel = `Période : ${fmtDate(report.dateFrom)} au ${fmtDate(report.dateTo)}`
   const pageW = doc.internal.pageSize.width
@@ -310,9 +312,9 @@ function exportPDF(report: Report) {
   }
 
   const temp  = buildTempTable(report)
-  const hyqD  = buildHygieneTable(report, 'quotidien')
-  const hyqH  = buildHygieneTable(report, 'hebdo')
-  const hyqM  = buildHygieneTable(report, 'mensuel')
+  const hyqD  = buildHygieneTable(report, 'quotidien', itemsSettings)
+  const hyqH  = buildHygieneTable(report, 'hebdo', itemsSettings)
+  const hyqM  = buildHygieneTable(report, 'mensuel', itemsSettings)
   const vit   = buildVitrineTable(report)
   const liv   = buildLivraisonsTable(report)
 
@@ -336,6 +338,13 @@ export default function Controle() {
   const [report, setReport]     = useState<Report | null>(null)
   const [generating, setGenerating] = useState(false)
   const [error, setError]       = useState<string | null>(null)
+  const [itemsSettings, setItemsSettings] = useState<HygieneItemsSettings>(ITEMS_ORIGINE)
+
+  useEffect(() => {
+    getDoc(doc(db, 'settings', 'hygiene_items'))
+      .then(snap => { if (snap.exists()) setItemsSettings(mergeHygieneItems(snap.data())) })
+      .catch(e => console.error('[controle] réglages des items illisibles', e))
+  }, [])
 
   async function generateReport() {
     if (!dateFrom || !dateTo || dateFrom > dateTo) {
@@ -515,7 +524,7 @@ export default function Controle() {
           {/* Boutons export */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <button
-              onClick={() => exportExcel(report)}
+              onClick={() => exportExcel(report, itemsSettings)}
               style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
                 padding: '13px', borderRadius: 12, border: '1px solid rgba(84,101,30,0.4)',
@@ -526,7 +535,7 @@ export default function Controle() {
               📊 Exporter Excel
             </button>
             <button
-              onClick={() => exportPDF(report)}
+              onClick={() => exportPDF(report, itemsSettings)}
               style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
                 padding: '13px', borderRadius: 12, border: '1px solid rgba(0,66,117,0.35)',
@@ -548,7 +557,7 @@ export default function Controle() {
 
           <ReportSection icon="✅" title="Hygiène" count={report.hygiene.length}>
             {(['quotidien', 'hebdo', 'mensuel'] as const).map(type => {
-              const t = buildHygieneTable(report, type)
+              const t = buildHygieneTable(report, type, itemsSettings)
               if (t.rows.length === 0) return null
               return (
                 <div key={type} style={{ marginBottom: 12 }}>
