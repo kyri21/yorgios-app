@@ -1,7 +1,18 @@
 import { describe, it, expect } from 'vitest'
-import { getPeriodId, resolveJalon, isHygieneDone, HEBDO_IDS, MENSUEL_IDS } from './periods'
+import { getPeriodId, resolveJalon, isHygieneDone, QUOTIDIEN_IDS, HEBDO_IDS, MENSUEL_IDS } from './periods'
 
 const at = (y: number, m: number, d: number, h = 10) => new Date(y, m - 1, d, h, 0, 0)
+
+describe('listes d\'items (serveur)', () => {
+  // Verrouille le nombre d'items : le récap du lundi juge « fait / pas fait »
+  // sur ces listes. Un item oublié ici rendrait une checklist incomplète
+  // « faite » dans l'email du patron, à l'inverse du Dashboard.
+  it('compte 13 items quotidiens, 5 hebdo, 1 mensuel', () => {
+    expect(QUOTIDIEN_IDS).toHaveLength(13)
+    expect(HEBDO_IDS).toHaveLength(5)
+    expect(MENSUEL_IDS).toHaveLength(1)
+  })
+})
 
 describe('getPeriodId (serveur)', () => {
   it('produit les mêmes identifiants que le client', () => {

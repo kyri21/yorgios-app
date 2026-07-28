@@ -4,12 +4,21 @@
  *  ce projet n'a pas d'import cross-package entre le client et les fonctions.
  *  Les tests des deux côtés vérifient les mêmes identifiants. */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MENSUEL_IDS = exports.HEBDO_IDS = void 0;
+exports.MENSUEL_IDS = exports.HEBDO_IDS = exports.QUOTIDIEN_IDS = void 0;
 exports.itemIdsFor = itemIdsFor;
 exports.getPeriodId = getPeriodId;
 exports.resolveJalon = resolveJalon;
 exports.isHygieneDone = isHygieneDone;
 exports.parisNow = parisNow;
+/** Checklist quotidienne — 13 items, recopiés à l'identique de
+ *  src/modules/corner/utils/hygiene.ts. Le récapitulatif du lundi en a
+ *  besoin pour rendre le même verdict que le Dashboard : sans cette liste
+ *  il retombait sur « le document existe = c'est fait ». */
+exports.QUOTIDIEN_IDS = [
+    'plats_service', 'int_vitrines', 'ustensiles', 'meuble_vente',
+    'comptoir_balance', 'micro_ondes', 'evier_papier', 'etiquettes',
+    'plan_travail', 'ext_placards', 'ext_frigo', 'poubelle', 'vitres',
+];
 exports.HEBDO_IDS = [
     'int_frigos', 'etageres_materiels', 'support_papier',
     'placard_hygiene', 'machine_glacon',

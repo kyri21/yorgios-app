@@ -6,6 +6,16 @@
 export type HygieneKind = 'hebdo' | 'mensuel'
 export type Jalon = 'j-3' | 'j-1' | 'escalade'
 
+/** Checklist quotidienne — 13 items, recopiés à l'identique de
+ *  src/modules/corner/utils/hygiene.ts. Le récapitulatif du lundi en a
+ *  besoin pour rendre le même verdict que le Dashboard : sans cette liste
+ *  il retombait sur « le document existe = c'est fait ». */
+export const QUOTIDIEN_IDS = [
+  'plats_service', 'int_vitrines', 'ustensiles', 'meuble_vente',
+  'comptoir_balance', 'micro_ondes', 'evier_papier', 'etiquettes',
+  'plan_travail', 'ext_placards', 'ext_frigo', 'poubelle', 'vitres',
+]
+
 export const HEBDO_IDS = [
   'int_frigos', 'etageres_materiels', 'support_papier',
   'placard_hygiene', 'machine_glacon',
