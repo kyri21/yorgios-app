@@ -4,7 +4,8 @@
  *  ce projet n'a pas d'import cross-package entre le client et les fonctions.
  *  Les tests des deux côtés vérifient les mêmes identifiants. */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MENSUEL_IDS = exports.HEBDO_IDS = exports.QUOTIDIEN_IDS = void 0;
+exports.DEFAULT_HYGIENE_SETTINGS = exports.MENSUEL_IDS = exports.HEBDO_IDS = exports.QUOTIDIEN_IDS = void 0;
+exports.mergeHygieneSettings = mergeHygieneSettings;
 exports.itemIdsFor = itemIdsFor;
 exports.getPeriodId = getPeriodId;
 exports.resolveJalon = resolveJalon;
@@ -24,6 +25,55 @@ exports.HEBDO_IDS = [
     'placard_hygiene', 'machine_glacon',
 ];
 exports.MENSUEL_IDS = ['placard_rangement'];
+/** Ces valeurs reproduisent exactement le comportement figé de la révision 1.
+ *  Elles sont dupliquées dans src/utils/hygieneSettings.ts — les tests des
+ *  deux côtés assertent les mêmes littéraux pour verrouiller cet accord. */
+exports.DEFAULT_HYGIENE_SETTINGS = {
+    rappelsEnabled: true,
+    escaladeDestinataires: [],
+    hebdo: {
+        rappel1: { actif: true, jour: 4, heure: 10 }, // jeudi
+        rappel2: { actif: true, jour: 6, heure: 10 }, // samedi
+        escalade: { actif: true, jour: 0, heure: 18 }, // dimanche
+    },
+    mensuel: {
+        rappel1: { actif: true, joursAvantFin: 7, heure: 10 },
+        rappel2: { actif: true, joursAvantFin: 2, heure: 10 },
+        escalade: { actif: true, joursAvantFin: 0, heure: 18 },
+    },
+    canaux: {
+        designation: { email: true, push: true },
+        rappel: { email: true, push: true },
+        escalade: { email: true, push: false },
+    },
+};
+const JALONS = ['rappel1', 'rappel2', 'escalade'];
+/** Fusion champ par champ avec les défauts. Un document absent, partiel, ou
+ *  écrit par la révision 1 doit produire le comportement d'origine — c'est ce
+ *  qui garantit que rendre ces réglages configurables ne casse rien pour qui
+ *  n'y touche jamais. */
+function mergeHygieneSettings(data) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
+    const d = data !== null && data !== void 0 ? data : {};
+    const hebdo = {};
+    const mensuel = {};
+    for (const cle of JALONS) {
+        hebdo[cle] = { ...exports.DEFAULT_HYGIENE_SETTINGS.hebdo[cle], ...((_b = (_a = d.hebdo) === null || _a === void 0 ? void 0 : _a[cle]) !== null && _b !== void 0 ? _b : {}) };
+        mensuel[cle] = { ...exports.DEFAULT_HYGIENE_SETTINGS.mensuel[cle], ...((_d = (_c = d.mensuel) === null || _c === void 0 ? void 0 : _c[cle]) !== null && _d !== void 0 ? _d : {}) };
+    }
+    return {
+        // Absent = actif : ne jamais éteindre des rappels par omission.
+        rappelsEnabled: d.rappelsEnabled !== false,
+        escaladeDestinataires: Array.isArray(d.escaladeDestinataires) ? d.escaladeDestinataires : [],
+        hebdo,
+        mensuel,
+        canaux: {
+            designation: { ...exports.DEFAULT_HYGIENE_SETTINGS.canaux.designation, ...((_f = (_e = d.canaux) === null || _e === void 0 ? void 0 : _e.designation) !== null && _f !== void 0 ? _f : {}) },
+            rappel: { ...exports.DEFAULT_HYGIENE_SETTINGS.canaux.rappel, ...((_h = (_g = d.canaux) === null || _g === void 0 ? void 0 : _g.rappel) !== null && _h !== void 0 ? _h : {}) },
+            escalade: { ...exports.DEFAULT_HYGIENE_SETTINGS.canaux.escalade, ...((_k = (_j = d.canaux) === null || _j === void 0 ? void 0 : _j.escalade) !== null && _k !== void 0 ? _k : {}) },
+        },
+    };
+}
 function itemIdsFor(kind) {
     return kind === 'hebdo' ? exports.HEBDO_IDS : exports.MENSUEL_IDS;
 }
@@ -50,32 +100,30 @@ function lastDayOfMonth(d) {
     return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
 }
 /**
- * Quel jalon de rappel correspond à cet instant, s'il y en a un.
+ * Quel jalon correspond à cet instant, selon la configuration.
  * `now` doit être une date exprimée en heure murale de Paris.
  *
- * Hebdo   : jeudi 10h · samedi 10h · dimanche 18h
- * Mensuel : J-7 10h · J-2 10h · dernier jour 18h — J étant la fin du
- *           mois, calculée par soustraction et jamais sur un numéro fixe.
+ * Collision : si deux jalons partagent le même créneau, le plus grave
+ * l'emporte et un seul message part. L'interface avertit au réglage.
  */
-function resolveJalon(kind, now) {
+function resolveJalon(kind, now, config) {
     const heure = now.getHours();
+    const parGravite = ['escalade', 'rappel2', 'rappel1'];
     if (kind === 'hebdo') {
         const jour = now.getDay(); // 0 = dimanche
-        if (jour === 4 && heure === 10)
-            return 'j-3';
-        if (jour === 6 && heure === 10)
-            return 'j-1';
-        if (jour === 0 && heure === 18)
-            return 'escalade';
+        for (const cle of parGravite) {
+            const j = config.hebdo[cle];
+            if (j.actif && j.jour === jour && j.heure === heure)
+                return cle;
+        }
         return null;
     }
     const restants = lastDayOfMonth(now) - now.getDate();
-    if (restants === 7 && heure === 10)
-        return 'j-3';
-    if (restants === 2 && heure === 10)
-        return 'j-1';
-    if (restants === 0 && heure === 18)
-        return 'escalade';
+    for (const cle of parGravite) {
+        const j = config.mensuel[cle];
+        if (j.actif && j.joursAvantFin === restants && j.heure === heure)
+            return cle;
+    }
     return null;
 }
 function isHygieneDone(items, ids) {

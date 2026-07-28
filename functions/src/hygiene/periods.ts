@@ -4,7 +4,22 @@
  *  Les tests des deux côtés vérifient les mêmes identifiants. */
 
 export type HygieneKind = 'hebdo' | 'mensuel'
-export type Jalon = 'j-3' | 'j-1' | 'escalade'
+
+/** Les jalons ne portent plus un délai dans leur nom : ce délai est réglable.
+ *  Appeler « j-3 » un rappel placé à J-5 serait trompeur. */
+export type JalonKey = 'rappel1' | 'rappel2' | 'escalade'
+
+export type JalonHebdo   = { actif: boolean; jour: number; heure: number }
+export type JalonMensuel = { actif: boolean; joursAvantFin: number; heure: number }
+export type Canal        = { email: boolean; push: boolean }
+
+export type HygieneSettings = {
+  rappelsEnabled: boolean
+  escaladeDestinataires: string[]
+  hebdo:   Record<JalonKey, JalonHebdo>
+  mensuel: Record<JalonKey, JalonMensuel>
+  canaux:  { designation: Canal; rappel: Canal; escalade: Canal }
+}
 
 /** Checklist quotidienne — 13 items, recopiés à l'identique de
  *  src/modules/corner/utils/hygiene.ts. Le récapitulatif du lundi en a
@@ -22,6 +37,57 @@ export const HEBDO_IDS = [
 ]
 
 export const MENSUEL_IDS = ['placard_rangement']
+
+/** Ces valeurs reproduisent exactement le comportement figé de la révision 1.
+ *  Elles sont dupliquées dans src/utils/hygieneSettings.ts — les tests des
+ *  deux côtés assertent les mêmes littéraux pour verrouiller cet accord. */
+export const DEFAULT_HYGIENE_SETTINGS: HygieneSettings = {
+  rappelsEnabled: true,
+  escaladeDestinataires: [],
+  hebdo: {
+    rappel1:  { actif: true, jour: 4, heure: 10 },  // jeudi
+    rappel2:  { actif: true, jour: 6, heure: 10 },  // samedi
+    escalade: { actif: true, jour: 0, heure: 18 },  // dimanche
+  },
+  mensuel: {
+    rappel1:  { actif: true, joursAvantFin: 7, heure: 10 },
+    rappel2:  { actif: true, joursAvantFin: 2, heure: 10 },
+    escalade: { actif: true, joursAvantFin: 0, heure: 18 },
+  },
+  canaux: {
+    designation: { email: true, push: true },
+    rappel:      { email: true, push: true },
+    escalade:    { email: true, push: false },
+  },
+}
+
+const JALONS: JalonKey[] = ['rappel1', 'rappel2', 'escalade']
+
+/** Fusion champ par champ avec les défauts. Un document absent, partiel, ou
+ *  écrit par la révision 1 doit produire le comportement d'origine — c'est ce
+ *  qui garantit que rendre ces réglages configurables ne casse rien pour qui
+ *  n'y touche jamais. */
+export function mergeHygieneSettings(data: any): HygieneSettings {
+  const d = data ?? {}
+  const hebdo   = {} as Record<JalonKey, JalonHebdo>
+  const mensuel = {} as Record<JalonKey, JalonMensuel>
+  for (const cle of JALONS) {
+    hebdo[cle]   = { ...DEFAULT_HYGIENE_SETTINGS.hebdo[cle],   ...(d.hebdo?.[cle] ?? {}) }
+    mensuel[cle] = { ...DEFAULT_HYGIENE_SETTINGS.mensuel[cle], ...(d.mensuel?.[cle] ?? {}) }
+  }
+  return {
+    // Absent = actif : ne jamais éteindre des rappels par omission.
+    rappelsEnabled: d.rappelsEnabled !== false,
+    escaladeDestinataires: Array.isArray(d.escaladeDestinataires) ? d.escaladeDestinataires : [],
+    hebdo,
+    mensuel,
+    canaux: {
+      designation: { ...DEFAULT_HYGIENE_SETTINGS.canaux.designation, ...(d.canaux?.designation ?? {}) },
+      rappel:      { ...DEFAULT_HYGIENE_SETTINGS.canaux.rappel,      ...(d.canaux?.rappel ?? {}) },
+      escalade:    { ...DEFAULT_HYGIENE_SETTINGS.canaux.escalade,    ...(d.canaux?.escalade ?? {}) },
+    },
+  }
+}
 
 export function itemIdsFor(kind: HygieneKind): string[] {
   return kind === 'hebdo' ? HEBDO_IDS : MENSUEL_IDS
@@ -57,28 +123,34 @@ function lastDayOfMonth(d: Date): number {
 }
 
 /**
- * Quel jalon de rappel correspond à cet instant, s'il y en a un.
+ * Quel jalon correspond à cet instant, selon la configuration.
  * `now` doit être une date exprimée en heure murale de Paris.
  *
- * Hebdo   : jeudi 10h · samedi 10h · dimanche 18h
- * Mensuel : J-7 10h · J-2 10h · dernier jour 18h — J étant la fin du
- *           mois, calculée par soustraction et jamais sur un numéro fixe.
+ * Collision : si deux jalons partagent le même créneau, le plus grave
+ * l'emporte et un seul message part. L'interface avertit au réglage.
  */
-export function resolveJalon(kind: HygieneKind, now: Date): Jalon | null {
+export function resolveJalon(
+  kind: HygieneKind,
+  now: Date,
+  config: HygieneSettings,
+): JalonKey | null {
   const heure = now.getHours()
+  const parGravite: JalonKey[] = ['escalade', 'rappel2', 'rappel1']
 
   if (kind === 'hebdo') {
     const jour = now.getDay() // 0 = dimanche
-    if (jour === 4 && heure === 10) return 'j-3'
-    if (jour === 6 && heure === 10) return 'j-1'
-    if (jour === 0 && heure === 18) return 'escalade'
+    for (const cle of parGravite) {
+      const j = config.hebdo[cle]
+      if (j.actif && j.jour === jour && j.heure === heure) return cle
+    }
     return null
   }
 
   const restants = lastDayOfMonth(now) - now.getDate()
-  if (restants === 7 && heure === 10) return 'j-3'
-  if (restants === 2 && heure === 10) return 'j-1'
-  if (restants === 0 && heure === 18) return 'escalade'
+  for (const cle of parGravite) {
+    const j = config.mensuel[cle]
+    if (j.actif && j.joursAvantFin === restants && j.heure === heure) return cle
+  }
   return null
 }
 
