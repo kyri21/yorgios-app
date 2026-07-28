@@ -44,7 +44,7 @@ function Bloc({ titre, resume, children }: { titre: string; resume: string; chil
 }
 
 const btnOrdre = {
-  width: 32, minHeight: 44, border: 'none', background: 'transparent',
+  width: 44, minHeight: 44, border: 'none', background: 'transparent',
   color: 'var(--primary)', fontSize: 15, cursor: 'pointer', flexShrink: 0,
 } as const
 
@@ -134,7 +134,7 @@ export default function HygieneItemsSection({ value, onChange }: Props) {
                   <button
                     onClick={() => basculerActif(kind, it, false)}
                     title="Retirer des prochaines checklists"
-                    style={{ ...btnOrdre, width: 36, color: 'var(--danger)' }}
+                    style={{ ...btnOrdre, color: 'var(--danger)' }}
                   >✕</button>
                 </div>
               ))}
