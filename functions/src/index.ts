@@ -1237,7 +1237,10 @@ const LIBELLE_KIND: Record<HygieneKind, string> = {
 
 /** Notifie le salarié qui vient d'être désigné responsable d'une checklist. */
 export const onHygieneResponsableAssigned = onDocumentWritten(
-  { document: 'hygiene_responsables/{periodId}', region: 'europe-west1' },
+  // `database: 'test'` est obligatoire : ce projet n'utilise pas la base
+  // Firestore `(default)`. Sans ce paramètre le trigger écoute une base
+  // inexistante — il se déploie sans erreur et ne se déclenche jamais.
+  { document: 'hygiene_responsables/{periodId}', region: 'europe-west1', database: 'test' },
   async (event) => {
     const avant = event.data?.before.data()
     const apres = event.data?.after.data()
