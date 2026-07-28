@@ -8,6 +8,7 @@ import {
   QUOTIDIEN_IDS, HEBDO_IDS, MENSUEL_IDS,
   getISOWeek, getISOWeekYear,
 } from '../utils/hygiene'
+import { loadResponsableHistory, type HygieneResponsable } from '../firebase/hygieneResponsables'
 
 type CheckType = 'quotidien' | 'hebdo' | 'mensuel' | 'historique' | 'historique'
 type CheckItem = { id: string; label: string }
@@ -118,6 +119,9 @@ export default function Hygiene() {
   const [histDays, setHistDays]         = useState<Record<string, { total: number; done: number } | null>>({})
   const [histHebdo, setHistHebdo]       = useState<{ total: number; done: number } | null>(null)
   const [histMensuel, setHistMensuel]   = useState<{ total: number; done: number } | null>(null)
+  const [respHist, setRespHist]         = useState<HygieneResponsable[]>([])
+  const [respHistOpen, setRespHistOpen] = useState(false)
+  const [respHistDone, setRespHistDone] = useState<Record<string, { done: number; total: number }>>({})
 
   async function loadTab(type: CheckType, dateStr: string) {
     setLoadingTab(true); setSaved(null); setChecked({})
@@ -135,6 +139,7 @@ export default function Hygiene() {
   async function loadHistorique(offset: number) {
     setHistLoading(true)
     setHistDays({}); setHistHebdo(null); setHistMensuel(null)
+    setRespHist([]); setRespHistDone({})
     try {
       const dates = getWeekDates(offset)
 
@@ -174,6 +179,38 @@ export default function Hygiene() {
         setHistMensuel({ total: MENSUEL_IDS.length, done: MENSUEL_IDS.filter(id => items[id]).length })
       } else {
         setHistMensuel(null)
+      }
+
+      // Historique des responsables : indépendant de la semaine affichée,
+      // on charge les 12 dernières périodes des deux types. Repose sur un
+      // index composite + des règles Firestore pas encore déployés —
+      // un échec ici ne doit jamais empêcher l'affichage des grilles
+      // ci-dessus (quotidien/hebdo/mensuel restent lisibles).
+      try {
+        const [histH, histM] = await Promise.all([
+          loadResponsableHistory('hebdo', 12),
+          loadResponsableHistory('mensuel', 12),
+        ])
+        const toutes = [...histH, ...histM].sort(
+          (a, b) => b.periodStart.toMillis() - a.periodStart.toMillis()
+        )
+        setRespHist(toutes)
+
+        // Statut de chaque période : lecture des documents hygiene_corner
+        // correspondants, bornée aux périodes affichées.
+        const statuts: Record<string, { done: number; total: number }> = {}
+        await Promise.all(toutes.map(async r => {
+          const ids = r.kind === 'hebdo' ? HEBDO_IDS : MENSUEL_IDS
+          const snap = await getDoc(doc(db, 'hygiene_corner', r.periodId))
+          const items = snap.exists() ? (snap.data() as SavedCheck).items : undefined
+          statuts[r.periodId] = {
+            done: ids.filter(id => items?.[id]).length,
+            total: ids.length,
+          }
+        }))
+        setRespHistDone(statuts)
+      } catch (e) {
+        console.error('loadHistorique: historique des responsables illisible', e)
       }
     } finally {
       setHistLoading(false)
@@ -326,6 +363,12 @@ export default function Hygiene() {
                   <>
                     <div style={{ fontSize: 22 }}>{histHebdo.done === histHebdo.total ? '✅' : histHebdo.done > 0 ? '🟡' : '❌'}</div>
                     <div style={{ fontSize: 12, color: 'var(--on-surface-2)', marginTop: 4 }}>{histHebdo.done}/{histHebdo.total}</div>
+                    {(() => {
+                      const r = respHist.find(x => x.kind === 'hebdo' && x.periodId === getDocId('hebdo', histWeekDates[0]))
+                      return r ? (
+                        <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 4 }}>{r.assigneeName}</div>
+                      ) : null
+                    })()}
                   </>
                 ) : <div style={{ fontSize: 22 }}>❌</div>}
               </div>
@@ -335,9 +378,85 @@ export default function Hygiene() {
                   <>
                     <div style={{ fontSize: 22 }}>{histMensuel.done === histMensuel.total ? '✅' : histMensuel.done > 0 ? '🟡' : '❌'}</div>
                     <div style={{ fontSize: 12, color: 'var(--on-surface-2)', marginTop: 4 }}>{histMensuel.done}/{histMensuel.total}</div>
+                    {(() => {
+                      const r = respHist.find(x => x.kind === 'mensuel' && x.periodId === getDocId('mensuel', histWeekDates[0]))
+                      return r ? (
+                        <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 4 }}>{r.assigneeName}</div>
+                      ) : null
+                    })()}
                   </>
                 ) : <div style={{ fontSize: 22 }}>❌</div>}
               </div>
+            </div>
+
+            {/* Historique des responsables */}
+            <div className="card" style={{ padding: '12px 14px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <p className="section-label" style={{ margin: 0 }}>Historique des responsables</p>
+                <button
+                  onClick={() => setRespHistOpen(o => !o)}
+                  style={{
+                    minHeight: 44, padding: '0 12px', border: 'none', background: 'transparent',
+                    color: 'var(--primary)', fontSize: 12, fontWeight: 700, cursor: 'pointer',
+                    fontFamily: 'Manrope, sans-serif',
+                  }}
+                >
+                  {respHistOpen ? '▲ Rétracter' : `▼ Afficher (${respHist.length})`}
+                </button>
+              </div>
+
+              {respHistOpen && (
+                respHist.length === 0 ? (
+                  <p style={{ fontSize: 12, color: 'var(--on-surface-3)', margin: '8px 0 0' }}>
+                    Aucune désignation enregistrée.
+                  </p>
+                ) : (
+                  <div style={{ overflowX: 'auto', marginTop: 10 }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ color: 'var(--on-surface-3)', textAlign: 'left' }}>
+                          <th style={{ padding: '6px 8px', fontWeight: 700 }}>Période</th>
+                          <th style={{ padding: '6px 8px', fontWeight: 700 }}>Responsable</th>
+                          <th style={{ padding: '6px 8px', fontWeight: 700 }}>Statut</th>
+                          <th style={{ padding: '6px 8px', fontWeight: 700 }}>Suivi</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {respHist.map(r => {
+                          const s = respHistDone[r.periodId]
+                          const complet = !!s && s.done === s.total
+                          const rappels = r.remindersSent ?? []
+                          return (
+                            <tr key={r.periodId} style={{ borderTop: '1px solid var(--border-soft)' }}>
+                              <td style={{ padding: '8px', color: 'var(--on-surface-2)', whiteSpace: 'nowrap' }}>
+                                {r.periodId.replace('_hebdo', '').replace('_mensuel', '')}
+                                <span style={{ color: 'var(--on-surface-3)', marginLeft: 4 }}>
+                                  {r.kind === 'hebdo' ? 'hebdo' : 'mensuel'}
+                                </span>
+                              </td>
+                              <td style={{ padding: '8px', color: 'var(--on-surface)', fontWeight: 600 }}>
+                                {r.assigneeName}
+                                {(r.previousAssignees?.length ?? 0) > 0 && (
+                                  <span style={{ fontSize: 10, color: 'var(--on-surface-3)', marginLeft: 5 }}>
+                                    (réaffecté)
+                                  </span>
+                                )}
+                              </td>
+                              <td style={{ padding: '8px', whiteSpace: 'nowrap' }}>
+                                {complet ? '✅' : '❌'}{s ? ` ${s.done}/${s.total}` : ''}
+                              </td>
+                              <td style={{ padding: '8px', color: 'var(--on-surface-3)' }}>
+                                {rappels.length === 0 ? '—' : rappels.join(', ')}
+                                {r.escalatedAt ? ' · escaladé' : ''}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )
+              )}
             </div>
           </>
         )
