@@ -161,7 +161,8 @@ export default function Dashboard() {
         getDocFromServer(doc(db, 'temperatures', `${today}_${id}_soir`))
       ))
 
-      const [hygieneSnap, hygieneHebdoSnap, hygieneMensuelSnap, livrSnap, stockSnap, cmdSnap] = await Promise.all([
+      const maintenant = new Date()
+      const [hygieneSnap, hygieneHebdoSnap, hygieneMensuelSnap, livrSnap, stockSnap, cmdSnap, rHebdo, rMensuel] = await Promise.all([
         getDocFromServer(doc(db, 'hygiene_corner', `${today}_quotidien`)),
         getDocFromServer(doc(db, 'hygiene_corner', getPeriodId('hebdo', new Date()))),
         getDocFromServer(doc(db, 'hygiene_corner', getPeriodId('mensuel', new Date()))),
@@ -172,6 +173,11 @@ export default function Dashboard() {
           where('dateLivraison', '>=', today),
           where('dateLivraison', '<=', endWeek),
           orderBy('dateLivraison', 'asc'))),
+        // Isolées : un échec de lecture des responsables (ex. permission-denied
+        // tant que les règles hygiene_responsables ne sont pas déployées) ne
+        // doit jamais faire échouer tout le Promise.all — juste "pas de responsable".
+        loadResponsable('hebdo', maintenant).catch(e => { console.error('[Dashboard corner] responsable hebdo', e); return null }),
+        loadResponsable('mensuel', maintenant).catch(e => { console.error('[Dashboard corner] responsable mensuel', e); return null }),
       ])
 
       const tempsData = matinSnaps.map((snap, i) => {
@@ -191,12 +197,6 @@ export default function Dashboard() {
       setHygieneOk(isHygieneDone(hygieneSnap.data()?.items, QUOTIDIEN_IDS))
       setHygieneHebdoOk(isHygieneDone(hygieneHebdoSnap.data()?.items, HEBDO_IDS))
       setHygieneMensuelOk(isHygieneDone(hygieneMensuelSnap.data()?.items, MENSUEL_IDS))
-
-      const maintenant = new Date()
-      const [rHebdo, rMensuel] = await Promise.all([
-        loadResponsable('hebdo', maintenant),
-        loadResponsable('mensuel', maintenant),
-      ])
       setRespHebdo(rHebdo)
       setRespMensuel(rMensuel)
 
@@ -437,6 +437,7 @@ export default function Dashboard() {
                 flex: 1, fontSize: 13, fontWeight: 500,
                 color: item.status === 'ok' && item.checkKey ? 'var(--on-surface-3)' : 'var(--on-surface)',
                 textDecoration: item.status === 'ok' && item.checkKey ? 'line-through' : 'none',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               }}>
                 {item.label}
               </span>
