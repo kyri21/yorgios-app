@@ -136,7 +136,7 @@ export default function Hygiene() {
   const [respHistErreur, setRespHistErreur] = useState('')
 
   async function loadTab(type: CheckType, dateStr: string) {
-    setLoadingTab(true); setSaved(null); setChecked({})
+    setLoadingTab(true); setSaved(null); setChecked({}); setSaveError('')
     try {
       const snap = await getDoc(doc(db, 'hygiene_corner', getDocId(type, dateStr)))
       if (snap.exists()) {
