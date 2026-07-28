@@ -351,6 +351,7 @@ export default function AdminSettings() {
   const [ipadNameStatus, setIpadNameStatus] = useState<Record<string, 'idle' | 'saving' | 'ok'>>({})
   const [ipadPwdStatus, setIpadPwdStatus] = useState<Record<string, 'idle' | 'saving' | 'ok' | 'err'>>({})
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   useEffect(() => {
     getDocs(query(collection(db, 'users'), where('role', 'in', ['patron', 'administrateur', 'manager'])))
@@ -466,6 +467,7 @@ export default function AdminSettings() {
 
   async function save() {
     setSaving(true)
+    setSaveError(null)
     try {
       await Promise.all([
         setDoc(doc(db, 'settings', 'notifications'), notifs),
@@ -479,10 +481,12 @@ export default function AdminSettings() {
         setDoc(doc(db, 'settings', 'alert_emails'), alertEmails),
         setDoc(doc(db, 'settings', 'history_limits'), historyLimits),
         setDoc(doc(db, 'settings', 'commandes_emails'), commandesEmails),
-        setDoc(doc(db, 'settings', 'hygiene_responsables'), hygieneResp, { merge: true }),
+        setDoc(doc(db, 'settings', 'hygiene_responsables'), hygieneResp),
       ])
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
     }
@@ -1296,6 +1300,11 @@ export default function AdminSettings() {
         style={{ fontSize: 15, padding: '14px 0' }}>
         {saved ? '✓ Sauvegardé' : saving ? 'Sauvegarde…' : 'Sauvegarder les paramètres'}
       </button>
+      {saveError && (
+        <p style={{ fontSize: 12, color: 'var(--danger)', marginTop: 8, marginBottom: 0 }}>
+          ✗ Échec de la sauvegarde : {saveError}
+        </p>
+      )}
 
     </div>
   )
