@@ -216,9 +216,9 @@ Planifiée `0 10,18 * * *`, `Europe/Paris`, `europe-west1`.
 | `j-1` | samedi 10h | 2 jours avant la fin du mois, 10h | responsable |
 | `escalade` | dimanche 18h | dernier jour du mois, 18h | `escaladeDestinataires`, responsable en `cc` |
 
-Pour le mensuel, « J » désigne le dernier jour du mois : J-7 tombe le 24 en juillet, le 22 en
-février. Le calcul se fait par soustraction depuis la fin du mois, pas sur un numéro de jour
-fixe.
+Pour le mensuel, « J » désigne le dernier jour du mois : J-7 tombe le 24 en juillet, le 21 en
+février, le 22 en février bissextile. Le calcul se fait par soustraction depuis la fin du
+mois, jamais sur un numéro de jour fixe.
 
 Une seule fonction pour les six cas : elle calcule les périodes courantes, lit les deux
 documents responsable et les deux documents `hygiene_corner`, et décide du jalon applicable.
