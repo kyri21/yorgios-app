@@ -68,7 +68,8 @@ function Avertissement({ groupes }: { groupes: JalonKey[][] }) {
 }
 
 const selectStyle = { minHeight: 44, padding: '0 8px', flex: 1 } as const
-const ligneStyle = { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 } as const
+const ligneStyle = { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, minHeight: 44 } as const
+const jalonLabelStyle = { display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', minHeight: 44, width: 96, flexShrink: 0 } as const
 
 export default function HygieneResponsablesSection({ value, onChange, managers }: Props) {
   const set = (patch: Partial<HygieneSettings>) => onChange({ ...value, ...patch })
@@ -84,7 +85,10 @@ export default function HygieneResponsablesSection({ value, onChange, managers }
 
   const resumeHebdo = JALONS
     .filter(c => value.hebdo[c].actif)
-    .map(c => `${JOURS[value.hebdo[c].jour].label.slice(0, 3).toLowerCase()} ${value.hebdo[c].heure}h`)
+    .map(c => {
+      const jourLabel = JOURS[value.hebdo[c].jour]?.label.slice(0, 3).toLowerCase() ?? '?'
+      return `${jourLabel} ${value.hebdo[c].heure}h`
+    })
     .join(' · ') || 'aucun rappel actif'
 
   const resumeMensuel = JALONS
@@ -128,15 +132,17 @@ export default function HygieneResponsablesSection({ value, onChange, managers }
         <Bloc titre="Rappels hebdomadaires" resume={resumeHebdo}>
           {JALONS.map(cle => (
             <div key={cle} style={ligneStyle}>
-              <input
-                type="checkbox"
-                checked={value.hebdo[cle].actif}
-                onChange={e => setHebdo(cle, { actif: e.target.checked })}
-                style={{ width: 16, height: 16, accentColor: 'var(--primary)', flexShrink: 0 }}
-              />
-              <span style={{ fontSize: 12, color: 'var(--on-surface)', width: 88, flexShrink: 0 }}>
-                {JALON_LABELS[cle]}
-              </span>
+              <label style={jalonLabelStyle}>
+                <input
+                  type="checkbox"
+                  checked={value.hebdo[cle].actif}
+                  onChange={e => setHebdo(cle, { actif: e.target.checked })}
+                  style={{ width: 16, height: 16, accentColor: 'var(--primary)', flexShrink: 0 }}
+                />
+                <span style={{ fontSize: 12, color: 'var(--on-surface)' }}>
+                  {JALON_LABELS[cle]}
+                </span>
+              </label>
               <select
                 className="input-filled" style={selectStyle}
                 value={value.hebdo[cle].jour}
@@ -160,20 +166,22 @@ export default function HygieneResponsablesSection({ value, onChange, managers }
         <Bloc titre="Rappels mensuels" resume={resumeMensuel}>
           {JALONS.map(cle => (
             <div key={cle} style={ligneStyle}>
-              <input
-                type="checkbox"
-                checked={value.mensuel[cle].actif}
-                onChange={e => setMensuel(cle, { actif: e.target.checked })}
-                style={{ width: 16, height: 16, accentColor: 'var(--primary)', flexShrink: 0 }}
-              />
-              <span style={{ fontSize: 12, color: 'var(--on-surface)', width: 88, flexShrink: 0 }}>
-                {JALON_LABELS[cle]}
-              </span>
+              <label style={jalonLabelStyle}>
+                <input
+                  type="checkbox"
+                  checked={value.mensuel[cle].actif}
+                  onChange={e => setMensuel(cle, { actif: e.target.checked })}
+                  style={{ width: 16, height: 16, accentColor: 'var(--primary)', flexShrink: 0 }}
+                />
+                <span style={{ fontSize: 12, color: 'var(--on-surface)' }}>
+                  {JALON_LABELS[cle]}
+                </span>
+              </label>
               <input
                 type="number" min={0} max={28}
                 className="input-filled" style={{ ...selectStyle, flex: 0, width: 64 }}
                 value={value.mensuel[cle].joursAvantFin}
-                onChange={e => setMensuel(cle, { joursAvantFin: Math.max(0, Math.min(28, Number(e.target.value) || 0)) })}
+                onChange={e => setMensuel(cle, { joursAvantFin: Math.max(0, Math.min(28, Math.round(Number(e.target.value) || 0))) })}
               />
               <span style={{ fontSize: 11, color: 'var(--on-surface-3)', flex: 1 }}>
                 jours avant la fin
@@ -203,20 +211,20 @@ export default function HygieneResponsablesSection({ value, onChange, managers }
           {CANAUX.map(({ cle, label }) => (
             <div key={cle} style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 44 }}>
               <span style={{ flex: 1, fontSize: 12, color: 'var(--on-surface)' }}>{label}</span>
-              <span style={{ width: 56, textAlign: 'center' }}>
+              <label style={{ width: 56, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
                 <input
                   type="checkbox" checked={value.canaux[cle].email}
                   onChange={e => setCanal(cle, { email: e.target.checked })}
-                  style={{ width: 16, height: 16, accentColor: 'var(--primary)' }}
+                  style={{ width: 16, height: 16, accentColor: 'var(--primary)', flexShrink: 0 }}
                 />
-              </span>
-              <span style={{ width: 56, textAlign: 'center' }}>
+              </label>
+              <label style={{ width: 56, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
                 <input
                   type="checkbox" checked={value.canaux[cle].push}
                   onChange={e => setCanal(cle, { push: e.target.checked })}
-                  style={{ width: 16, height: 16, accentColor: 'var(--primary)' }}
+                  style={{ width: 16, height: 16, accentColor: 'var(--primary)', flexShrink: 0 }}
                 />
-              </span>
+              </label>
             </div>
           ))}
           <p style={{ fontSize: 11, color: 'var(--on-surface-3)', margin: '8px 0 0' }}>
