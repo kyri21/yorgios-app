@@ -123,6 +123,7 @@ export default function Hygiene() {
   const [respHistOpen, setRespHistOpen] = useState(false)
   const [respHistDone, setRespHistDone] = useState<Record<string, { done: number; total: number }>>({})
   const [respHistLoaded, setRespHistLoaded] = useState(false)
+  const [respHistErreur, setRespHistErreur] = useState('')
 
   async function loadTab(type: CheckType, dateStr: string) {
     setLoadingTab(true); setSaved(null); setChecked({})
@@ -191,6 +192,7 @@ export default function Hygiene() {
   // Historique — jamais relancé sur simple navigation de semaine, pour ne
   // pas clignoter une section déjà dépliée ni refaire ~24 lectures inutiles.
   async function loadResponsableHistorique() {
+    setRespHistErreur('')
     try {
       const [histH, histM] = await Promise.all([
         loadResponsableHistory('hebdo', 12),
@@ -226,10 +228,18 @@ export default function Hygiene() {
         // rejected → aucune entrée pour cette période, rendu neutre côté UI
       }
       setRespHistDone(statuts)
-    } catch (e) {
-      console.error('loadResponsableHistorique: historique des responsables illisible', e)
-    } finally {
       setRespHistLoaded(true)
+    } catch (e: any) {
+      // Même principe que « – statut indisponible » plus bas : une donnée
+      // illisible ne doit pas se faire passer pour une donnée absente.
+      // « Aucune désignation enregistrée » sur un index composite pas encore
+      // construit répondait au patron qu'aucun responsable n'a jamais existé.
+      console.error('loadResponsableHistorique: historique des responsables illisible', e)
+      setRespHist([]); setRespHistDone({})
+      setRespHistErreur(e?.message || 'lecture impossible')
+      // respHistLoaded reste false : revenir sur l'onglet Historique réessaie
+      // (l'index composite finit par être construit). Pas de boucle : l'effet
+      // ne dépend que de `tab` et `respHistLoaded`, tous deux inchangés ici.
     }
   }
 
@@ -423,12 +433,19 @@ export default function Hygiene() {
                     fontFamily: 'Manrope, sans-serif',
                   }}
                 >
-                  {respHistOpen ? '▲ Rétracter' : `▼ Afficher (${respHist.length})`}
+                  {respHistOpen ? '▲ Rétracter' : respHistErreur ? '▼ Afficher' : `▼ Afficher (${respHist.length})`}
                 </button>
               </div>
 
               {respHistOpen && (
-                respHist.length === 0 ? (
+                respHistErreur ? (
+                  // Échec de lecture : ni « aucune désignation » (faux), ni
+                  // silence. L'historique sert de preuve — il doit dire quand
+                  // il ne peut pas répondre.
+                  <p style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 600, margin: '8px 0 0' }}>
+                    ⚠️ Historique des responsables indisponible — {respHistErreur}
+                  </p>
+                ) : respHist.length === 0 ? (
                   <p style={{ fontSize: 12, color: 'var(--on-surface-3)', margin: '8px 0 0' }}>
                     Aucune désignation enregistrée.
                   </p>
@@ -500,6 +517,10 @@ export default function Hygiene() {
               date={new Date(selectedDate + 'T12:00:00')}
               canEdit={canEditResponsable}
               currentUserName={currentUserName}
+              // Une réaffectation périme l'historique déjà chargé : sans ce
+              // reset, l'onglet Historique continuait d'afficher l'ancien nom
+              // jusqu'au rechargement complet de la page.
+              onAssigned={() => setRespHistLoaded(false)}
             />
           )}
 

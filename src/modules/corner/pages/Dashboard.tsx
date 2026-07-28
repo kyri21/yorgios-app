@@ -120,7 +120,37 @@ function saveChecks(checks: Record<TaskKey, boolean>) {
   localStorage.setItem('dashboard_checks', JSON.stringify({ date: todayISO(), checks }))
 }
 
-type TaskItem = { label: string; status: string; nav: string; checkKey: TaskKey | null }
+type TaskItem = {
+  label: string
+  status: string
+  nav: string
+  checkKey: TaskKey | null
+  /** Seconde ligne, hors zone tronquée : nom du responsable ou « non attribuée ». */
+  sub?: string
+  /** L'utilisateur connecté est le responsable — accent visuel. */
+  estMoi?: boolean
+}
+
+/** Trois états, pas deux : « aucun responsable » est une affirmation
+ *  (quelqu'un a oublié de désigner), « inconnu » veut seulement dire que la
+ *  lecture a échoué. Les confondre faisait afficher « non attribuée » en
+ *  rouge sur un simple hors-ligne ou une règle Firestore non déployée. */
+type EtatResponsable =
+  | { statut: 'connu'; resp: HygieneResponsable }
+  | { statut: 'aucun' }
+  | { statut: 'inconnu' }
+
+/** Lecture d'une désignation, l'échec restant distinct de l'absence.
+ *  L'erreur n'est jamais avalée : elle part dans la console. */
+async function etatResponsable(kind: 'hebdo' | 'mensuel', ref: Date): Promise<EtatResponsable> {
+  try {
+    const resp = await loadResponsable(kind, ref)
+    return resp ? { statut: 'connu', resp } : { statut: 'aucun' }
+  } catch (e) {
+    console.error(`[Dashboard corner] responsable ${kind} illisible`, e)
+    return { statut: 'inconnu' }
+  }
+}
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -128,8 +158,9 @@ export default function Dashboard() {
   const [hygieneOk, setHygieneOk] = useState<boolean | null>(null)
   const [hygieneHebdoOk, setHygieneHebdoOk] = useState<boolean | null>(null)
   const [hygieneMensuelOk, setHygieneMensuelOk] = useState<boolean | null>(null)
-  const [respHebdo, setRespHebdo]     = useState<HygieneResponsable | null>(null)
-  const [respMensuel, setRespMensuel] = useState<HygieneResponsable | null>(null)
+  // Avant la première lecture, rien n'est su : surtout pas « non attribuée ».
+  const [respHebdo, setRespHebdo]     = useState<EtatResponsable>({ statut: 'inconnu' })
+  const [respMensuel, setRespMensuel] = useState<EtatResponsable>({ statut: 'inconnu' })
   const [pendingLivraisons, setPendingLivraisons] = useState<Livraison[]>([])
   const [overdueLivraisons, setOverdueLivraisons] = useState<Livraison[]>([])
   const [dlcItems, setDlcItems] = useState<DlcItem[]>([])
@@ -175,9 +206,10 @@ export default function Dashboard() {
           orderBy('dateLivraison', 'asc'))),
         // Isolées : un échec de lecture des responsables (ex. permission-denied
         // tant que les règles hygiene_responsables ne sont pas déployées) ne
-        // doit jamais faire échouer tout le Promise.all — juste "pas de responsable".
-        loadResponsable('hebdo', maintenant).catch(e => { console.error('[Dashboard corner] responsable hebdo', e); return null }),
-        loadResponsable('mensuel', maintenant).catch(e => { console.error('[Dashboard corner] responsable mensuel', e); return null }),
+        // doit jamais faire échouer tout le Promise.all. Il ne doit pas non
+        // plus être confondu avec « aucun responsable désigné » → 'inconnu'.
+        etatResponsable('hebdo', maintenant),
+        etatResponsable('mensuel', maintenant),
       ])
 
       const tempsData = matinSnaps.map((snap, i) => {
@@ -282,21 +314,29 @@ export default function Dashboard() {
   /** Une ligne d'hygiène périodique n'apparaît que si elle est attribuée
    *  ou en retard : attribuée et faite, elle reste visible pour montrer
    *  qui s'en est chargé ; ni attribuée ni faite, elle signale l'oubli
-   *  de désignation. */
+   *  de désignation. Statut de désignation illisible → aucune ligne :
+   *  mieux vaut ne rien dire que d'accuser d'un oubli qui n'existe pas.
+   *
+   *  Le responsable part sur une seconde ligne (`sub`), hors de la zone
+   *  tronquée par l'ellipse : sur un iPhone 375 px, un libellé d'un seul
+   *  tenant coupait justement le nom et le « toi ». */
   function ligneHygiene(
     libelle: string,
     fait: boolean | null,
-    resp: HygieneResponsable | null,
+    etat: EtatResponsable,
   ): TaskItem[] {
+    if (etat.statut === 'inconnu') return []
+    const resp = etat.statut === 'connu' ? etat.resp : null
     if (fait !== false && !resp) return []
     const estMoi = !!resp && resp.assigneeUid === uid
-    const suffixe = resp ? ` — ${resp.assigneeName}${estMoi ? ' · toi' : ''}` : ' — non attribuée'
     return [{
-      label: `${libelle}${suffixe}`,
+      label: libelle,
+      sub: resp ? resp.assigneeName : 'non attribuée',
+      estMoi,
       status: fait ? 'ok' : 'ko',
       nav: 'hygiene',
       checkKey: null,
-    } as TaskItem]
+    }]
   }
 
   const taskItems: TaskItem[] = [
@@ -433,14 +473,34 @@ export default function Dashboard() {
                 }} />
               )}
 
-              <span style={{
-                flex: 1, fontSize: 13, fontWeight: 500,
-                color: item.status === 'ok' && item.checkKey ? 'var(--on-surface-3)' : 'var(--on-surface)',
-                textDecoration: item.status === 'ok' && item.checkKey ? 'line-through' : 'none',
-                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-              }}>
-                {item.label}
-              </span>
+              {/* minWidth:0 — sans lui, un enfant flex refuse de rétrécir et
+                  l'ellipse ne se déclenche jamais. Les lignes sans `sub`
+                  rendent exactement comme avant : un seul enfant. */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <span style={{
+                  display: 'block', fontSize: 13, fontWeight: 500,
+                  color: item.status === 'ok' && item.checkKey ? 'var(--on-surface-3)' : 'var(--on-surface)',
+                  textDecoration: item.status === 'ok' && item.checkKey ? 'line-through' : 'none',
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                  {item.label}
+                </span>
+                {item.sub && (
+                  <span style={{
+                    display: 'block', fontSize: 11, marginTop: 2, lineHeight: 1.3,
+                    fontWeight: item.estMoi ? 700 : 500,
+                    color: item.estMoi ? 'var(--primary)' : 'var(--on-surface-2)',
+                  }}>
+                    {item.sub}
+                    {item.estMoi && (
+                      <span style={{
+                        marginLeft: 6, fontSize: 10, fontWeight: 700, color: 'var(--primary)',
+                        background: 'rgba(0,66,117,0.10)', padding: '1px 6px', borderRadius: 99,
+                      }}>toi</span>
+                    )}
+                  </span>
+                )}
+              </div>
 
               {!item.checkKey && (
                 <>
