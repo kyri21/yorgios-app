@@ -981,6 +981,18 @@ async function getHygieneEscaladeEmails() {
         return repli;
     return ['a.cozzika@gmail.com', 'kyriazis@outlook.fr'];
 }
+/** Push « best effort » : l'email est le canal garanti, le push un bonus.
+ *  notifyUids lève sur toute erreur d'appel FCM (quota, credential, réseau) ;
+ *  sans cette isolation, une panne FCM empêcherait l'email de partir et le
+ *  responsable n'apprendrait jamais qu'il est désigné. */
+async function pushHygiene(uids, title, body, link) {
+    try {
+        await notifyUids(uids, title, body, link);
+    }
+    catch (err) {
+        console.error('[hygiene] Push FCM échoué — la suite (email) continue :', err);
+    }
+}
 async function hygieneRappelsActifs() {
     var _a;
     const snap = await db.doc('settings/hygiene_responsables').get();
@@ -1028,7 +1040,7 @@ exports.onHygieneResponsableAssigned = (0, firestore_2.onDocumentWritten)({ docu
     const periode = String((_d = apres.periodId) !== null && _d !== void 0 ? _d : '').replace(/_hebdo|_mensuel/, '');
     const titre = `🧼 Tu es responsable de l'hygiène ${libelle}`;
     const corps = `Période ${periode} — checklist à compléter avant la fin de la période.`;
-    await notifyUids([apres.assigneeUid], titre, corps, '/corner/hygiene');
+    await pushHygiene([apres.assigneeUid], titre, corps, '/corner/hygiene');
     if (apres.assigneeEmail) {
         await sendHygieneMail([apres.assigneeEmail], [], titre, `<p>Bonjour ${apres.assigneeName},</p>
          <p>Tu as été désigné(e) responsable de la <strong>checklist d'hygiène ${libelle}</strong>
@@ -1099,7 +1111,7 @@ exports.hygieneRappelsResponsables = (0, scheduler_1.onSchedule)({ schedule: '0 
             }
             const titre = `🧼 Rappel — hygiène ${libelle}`;
             const corps = `La checklist ${periode} n'est pas terminée.`;
-            await notifyUids([resp.assigneeUid], titre, corps, '/corner/hygiene');
+            await pushHygiene([resp.assigneeUid], titre, corps, '/corner/hygiene');
             if (resp.assigneeEmail) {
                 await sendHygieneMail([resp.assigneeEmail], [], titre, `<p>Bonjour ${resp.assigneeName},</p>
              <p>La <strong>checklist d'hygiène ${libelle}</strong> de la période
@@ -1710,11 +1722,14 @@ exports.notifHygieneHebdo = (0, scheduler_1.onSchedule)({ schedule: '0 18 * * 6'
         console.log('[hebdo] Hygiène hebdo complète, pas de notif.');
         return;
     }
-    // Un responsable désigné reçoit déjà ses rappels ciblés : le broadcast
-    // collectif ne sert que de filet quand personne n'est désigné.
+    // Le broadcast ne se tait que si le rappel ciblé prend RÉELLEMENT le
+    // relais : responsable désigné ET rappels automatiques actifs. Décocher
+    // « Rappels automatiques » dans les Paramètres coupe hygieneRappelsResponsables ;
+    // sans ce second test, ça supprimait aussi le filet collectif et plus
+    // rien ne signalait une checklist HACCP non faite.
     const respSnap = await db.doc(`hygiene_responsables/${weekId}`).get();
-    if (respSnap.exists) {
-        console.log('[hebdo] Responsable désigné, rappel ciblé — pas de broadcast.');
+    if (respSnap.exists && await hygieneRappelsActifs()) {
+        console.log('[hebdo] Responsable désigné + rappels actifs — pas de broadcast.');
         return;
     }
     await notifyRoles('🧼 Hygiène hebdo non faite', "La checklist d'hygiène hebdomadaire n'a pas encore été complétée cette semaine !", '/corner/hygiene', ['corner', 'patron', 'administrateur', 'manager']);
@@ -1740,9 +1755,11 @@ exports.notifHygieneMensuel = (0, scheduler_1.onSchedule)({ schedule: '0 18 28-3
         console.log('[mensuel] Hygiène mensuelle complète, pas de notif.');
         return;
     }
+    // Même règle que l'hebdo : le filet collectif ne s'efface que devant un
+    // rappel ciblé qui part vraiment (responsable désigné ET rappels actifs).
     const respSnap = await db.doc(`hygiene_responsables/${monthId}`).get();
-    if (respSnap.exists) {
-        console.log('[mensuel] Responsable désigné, rappel ciblé — pas de broadcast.');
+    if (respSnap.exists && await hygieneRappelsActifs()) {
+        console.log('[mensuel] Responsable désigné + rappels actifs — pas de broadcast.');
         return;
     }
     await notifyRoles('🧼 Hygiène mensuelle non faite', "La checklist d'hygiène mensuelle n'a pas encore été complétée ce mois-ci !", '/corner/hygiene', ['corner', 'patron', 'administrateur', 'manager']);
@@ -1762,7 +1779,7 @@ exports.notifCostas = (0, scheduler_1.onSchedule)({ schedule: '0 10 * * 0', time
 });
 /** Lundi 8h00 — Récap hebdo hygiène + températures manquantes (email patron + manager) */
 exports.weeklyHygieneRecap = (0, scheduler_1.onSchedule)({ schedule: '0 8 * * 1', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
-    var _a, _b;
+    var _a, _b, _c, _d;
     const cfgSnap = await db.doc('settings/notifications').get();
     const cfg = (_a = cfgSnap.data()) !== null && _a !== void 0 ? _a : {};
     if (((_b = cfg.weeklyHygieneLundi) === null || _b === void 0 ? void 0 : _b.email) === false) {
@@ -1804,25 +1821,30 @@ exports.weeklyHygieneRecap = (0, scheduler_1.onSchedule)({ schedule: '0 8 * * 1'
             }
         }
     }
-    // Vérifier hygiène manquante (quotidien uniquement)
+    // Vérifier hygiène quotidienne — même définition que le Dashboard et
+    // l'historique : une checklist n'est faite que si TOUS ses items sont
+    // cochés. « Le document existe » laissait un 2/13 hors du récap, que le
+    // patron lisait alors comme « c'était fait ».
     const missingHygiene = [];
     for (const day of days) {
         const snap = await db.doc(`hygiene_corner/${day}_quotidien`).get();
-        if (!snap.exists)
-            missingHygiene.push(`  ${day}`);
+        const items = (_c = snap.data()) === null || _c === void 0 ? void 0 : _c.items;
+        if (!(0, periods_1.isHygieneDone)(items, periods_1.QUOTIDIEN_IDS)) {
+            const coches = periods_1.QUOTIDIEN_IDS.filter(id => (items === null || items === void 0 ? void 0 : items[id]) === true).length;
+            missingHygiene.push(`  ${day} — ${coches}/${periods_1.QUOTIDIEN_IDS.length} coché(s)`);
+        }
     }
-    // Vérifier hygiène hebdo (semaine ISO)
-    const isoYear = lastMonday.getFullYear();
-    const isoWeek = (() => {
-        const tmp = new Date(Date.UTC(lastMonday.getFullYear(), lastMonday.getMonth(), lastMonday.getDate()));
-        const dayNum = tmp.getUTCDay() || 7;
-        tmp.setUTCDate(tmp.getUTCDate() + 4 - dayNum);
-        const yearStart = new Date(Date.UTC(tmp.getUTCFullYear(), 0, 1));
-        return Math.ceil((((tmp.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
-    })();
-    const weekId = `${isoYear}-W${String(isoWeek).padStart(2, '0')}`;
-    const hebdoSnap = await db.doc(`hygiene_corner/${weekId}_hebdo`).get();
-    const missingHebdo = !hebdoSnap.exists ? `  ${weekId}_hebdo` : null;
+    // Vérifier hygiène hebdo — identifiant produit par getPeriodId (année ISO,
+    // celle du jeudi). Le calcul local utilisait l'année civile du lundi :
+    // pour la semaine du 29/12/2025 au 04/01/2026 il lisait 2025-W01_hebdo,
+    // un document qui n'existe pas, là où le client écrit 2026-W01_hebdo.
+    const weekId = (0, periods_1.getPeriodId)('hebdo', lastMonday);
+    const hebdoSnap = await db.doc(`hygiene_corner/${weekId}`).get();
+    const hebdoItems = (_d = hebdoSnap.data()) === null || _d === void 0 ? void 0 : _d.items;
+    const hebdoIds = (0, periods_1.itemIdsFor)('hebdo');
+    const missingHebdo = (0, periods_1.isHygieneDone)(hebdoItems, hebdoIds)
+        ? null
+        : `  ${weekId} — ${hebdoIds.filter(id => (hebdoItems === null || hebdoItems === void 0 ? void 0 : hebdoItems[id]) === true).length}/${hebdoIds.length} coché(s)`;
     // Si rien à signaler
     if (missingTemps.length === 0 && missingHygiene.length === 0 && !missingHebdo) {
         console.log('[weeklyRecap] Tout est complet, aucun email envoyé.');
@@ -1854,12 +1876,12 @@ exports.weeklyHygieneRecap = (0, scheduler_1.onSchedule)({ schedule: '0 8 * * 1'
         lines.push(``);
     }
     if (missingHygiene.length > 0) {
-        lines.push(`🧹 HYGIÈNE QUOTIDIENNE MANQUANTE (${missingHygiene.length} jour(s)) :`);
+        lines.push(`🧹 HYGIÈNE QUOTIDIENNE NON TERMINÉE (${missingHygiene.length} jour(s)) :`);
         lines.push(...missingHygiene);
         lines.push(``);
     }
     if (missingHebdo) {
-        lines.push(`📋 HYGIÈNE HEBDO MANQUANTE :`);
+        lines.push(`📋 HYGIÈNE HEBDO NON TERMINÉE :`);
         lines.push(missingHebdo);
         lines.push(``);
     }
