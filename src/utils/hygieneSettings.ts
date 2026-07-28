@@ -39,6 +39,18 @@ export const DEFAULT_HYGIENE_SETTINGS: HygieneSettings = {
   },
 }
 
+/** Ordre CROISSANT de gravité — l'escalade en dernier.
+ *
+ *  ⚠️ Cet ordre est l'inverse exact de `parGravite` dans
+ *  `functions/src/hygiene/periods.ts`, et ce n'est pas une coïncidence : le
+ *  serveur parcourt du plus grave au moins grave et retient le premier qui
+ *  correspond, tandis que `grouperParCreneau` empile dans cet ordre-ci, ce qui
+ *  place le plus grave en dernier. C'est ce qui permet à l'avertissement de
+ *  collision de nommer exactement le jalon que le serveur enverra réellement.
+ *
+ *  Toute modification de l'ordre de priorité doit être répercutée des deux
+ *  côtés — sinon l'interface annoncerait un gagnant différent de celui qui
+ *  part, ce qui serait pire que pas d'avertissement du tout. */
 export const JALONS: JalonKey[] = ['rappel1', 'rappel2', 'escalade']
 
 export const JALON_LABELS: Record<JalonKey, string> = {

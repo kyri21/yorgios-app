@@ -135,6 +135,11 @@ export function resolveJalon(
   config: HygieneSettings,
 ): JalonKey | null {
   const heure = now.getHours()
+  // Ordre DÉCROISSANT de gravité : le premier qui correspond gagne, donc en
+  // cas de collision sur un même créneau c'est le plus grave qui part.
+  // ⚠️ `JALONS` dans src/utils/hygieneSettings.ts porte l'ordre inverse, et
+  // l'avertissement de collision de l'interface en dépend pour désigner le
+  // bon gagnant. Répercuter toute modification de priorité des deux côtés.
   const parGravite: JalonKey[] = ['escalade', 'rappel2', 'rappel1']
 
   if (kind === 'hebdo') {
