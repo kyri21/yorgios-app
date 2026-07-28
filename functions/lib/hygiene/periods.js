@@ -108,6 +108,11 @@ function lastDayOfMonth(d) {
  */
 function resolveJalon(kind, now, config) {
     const heure = now.getHours();
+    // Ordre DÉCROISSANT de gravité : le premier qui correspond gagne, donc en
+    // cas de collision sur un même créneau c'est le plus grave qui part.
+    // ⚠️ `JALONS` dans src/utils/hygieneSettings.ts porte l'ordre inverse, et
+    // l'avertissement de collision de l'interface en dépend pour désigner le
+    // bon gagnant. Répercuter toute modification de priorité des deux côtés.
     const parGravite = ['escalade', 'rappel2', 'rappel1'];
     if (kind === 'hebdo') {
         const jour = now.getDay(); // 0 = dimanche

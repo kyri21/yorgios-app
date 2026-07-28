@@ -12,8 +12,8 @@ import { validateRequest as twilioValidate } from 'twilio/lib/webhooks/webhooks'
 import * as crypto from 'crypto'
 import {
   getPeriodId, resolveJalon, isHygieneDone, itemIdsFor, parisNow,
-  QUOTIDIEN_IDS,
-  type HygieneKind,
+  mergeHygieneSettings, QUOTIDIEN_IDS,
+  type HygieneKind, type HygieneSettings,
 } from './hygiene/periods'
 
 const app = initializeApp()
@@ -1128,36 +1128,22 @@ async function notifyUids(uids: string[], title: string, body: string, link: str
   })
 }
 
-/** Destinataires de l'escalade hygiène.
- *  Repli sur settings/alert_emails.responsables puis sur la liste par
- *  défaut : une escalade ne doit jamais partir dans le vide. */
-async function getHygieneEscaladeEmails(): Promise<string[]> {
+/** Lit et complète les réglages d'hygiène. Une lecture, des défauts appliqués
+ *  champ par champ : un document absent ou partiel produit exactement le
+ *  comportement figé d'avant les réglages. */
+async function getHygieneSettings(): Promise<HygieneSettings> {
   const snap = await db.doc('settings/hygiene_responsables').get()
-  const configures = (snap.data()?.escaladeDestinataires ?? []) as string[]
-  if (configures.length) return configures
+  return mergeHygieneSettings(snap.data())
+}
 
+/** Destinataires de l'escalade, avec repli : une escalade ne doit jamais
+ *  partir dans le vide. */
+async function getHygieneEscaladeEmails(config: HygieneSettings): Promise<string[]> {
+  if (config.escaladeDestinataires.length) return config.escaladeDestinataires
   const alertSnap = await db.doc('settings/alert_emails').get()
   const repli = (alertSnap.data()?.responsables ?? []) as string[]
   if (repli.length) return repli
-
   return ['a.cozzika@gmail.com', 'kyriazis@outlook.fr']
-}
-
-/** Push « best effort » : l'email est le canal garanti, le push un bonus.
- *  notifyUids lève sur toute erreur d'appel FCM (quota, credential, réseau) ;
- *  sans cette isolation, une panne FCM empêcherait l'email de partir et le
- *  responsable n'apprendrait jamais qu'il est désigné. */
-async function pushHygiene(uids: string[], title: string, body: string, link: string) {
-  try {
-    await notifyUids(uids, title, body, link)
-  } catch (err) {
-    console.error('[hygiene] Push FCM échoué — la suite (email) continue :', err)
-  }
-}
-
-async function hygieneRappelsActifs(): Promise<boolean> {
-  const snap = await db.doc('settings/hygiene_responsables').get()
-  return snap.data()?.rappelsEnabled !== false
 }
 
 async function sendHygieneMail(to: string[], cc: string[], subject: string, html: string) {
@@ -1199,6 +1185,7 @@ export const onHygieneResponsableAssigned = onDocumentWritten(
     // chaque mise à jour de remindersSent.
     if (avant?.assigneeUid === apres.assigneeUid) return
 
+    const config = await getHygieneSettings()
     const kind = apres.kind as HygieneKind
     const libelle = LIBELLE_KIND[kind] ?? kind
     const periode = String(apres.periodId ?? '').replace(/_hebdo|_mensuel/, '')
@@ -1206,9 +1193,13 @@ export const onHygieneResponsableAssigned = onDocumentWritten(
     const titre = `🧼 Tu es responsable de l'hygiène ${libelle}`
     const corps = `Période ${periode} — checklist à compléter avant la fin de la période.`
 
-    await pushHygiene([apres.assigneeUid], titre, corps, '/corner/hygiene')
+    if (config.canaux.designation.push) {
+      // Isolé : une panne FCM ne doit jamais priver du seul canal garanti.
+      try { await notifyUids([apres.assigneeUid], titre, corps, '/corner/hygiene') }
+      catch (e) { console.error('[hygiene] push désignation échoué', e) }
+    }
 
-    if (apres.assigneeEmail) {
+    if (config.canaux.designation.email && apres.assigneeEmail) {
       await sendHygieneMail(
         [apres.assigneeEmail],
         [],
@@ -1222,6 +1213,10 @@ export const onHygieneResponsableAssigned = onDocumentWritten(
       )
     }
 
+    // notifiedAt trace la prise en compte par le système, pas la réception
+    // d'un message : écrit même si les deux canaux ci-dessus sont coupés,
+    // sinon rallumer les notifications re-notifierait toutes les
+    // désignations passées.
     await event.data!.after.ref.set({ notifiedAt: new Date() }, { merge: true })
     console.log(`[hygiene] Désignation notifiée : ${apres.assigneeName} — ${apres.periodId}`)
   }
@@ -1229,9 +1224,10 @@ export const onHygieneResponsableAssigned = onDocumentWritten(
 
 /** 10h et 18h — rappels ciblés au responsable, puis escalade. */
 export const hygieneRappelsResponsables = onSchedule(
-  { schedule: '0 10,18 * * *', timeZone: 'Europe/Paris', region: 'europe-west1' },
+  { schedule: '0 * * * *', timeZone: 'Europe/Paris', region: 'europe-west1' },
   async () => {
-    if (!(await hygieneRappelsActifs())) {
+    const config = await getHygieneSettings()
+    if (!config.rappelsEnabled) {
       console.log('[hygiene] Rappels désactivés dans les paramètres.')
       return
     }
@@ -1240,12 +1236,14 @@ export const hygieneRappelsResponsables = onSchedule(
 
     for (const kind of ['hebdo', 'mensuel'] as HygieneKind[]) {
       try {
-        const jalon = resolveJalon(kind, now)
+        const jalon = resolveJalon(kind, now, config)
         if (!jalon) continue
 
         const periodId = getPeriodId(kind, now)
         const libelle = LIBELLE_KIND[kind]
         const periode = periodId.replace(/_hebdo|_mensuel/, '')
+        const titre = `🧼 Rappel — hygiène ${libelle}`
+        const corps = `La checklist ${periode} n'est pas terminée.`
 
         // La checklist est-elle complète ? Si oui, aucun rappel, escalade comprise.
         const checkSnap = await db.doc(`hygiene_corner/${periodId}`).get()
@@ -1261,8 +1259,8 @@ export const hygieneRappelsResponsables = onSchedule(
         // au premier jalon. Pas de document où inscrire le jalon, l'unicité
         // repose sur la correspondance exacte jour + heure.
         if (!respSnap.exists) {
-          if (jalon !== 'j-3') continue
-          const emails = await getHygieneEscaladeEmails()
+          if (jalon !== 'rappel1' || !config.canaux.escalade.email) continue
+          const emails = await getHygieneEscaladeEmails(config)
           await sendHygieneMail(
             emails, [],
             `⚠️ Aucun responsable désigné — hygiène ${libelle} ${periode}`,
@@ -1282,17 +1280,26 @@ export const hygieneRappelsResponsables = onSchedule(
         }
 
         if (jalon === 'escalade') {
-          const emails = await getHygieneEscaladeEmails()
-          await sendHygieneMail(
-            emails,
-            resp.assigneeEmail ? [resp.assigneeEmail] : [],
-            `🚨 Hygiène ${libelle} non faite — ${periode}`,
-            `<p>La checklist d'hygiène <strong>${libelle}</strong> de la période
-             <strong>${periode}</strong> n'a pas été complétée.</p>
-             <p>Responsable désigné : <strong>${resp.assigneeName}</strong>
-             (désigné par ${resp.assignedByName}).</p>
-             <p>Rappels déjà envoyés : ${dejaEnvoyes.length ? dejaEnvoyes.join(', ') : 'aucun'}.</p>`,
-          )
+          if (config.canaux.escalade.email) {
+            const emails = await getHygieneEscaladeEmails(config)
+            await sendHygieneMail(
+              emails,
+              resp.assigneeEmail ? [resp.assigneeEmail] : [],
+              `🚨 Hygiène ${libelle} non faite — ${periode}`,
+              `<p>La checklist d'hygiène <strong>${libelle}</strong> de la période
+               <strong>${periode}</strong> n'a pas été complétée.</p>
+               <p>Responsable désigné : <strong>${resp.assigneeName}</strong>
+               (désigné par ${resp.assignedByName}).</p>
+               <p>Rappels déjà envoyés : ${dejaEnvoyes.length ? dejaEnvoyes.join(', ') : 'aucun'}.</p>`,
+            )
+          }
+          if (config.canaux.escalade.push) {
+            try { await notifyUids([resp.assigneeUid], titre, corps, '/corner/hygiene') }
+            catch (e) { console.error('[hygiene] push escalade échoué', e) }
+          }
+          // Le marqueur est écrit même si les deux canaux sont coupés : sans
+          // cela, une escalade muette se redéclencherait à chaque exécution
+          // horaire dès que le canal serait rallumé.
           await respRef.set({
             remindersSent: [...dejaEnvoyes, jalon],
             escalatedAt: new Date(),
@@ -1301,10 +1308,11 @@ export const hygieneRappelsResponsables = onSchedule(
           continue
         }
 
-        const titre = `🧼 Rappel — hygiène ${libelle}`
-        const corps = `La checklist ${periode} n'est pas terminée.`
-        await pushHygiene([resp.assigneeUid], titre, corps, '/corner/hygiene')
-        if (resp.assigneeEmail) {
+        if (config.canaux.rappel.push) {
+          try { await notifyUids([resp.assigneeUid], titre, corps, '/corner/hygiene') }
+          catch (e) { console.error('[hygiene] push rappel échoué', e) }
+        }
+        if (config.canaux.rappel.email && resp.assigneeEmail) {
           await sendHygieneMail(
             [resp.assigneeEmail], [], titre,
             `<p>Bonjour ${resp.assigneeName},</p>
@@ -2042,7 +2050,8 @@ export const notifHygieneHebdo = onSchedule(
     // sans ce second test, ça supprimait aussi le filet collectif et plus
     // rien ne signalait une checklist HACCP non faite.
     const respSnap = await db.doc(`hygiene_responsables/${weekId}`).get()
-    if (respSnap.exists && await hygieneRappelsActifs()) {
+    const config = await getHygieneSettings()
+    if (respSnap.exists && config.rappelsEnabled) {
       console.log('[hebdo] Responsable désigné + rappels actifs — pas de broadcast.')
       return
     }
@@ -2078,7 +2087,8 @@ export const notifHygieneMensuel = onSchedule(
     // Même règle que l'hebdo : le filet collectif ne s'efface que devant un
     // rappel ciblé qui part vraiment (responsable désigné ET rappels actifs).
     const respSnap = await db.doc(`hygiene_responsables/${monthId}`).get()
-    if (respSnap.exists && await hygieneRappelsActifs()) {
+    const config = await getHygieneSettings()
+    if (respSnap.exists && config.rappelsEnabled) {
       console.log('[mensuel] Responsable désigné + rappels actifs — pas de broadcast.')
       return
     }
