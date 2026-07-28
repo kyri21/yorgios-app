@@ -3,13 +3,18 @@ import { initializeApp } from 'firebase-admin/app'
 import { getFirestore, Timestamp, FieldValue } from 'firebase-admin/firestore'
 import { getMessaging } from 'firebase-admin/messaging'
 import { getAuth } from 'firebase-admin/auth'
-import { onDocumentCreated, onDocumentUpdated } from 'firebase-functions/v2/firestore'
+import { onDocumentCreated, onDocumentUpdated, onDocumentWritten } from 'firebase-functions/v2/firestore'
 import { onSchedule } from 'firebase-functions/v2/scheduler'
 import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https'
 import { google } from 'googleapis'
 import * as nodemailer from 'nodemailer'
 import { validateRequest as twilioValidate } from 'twilio/lib/webhooks/webhooks'
 import * as crypto from 'crypto'
+import {
+  getPeriodId, resolveJalon, isHygieneDone, itemIdsFor, parisNow,
+  mergeHygieneSettings, QUOTIDIEN_IDS,
+  type HygieneKind, type HygieneSettings, type JalonKey,
+} from './hygiene/periods'
 
 const app = initializeApp()
 // Firestore DB non-default : 'test'
@@ -1123,6 +1128,311 @@ async function notifyUids(uids: string[], title: string, body: string, link: str
   })
 }
 
+/** Lit et complète les réglages d'hygiène. Une lecture, des défauts appliqués
+ *  champ par champ : un document absent ou partiel produit exactement le
+ *  comportement figé d'avant les réglages. */
+async function getHygieneSettings(): Promise<HygieneSettings> {
+  const snap = await db.doc('settings/hygiene_responsables').get()
+  return mergeHygieneSettings(snap.data())
+}
+
+const JALONS_ORDRE: JalonKey[] = ['rappel1', 'rappel2', 'escalade']
+const JALONS_PAR_GRAVITE: JalonKey[] = ['escalade', 'rappel2', 'rappel1']
+
+function jalonActif(config: HygieneSettings, kind: HygieneKind, cle: JalonKey): boolean {
+  return kind === 'hebdo' ? config.hebdo[cle].actif : config.mensuel[cle].actif
+}
+
+/** Clé de créneau, dans la même forme que celle comparée par `resolveJalon`. */
+function creneauDe(config: HygieneSettings, kind: HygieneKind, cle: JalonKey): string {
+  return kind === 'hebdo'
+    ? `${config.hebdo[cle].jour}-${config.hebdo[cle].heure}`
+    : `${config.mensuel[cle].joursAvantFin}-${config.mensuel[cle].heure}`
+}
+
+/** Le dispositif de rappels ciblés peut-il RÉELLEMENT envoyer quelque chose
+ *  pour ce type de période ?
+ *
+ *  Le seul témoin `config.rappelsEnabled` ne suffit plus. Depuis que chaque
+ *  jalon porte son propre `actif` et chaque type d'événement ses canaux
+ *  `email` / `push`, il existe des configurations où `rappelsEnabled` vaut
+ *  `true` alors que RIEN ne peut partir :
+ *    — les trois jalons du type décochés ;
+ *    — ou les quatre cases email/push des lignes « Rappels » et « Escalade »
+ *      décochées.
+ *  Dans ces cas, `hygieneRappelsResponsables` ne trouve aucun jalon (ou
+ *  n'ouvre aucun canal) et se tait. Si le broadcast collectif se taisait lui
+ *  aussi sur la seule présence d'un responsable + `rappelsEnabled`, une
+ *  checklist HACCP non faite ne déclencherait plus AUCUNE notification, sur
+ *  aucun canal, pour personne — pendant que la case maîtresse afficherait
+ *  toujours « Rappels automatiques activés ». C'est le risque « réglage
+ *  coupant tous les rappels sans le dire » de la section 5.3 de la spec.
+ *
+ *  Le filet collectif ne s'efface donc que devant un jalon actif ASSOCIÉ à au
+ *  moins un canal ouvert. */
+function rappelsCiblesActifs(config: HygieneSettings, kind: HygieneKind): boolean {
+  if (!config.rappelsEnabled) return false
+  return JALONS_ORDRE.some(cle => {
+    if (!jalonActif(config, kind, cle)) return false
+    const canal = cle === 'escalade' ? config.canaux.escalade : config.canaux.rappel
+    return canal.email || canal.push
+  })
+}
+
+/** Jalon sur lequel s'accroche l'alerte « aucun responsable désigné ».
+ *
+ *  `rappel1` en dur ne convient plus : il est désactivable et déplaçable. S'il
+ *  est décoché — un encadrant qui ne veut qu'un seul rappel — une période sans
+ *  responsable n'alerterait plus jamais personne, et l'oubli d'attribution
+ *  redeviendrait invisible (section 5.2). On vise donc le premier jalon actif.
+ *
+ *  Second piège : si ce premier jalon actif partage son créneau avec un jalon
+ *  plus grave, `resolveJalon` rendra le plus grave et la comparaison échouerait
+ *  toujours. On renvoie donc le vainqueur de gravité au créneau visé — la
+ *  valeur que `resolveJalon` rendra réellement à cet instant-là. */
+function premierJalonActif(config: HygieneSettings, kind: HygieneKind): JalonKey | null {
+  const premier = JALONS_ORDRE.find(cle => jalonActif(config, kind, cle))
+  if (!premier) return null
+  const creneau = creneauDe(config, kind, premier)
+  return JALONS_PAR_GRAVITE.find(
+    cle => jalonActif(config, kind, cle) && creneauDe(config, kind, cle) === creneau,
+  ) ?? premier
+}
+
+/** Destinataires de l'escalade, avec repli : une escalade ne doit jamais
+ *  partir dans le vide. */
+async function getHygieneEscaladeEmails(config: HygieneSettings): Promise<string[]> {
+  if (config.escaladeDestinataires.length) return config.escaladeDestinataires
+  const alertSnap = await db.doc('settings/alert_emails').get()
+  const repli = (alertSnap.data()?.responsables ?? []) as string[]
+  if (repli.length) return repli
+  return ['a.cozzika@gmail.com', 'kyriazis@outlook.fr']
+}
+
+async function sendHygieneMail(to: string[], cc: string[], subject: string, html: string) {
+  if (!to.length) return
+  const gmailUser = process.env.GMAIL_USER
+  const gmailPass = process.env.GMAIL_APP_PASSWORD
+  if (!gmailUser || !gmailPass) {
+    console.error('[hygiene] GMAIL_USER ou GMAIL_APP_PASSWORD absent — email non envoyé')
+    return
+  }
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user: gmailUser, pass: gmailPass },
+  })
+  await transporter.sendMail({
+    from: `Yorgios <${gmailUser}>`,
+    to: to.join(','),
+    cc: cc.length ? cc.join(',') : undefined,
+    subject,
+    html,
+  })
+}
+
+const LIBELLE_KIND: Record<HygieneKind, string> = {
+  hebdo: 'hebdomadaire',
+  mensuel: 'mensuelle',
+}
+
+/** Notifie le salarié qui vient d'être désigné responsable d'une checklist. */
+export const onHygieneResponsableAssigned = onDocumentWritten(
+  // `database: 'test'` est obligatoire : ce projet n'utilise pas la base
+  // Firestore `(default)`. Sans ce paramètre le trigger écoute une base
+  // inexistante — il se déploie sans erreur et ne se déclenche jamais.
+  { document: 'hygiene_responsables/{periodId}', region: 'europe-west1', database: 'test' },
+  async (event) => {
+    const avant = event.data?.before.data()
+    const apres = event.data?.after.data()
+    if (!apres) return
+
+    // GARDE INDISPENSABLE : cette fonction écrit notifiedAt dans le document
+    // qui la déclenche. Sans cette sortie, elle se rappellerait en boucle à
+    // chaque mise à jour de remindersSent.
+    if (avant?.assigneeUid === apres.assigneeUid) return
+
+    const config = await getHygieneSettings()
+    const kind = apres.kind as HygieneKind
+    const libelle = LIBELLE_KIND[kind] ?? kind
+    const periode = String(apres.periodId ?? '').replace(/_hebdo|_mensuel/, '')
+
+    const titre = `🧼 Tu es responsable de l'hygiène ${libelle}`
+    const corps = `Période ${periode} — checklist à compléter avant la fin de la période.`
+
+    if (config.canaux.designation.push) {
+      // Isolé : une panne FCM ne doit jamais priver du seul canal garanti.
+      try { await notifyUids([apres.assigneeUid], titre, corps, '/corner/hygiene') }
+      catch (e) { console.error('[hygiene] push désignation échoué', e) }
+    }
+
+    if (config.canaux.designation.email && apres.assigneeEmail) {
+      await sendHygieneMail(
+        [apres.assigneeEmail],
+        [],
+        titre,
+        `<p>Bonjour ${apres.assigneeName},</p>
+         <p>Tu as été désigné(e) responsable de la <strong>checklist d'hygiène ${libelle}</strong>
+         pour la période <strong>${periode}</strong>, par ${apres.assignedByName}.</p>
+         <p>Elle est à compléter dans l'application, onglet Nettoyage :
+         <a href="https://cuisine-yorgios.web.app/corner/hygiene">ouvrir la checklist</a>.</p>
+         <p>Merci !</p>`,
+      )
+    }
+
+    // notifiedAt trace la prise en compte par le système, pas la réception
+    // d'un message : écrit même si les deux canaux ci-dessus sont coupés,
+    // sinon rallumer les notifications re-notifierait toutes les
+    // désignations passées.
+    await event.data!.after.ref.set({ notifiedAt: new Date() }, { merge: true })
+    console.log(`[hygiene] Désignation notifiée : ${apres.assigneeName} — ${apres.periodId}`)
+  }
+)
+
+/** Toutes les heures — rappels ciblés au responsable, puis escalade.
+ *
+ *  Chaque jalon n'a qu'un seul créneau d'une heure (correspondance exacte
+ *  jour + heure) : un incident Firestore ou SMTP de quelques dizaines de
+ *  secondes au mauvais moment supprime définitivement un rappel. Aucun
+ *  rattrapage n'est possible sans marqueur d'idempotence sur la branche
+ *  « aucun responsable désigné », qui n'en a pas — le risque de spam serait
+ *  pire que le mal. À défaut de rattraper, on rend l'échec VISIBLE : la
+ *  lecture des réglages et le calcul de l'heure sont dans le bloc protégé, et
+ *  l'exécution se termine en erreur si au moins un type de période a échoué —
+ *  après avoir traité l'autre. Sans cela, le planificateur Cloud considérait
+ *  l'exécution réussie et l'incident n'apparaissait nulle part. */
+export const hygieneRappelsResponsables = onSchedule(
+  { schedule: '0 * * * *', timeZone: 'Europe/Paris', region: 'europe-west1' },
+  async () => {
+    const echecs: HygieneKind[] = []
+
+    for (const kind of ['hebdo', 'mensuel'] as HygieneKind[]) {
+      try {
+        // Dans le try : une lecture de settings qui échoue doit se voir, pas
+        // faire sortir la fonction en silence.
+        const config = await getHygieneSettings()
+        if (!config.rappelsEnabled) {
+          console.log('[hygiene] Rappels désactivés dans les paramètres.')
+          continue
+        }
+        const now = parisNow()
+
+        const jalon = resolveJalon(kind, now, config)
+        if (!jalon) continue
+
+        const periodId = getPeriodId(kind, now)
+        const libelle = LIBELLE_KIND[kind]
+        const periode = periodId.replace(/_hebdo|_mensuel/, '')
+        const titre = `🧼 Rappel — hygiène ${libelle}`
+        const corps = `La checklist ${periode} n'est pas terminée.`
+
+        // La checklist est-elle complète ? Si oui, aucun rappel, escalade comprise.
+        const checkSnap = await db.doc(`hygiene_corner/${periodId}`).get()
+        if (isHygieneDone(checkSnap.data()?.items, itemIdsFor(kind))) {
+          console.log(`[hygiene] ${periodId} complète — pas de rappel.`)
+          continue
+        }
+
+        const respRef = db.doc(`hygiene_responsables/${periodId}`)
+        const respSnap = await respRef.get()
+
+        // Aucun responsable désigné : on alerte les encadrants, une seule fois,
+        // au premier jalon. Pas de document où inscrire le jalon, l'unicité
+        // repose sur la correspondance exacte jour + heure.
+        if (!respSnap.exists) {
+          // Premier jalon ACTIF, et non `rappel1` en dur : celui-ci est
+          // désactivable et déplaçable, et peut être supplanté par un jalon
+          // plus grave sur le même créneau (voir premierJalonActif).
+          if (jalon !== premierJalonActif(config, kind) || !config.canaux.escalade.email) continue
+          const emails = await getHygieneEscaladeEmails(config)
+          await sendHygieneMail(
+            emails, [],
+            `⚠️ Aucun responsable désigné — hygiène ${libelle} ${periode}`,
+            `<p>La checklist d'hygiène <strong>${libelle}</strong> de la période
+             <strong>${periode}</strong> n'a aucun responsable désigné et n'est pas faite.</p>
+             <p><a href="https://cuisine-yorgios.web.app/corner/hygiene">Désigner un responsable</a></p>`,
+          )
+          console.log(`[hygiene] ${periodId} sans responsable — encadrants alertés.`)
+          continue
+        }
+
+        const resp = respSnap.data()!
+        const dejaEnvoyes = (resp.remindersSent ?? []) as string[]
+        if (dejaEnvoyes.includes(jalon)) {
+          console.log(`[hygiene] ${periodId} jalon ${jalon} déjà envoyé.`)
+          continue
+        }
+
+        if (jalon === 'escalade') {
+          // Ton propre à l'escalade : ce n'est plus un rappel, c'est le
+          // constat d'une checklist restée non traitée, aligné sur le sujet
+          // de l'email ci-dessous. Réutiliser le titre du rappel ordinaire
+          // ferait passer une alerte aux encadrants pour une simple relance.
+          const titreEscalade = `🚨 Hygiène ${libelle} non faite — ${periode}`
+          const corpsEscalade = `Fin de période : la checklist ${periode} n'a pas été complétée. Les encadrants sont informés.`
+
+          if (config.canaux.escalade.email) {
+            const emails = await getHygieneEscaladeEmails(config)
+            await sendHygieneMail(
+              emails,
+              resp.assigneeEmail ? [resp.assigneeEmail] : [],
+              titreEscalade,
+              `<p>La checklist d'hygiène <strong>${libelle}</strong> de la période
+               <strong>${periode}</strong> n'a pas été complétée.</p>
+               <p>Responsable désigné : <strong>${resp.assigneeName}</strong>
+               (désigné par ${resp.assignedByName}).</p>
+               <p>Rappels déjà envoyés : ${dejaEnvoyes.length ? dejaEnvoyes.join(', ') : 'aucun'}.</p>`,
+            )
+          }
+          if (config.canaux.escalade.push) {
+            try { await notifyUids([resp.assigneeUid], titreEscalade, corpsEscalade, '/corner/hygiene') }
+            catch (e) { console.error('[hygiene] push escalade échoué', e) }
+          }
+          // Le marqueur est écrit même si les deux canaux sont coupés : sans
+          // cela, une escalade muette se redéclencherait à chaque exécution
+          // horaire dès que le canal serait rallumé.
+          await respRef.set({
+            remindersSent: [...dejaEnvoyes, jalon],
+            escalatedAt: new Date(),
+          }, { merge: true })
+          console.log(`[hygiene] ${periodId} escaladé.`)
+          continue
+        }
+
+        if (config.canaux.rappel.push) {
+          try { await notifyUids([resp.assigneeUid], titre, corps, '/corner/hygiene') }
+          catch (e) { console.error('[hygiene] push rappel échoué', e) }
+        }
+        if (config.canaux.rappel.email && resp.assigneeEmail) {
+          await sendHygieneMail(
+            [resp.assigneeEmail], [], titre,
+            `<p>Bonjour ${resp.assigneeName},</p>
+             <p>La <strong>checklist d'hygiène ${libelle}</strong> de la période
+             <strong>${periode}</strong> n'est pas encore terminée.</p>
+             <p><a href="https://cuisine-yorgios.web.app/corner/hygiene">Compléter la checklist</a></p>`,
+          )
+        }
+        await respRef.set({ remindersSent: [...dejaEnvoyes, jalon] }, { merge: true })
+        console.log(`[hygiene] ${periodId} rappel ${jalon} envoyé à ${resp.assigneeName}.`)
+      } catch (err) {
+        // Une panne sur un type de période (hebdo/mensuel) ne doit jamais
+        // empêcher le traitement de l'autre — on logue, on mémorise, et on
+        // continue la boucle. L'erreur est relancée en fin d'exécution.
+        console.error(`[hygiene] Erreur traitement rappels (${kind}) :`, err)
+        echecs.push(kind)
+      }
+    }
+
+    // Un jalon manqué ne se rattrape pas : il doit au moins apparaître comme
+    // une exécution en échec dans la console Cloud, pas comme un succès muet.
+    if (echecs.length) {
+      throw new Error(
+        `[hygiene] Rappels en échec sur : ${echecs.join(', ')}. ` +
+        `Le créneau de ce jalon est passé et ne sera pas rejoué — voir les erreurs ci-dessus.`,
+      )
+    }
+  }
+)
+
 /** 8h30 — Rappel températures frigo si non saisies (corner + patron + manager) */
 export const notifTemperatures = onSchedule(
   { schedule: '30 8 * * *', timeZone: 'Europe/Paris', region: 'europe-west1' },
@@ -1831,8 +2141,19 @@ export const notifHygieneHebdo = onSchedule(
     const isoWeek = 1 + Math.round(((date.getTime() - w1.getTime()) / 86400000 - 3 + (w1.getDay() + 6) % 7) / 7)
     const weekId = `${date.getFullYear()}-W${String(isoWeek).padStart(2, '0')}_hebdo`
     const snap = await db.doc(`hygiene_corner/${weekId}`).get()
-    if (snap.exists) {
-      console.log('[hebdo] Hygiène hebdo déjà faite, pas de notif.')
+    if (isHygieneDone(snap.data()?.items, itemIdsFor('hebdo'))) {
+      console.log('[hebdo] Hygiène hebdo complète, pas de notif.')
+      return
+    }
+    // Le broadcast ne se tait que si le rappel ciblé prend RÉELLEMENT le
+    // relais : responsable désigné ET dispositif ciblé capable d'envoyer.
+    // Le témoin `rappelsEnabled` seul ne suffit pas — trois jalons décochés,
+    // ou tous les canaux rappel/escalade fermés, le laissent à true pendant
+    // que plus rien ne part (voir rappelsCiblesActifs).
+    const respSnap = await db.doc(`hygiene_responsables/${weekId}`).get()
+    const config = await getHygieneSettings()
+    if (respSnap.exists && rappelsCiblesActifs(config, 'hebdo')) {
+      console.log('[hebdo] Responsable désigné + rappels ciblés actifs — pas de broadcast.')
       return
     }
     await notifyRoles(
@@ -1860,8 +2181,17 @@ export const notifHygieneMensuel = onSchedule(
     const p = (n: number) => String(n).padStart(2, '0')
     const monthId = `${now.getFullYear()}-${p(now.getMonth() + 1)}_mensuel`
     const snap = await db.doc(`hygiene_corner/${monthId}`).get()
-    if (snap.exists) {
-      console.log('[mensuel] Hygiène mensuelle déjà faite, pas de notif.')
+    if (isHygieneDone(snap.data()?.items, itemIdsFor('mensuel'))) {
+      console.log('[mensuel] Hygiène mensuelle complète, pas de notif.')
+      return
+    }
+    // Même règle que l'hebdo : le filet collectif ne s'efface que devant un
+    // rappel ciblé qui peut vraiment partir — responsable désigné ET au moins
+    // un jalon mensuel actif associé à un canal ouvert.
+    const respSnap = await db.doc(`hygiene_responsables/${monthId}`).get()
+    const config = await getHygieneSettings()
+    if (respSnap.exists && rappelsCiblesActifs(config, 'mensuel')) {
+      console.log('[mensuel] Responsable désigné + rappels ciblés actifs — pas de broadcast.')
       return
     }
     await notifyRoles(
@@ -1941,25 +2271,31 @@ export const weeklyHygieneRecap = onSchedule(
       }
     }
 
-    // Vérifier hygiène manquante (quotidien uniquement)
+    // Vérifier hygiène quotidienne — même définition que le Dashboard et
+    // l'historique : une checklist n'est faite que si TOUS ses items sont
+    // cochés. « Le document existe » laissait un 2/13 hors du récap, que le
+    // patron lisait alors comme « c'était fait ».
     const missingHygiene: string[] = []
     for (const day of days) {
       const snap = await db.doc(`hygiene_corner/${day}_quotidien`).get()
-      if (!snap.exists) missingHygiene.push(`  ${day}`)
+      const items = snap.data()?.items as Record<string, boolean> | undefined
+      if (!isHygieneDone(items, QUOTIDIEN_IDS)) {
+        const coches = QUOTIDIEN_IDS.filter(id => items?.[id] === true).length
+        missingHygiene.push(`  ${day} — ${coches}/${QUOTIDIEN_IDS.length} coché(s)`)
+      }
     }
 
-    // Vérifier hygiène hebdo (semaine ISO)
-    const isoYear = lastMonday.getFullYear()
-    const isoWeek = (() => {
-      const tmp = new Date(Date.UTC(lastMonday.getFullYear(), lastMonday.getMonth(), lastMonday.getDate()))
-      const dayNum = tmp.getUTCDay() || 7
-      tmp.setUTCDate(tmp.getUTCDate() + 4 - dayNum)
-      const yearStart = new Date(Date.UTC(tmp.getUTCFullYear(), 0, 1))
-      return Math.ceil((((tmp.getTime() - yearStart.getTime()) / 86400000) + 1) / 7)
-    })()
-    const weekId = `${isoYear}-W${String(isoWeek).padStart(2, '0')}`
-    const hebdoSnap = await db.doc(`hygiene_corner/${weekId}_hebdo`).get()
-    const missingHebdo = !hebdoSnap.exists ? `  ${weekId}_hebdo` : null
+    // Vérifier hygiène hebdo — identifiant produit par getPeriodId (année ISO,
+    // celle du jeudi). Le calcul local utilisait l'année civile du lundi :
+    // pour la semaine du 29/12/2025 au 04/01/2026 il lisait 2025-W01_hebdo,
+    // un document qui n'existe pas, là où le client écrit 2026-W01_hebdo.
+    const weekId = getPeriodId('hebdo', lastMonday)
+    const hebdoSnap = await db.doc(`hygiene_corner/${weekId}`).get()
+    const hebdoItems = hebdoSnap.data()?.items as Record<string, boolean> | undefined
+    const hebdoIds = itemIdsFor('hebdo')
+    const missingHebdo = isHygieneDone(hebdoItems, hebdoIds)
+      ? null
+      : `  ${weekId} — ${hebdoIds.filter(id => hebdoItems?.[id] === true).length}/${hebdoIds.length} coché(s)`
 
     // Si rien à signaler
     if (missingTemps.length === 0 && missingHygiene.length === 0 && !missingHebdo) {
@@ -1991,12 +2327,12 @@ export const weeklyHygieneRecap = onSchedule(
       lines.push(``)
     }
     if (missingHygiene.length > 0) {
-      lines.push(`🧹 HYGIÈNE QUOTIDIENNE MANQUANTE (${missingHygiene.length} jour(s)) :`)
+      lines.push(`🧹 HYGIÈNE QUOTIDIENNE NON TERMINÉE (${missingHygiene.length} jour(s)) :`)
       lines.push(...missingHygiene)
       lines.push(``)
     }
     if (missingHebdo) {
-      lines.push(`📋 HYGIÈNE HEBDO MANQUANTE :`)
+      lines.push(`📋 HYGIÈNE HEBDO NON TERMINÉE :`)
       lines.push(missingHebdo)
       lines.push(``)
     }

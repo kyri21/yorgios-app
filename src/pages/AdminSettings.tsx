@@ -4,6 +4,11 @@ import { db, functions } from '../firebase/config'
 import { httpsCallable } from 'firebase/functions'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
+import HygieneResponsablesSection from '../components/settings/HygieneResponsablesSection'
+import {
+  DEFAULT_HYGIENE_SETTINGS, mergeHygieneSettings,
+  type HygieneSettings,
+} from '../utils/hygieneSettings'
 
 /* ─── Types ─────────────────────────────────────────── */
 interface NotifConfig {
@@ -329,6 +334,7 @@ export default function AdminSettings() {
   const [priorityLevels, setPriorityLevels] = useState<PriorityLevel[]>(DEFAULT_PRIORITY_LEVELS)
   const [nightlyCfg, setNightlyCfg] = useState<NightlyRupturesConfig>({ enabled: true, pauseFrom: '', pauseTo: '', ccEmails: [] })
   const [alertEmails, setAlertEmails] = useState<AlertEmailsSettings>(DEFAULT_ALERT_EMAILS)
+  const [hygieneResp, setHygieneResp] = useState<HygieneSettings>(DEFAULT_HYGIENE_SETTINGS)
   const [historyLimits, setHistoryLimits] = useState<HistoryLimitsSettings>(DEFAULT_HISTORY_LIMITS)
   const [commandesEmails, setCommandesEmails] = useState<CommandesEmailsSettings>(DEFAULT_COMMANDES_EMAILS)
   const [managers, setManagers] = useState<ManagerUser[]>([])
@@ -342,6 +348,7 @@ export default function AdminSettings() {
   const [ipadNameStatus, setIpadNameStatus] = useState<Record<string, 'idle' | 'saving' | 'ok'>>({})
   const [ipadPwdStatus, setIpadPwdStatus] = useState<Record<string, 'idle' | 'saving' | 'ok' | 'err'>>({})
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   useEffect(() => {
     getDocs(query(collection(db, 'users'), where('role', 'in', ['patron', 'administrateur', 'manager'])))
@@ -405,7 +412,7 @@ export default function AdminSettings() {
   useEffect(() => {
     async function load() {
       try {
-        const [nSnap, eSnap, xSnap, rSnap, tSnap, rupSnap, plSnap, catSnap, nrSnap, aeSnap, hlSnap, ceSnap] = await Promise.all([
+        const [nSnap, eSnap, xSnap, rSnap, tSnap, rupSnap, plSnap, catSnap, nrSnap, aeSnap, hlSnap, ceSnap, hygieneRespSnap] = await Promise.all([
           getDoc(doc(db, 'settings', 'notifications')),
           getDoc(doc(db, 'settings', 'emails')),
           getDoc(doc(db, 'settings', 'exports')),
@@ -418,6 +425,7 @@ export default function AdminSettings() {
           getDoc(doc(db, 'settings', 'alert_emails')),
           getDoc(doc(db, 'settings', 'history_limits')),
           getDoc(doc(db, 'settings', 'commandes_emails')),
+          getDoc(doc(db, 'settings', 'hygiene_responsables')),
         ])
         if (nSnap.exists()) setNotifs({ ...DEFAULT_NOTIFS, ...nSnap.data() } as NotificationsSettings)
         if (eSnap.exists()) {
@@ -435,6 +443,9 @@ export default function AdminSettings() {
         if (aeSnap.exists()) setAlertEmails({ ...DEFAULT_ALERT_EMAILS, ...aeSnap.data() } as AlertEmailsSettings)
         if (hlSnap.exists()) setHistoryLimits({ ...DEFAULT_HISTORY_LIMITS, ...hlSnap.data() } as HistoryLimitsSettings)
         if (ceSnap.exists()) setCommandesEmails({ ...DEFAULT_COMMANDES_EMAILS, ...ceSnap.data() } as CommandesEmailsSettings)
+        if (hygieneRespSnap.exists()) {
+          setHygieneResp(mergeHygieneSettings(hygieneRespSnap.data()))
+        }
         if (plSnap.exists()) {
           const lvls = (plSnap.data() as any).levels
           if (Array.isArray(lvls) && lvls.length > 0) setPriorityLevels(lvls)
@@ -453,6 +464,7 @@ export default function AdminSettings() {
 
   async function save() {
     setSaving(true)
+    setSaveError(null)
     try {
       await Promise.all([
         setDoc(doc(db, 'settings', 'notifications'), notifs),
@@ -466,9 +478,12 @@ export default function AdminSettings() {
         setDoc(doc(db, 'settings', 'alert_emails'), alertEmails),
         setDoc(doc(db, 'settings', 'history_limits'), historyLimits),
         setDoc(doc(db, 'settings', 'commandes_emails'), commandesEmails),
+        setDoc(doc(db, 'settings', 'hygiene_responsables'), hygieneResp),
       ])
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
     }
@@ -603,6 +618,12 @@ export default function AdminSettings() {
           </div>
         </div>
       </div>
+
+      <HygieneResponsablesSection
+        value={hygieneResp}
+        onChange={setHygieneResp}
+        managers={managers}
+      />
 
       {/* ── Section : Alertes email — responsables ── */}
       <div>
@@ -1214,6 +1235,11 @@ export default function AdminSettings() {
         style={{ fontSize: 15, padding: '14px 0' }}>
         {saved ? '✓ Sauvegardé' : saving ? 'Sauvegarde…' : 'Sauvegarder les paramètres'}
       </button>
+      {saveError && (
+        <p style={{ fontSize: 12, color: 'var(--danger)', marginTop: 8, marginBottom: 0 }}>
+          ✗ Échec de la sauvegarde : {saveError}
+        </p>
+      )}
 
     </div>
   )

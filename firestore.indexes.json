@@ -55,6 +55,14 @@
         { "fieldPath": "archived",     "order": "ASCENDING" },
         { "fieldPath": "fabricatedAt", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "hygiene_responsables",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "kind",        "order": "ASCENDING" },
+        { "fieldPath": "periodStart", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

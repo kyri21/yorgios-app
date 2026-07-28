@@ -27,6 +27,7 @@ const PERM_GROUPS: { label: string; emoji: string; items: { key: PermKey; label:
       { key: 'action_delete_lot',               label: 'Supprimer un lot cuisine' },
       { key: 'action_delete_livraison',         label: 'Supprimer une livraison' },
       { key: 'action_delete_ac',                label: 'Modifier / supprimer une action corrective' },
+      { key: 'action_designer_responsable_hygiene', label: 'Désigner un responsable d\'hygiène', note: 'checklists hebdo et mensuelle' },
     ],
   },
   {

@@ -1,7 +1,28 @@
 import { useEffect, useState } from 'react'
-import { Timestamp, doc, getDoc, getDocs, collection, query, where, setDoc } from 'firebase/firestore'
+import { Timestamp, doc, getDoc, setDoc } from 'firebase/firestore'
 import { db, auth } from '../../../firebase/config'
 import { useToast } from '../../../hooks/useToast'
+import { useAuth } from '../../../auth/useAuth'
+import { usePermissions } from '../../../contexts/PermissionsContext'
+import ResponsableSelector from '../components/ResponsableSelector'
+import {
+  QUOTIDIEN_IDS, HEBDO_IDS, MENSUEL_IDS,
+  getISOWeek, getPeriodId,
+} from '../utils/hygiene'
+import { loadResponsableHistory, type HygieneResponsable } from '../firebase/hygieneResponsables'
+import { JALON_LABELS, type JalonKey } from '../../../utils/hygieneSettings'
+
+/** Plancher de rôle du droit de désigner, DÉLIBÉRÉMENT dupliqué depuis la
+ *  règle Firestore (`isPatronOrManager()` sur `hygiene_responsables`).
+ *
+ *  Ce n'est pas un doublon à supprimer : la permission configurable ne peut
+ *  que RETIRER le droit au manager, jamais l'accorder à corner ou cuisine.
+ *  Sans ce plancher côté interface, cocher `action_designer_responsable_hygiene`
+ *  pour le rôle corner afficherait le sélecteur à un salarié corner, dont
+ *  l'écriture serait ensuite refusée par le serveur : il verrait un bouton,
+ *  cliquerait, et recevrait un refus incompréhensible. Les deux couches
+ *  doivent toujours rendre le même verdict. */
+const ROLES_DESIGNATION_HYGIENE = ['patron', 'administrateur', 'manager']
 
 type CheckType = 'quotidien' | 'hebdo' | 'mensuel' | 'historique' | 'historique'
 type CheckItem = { id: string; label: string }
@@ -65,10 +86,6 @@ function getWeekLabel(offset: number): string {
   return `${parseInt(startD)} ${new Date(dates[0] + 'T12:00:00').toLocaleDateString('fr-FR', { month: 'short' })} – ${parseInt(endD)} ${new Date(dates[6] + 'T12:00:00').toLocaleDateString('fr-FR', { month: 'short', year: 'numeric' })}`
 }
 
-const QUOTIDIEN_IDS = ['plats_service','int_vitrines','ustensiles','meuble_vente','comptoir_balance','micro_ondes','evier_papier','etiquettes','plan_travail','ext_placards','ext_frigo','poubelle','vitres']
-const HEBDO_IDS = ['int_frigos','etageres_materiels','support_papier','placard_hygiene','machine_glacon']
-const MENSUEL_IDS = ['placard_rangement']
-
 const DAY_SHORT = ['L', 'M', 'M', 'J', 'V', 'S', 'D']
 
 function todayISO() {
@@ -76,19 +93,12 @@ function todayISO() {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
 
-function getISOWeek(d: Date) {
-  const date = new Date(d); date.setHours(0, 0, 0, 0)
-  date.setDate(date.getDate() + 3 - (date.getDay() + 6) % 7)
-  const w1 = new Date(date.getFullYear(), 0, 4)
-  return 1 + Math.round(((date.getTime() - w1.getTime()) / 86400000 - 3 + (w1.getDay() + 6) % 7) / 7)
-}
-
 function getDocId(type: CheckType, dateStr: string): string {
-  const d = new Date(dateStr + 'T12:00:00')
-  const p = (n: number) => String(n).padStart(2, '0')
   if (type === 'quotidien') return `${dateStr}_quotidien`
-  if (type === 'hebdo') return `${d.getFullYear()}-W${p(getISOWeek(d))}_hebdo`
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}_mensuel`
+  // hebdo / mensuel : délégué à getPeriodId (module partagé) pour garantir
+  // que l'identifiant construit ici correspond toujours à celui stocké en
+  // base par hygieneResponsables.ts — une seule source de vérité.
+  return getPeriodId(type as 'hebdo' | 'mensuel', new Date(dateStr + 'T12:00:00'))
 }
 
 function getDateLabel(type: CheckType, dateStr: string): string {
@@ -106,6 +116,15 @@ function getDateLabel(type: CheckType, dateStr: string): string {
 
 export default function Hygiene() {
   const { show } = useToast()
+  const { user } = useAuth()
+  const { can } = usePermissions()
+  // can() renvoie toujours true pour patron et administrateur ; seul le
+  // manager est réglable. Le plancher de rôle ci-dessous reproduit celui de la
+  // règle Firestore : la permission peut retirer le droit, jamais l'étendre.
+  const canEditResponsable =
+    ROLES_DESIGNATION_HYGIENE.includes(user?.role ?? '') &&
+    can(user?.role, 'action_designer_responsable_hygiene')
+  const currentUserName = user?.displayName || user?.email || '—'
   const today = todayISO()
   const [tab, setTab]                   = useState<CheckType>('quotidien')
   const [selectedDate, setSelectedDate] = useState(today)
@@ -120,6 +139,11 @@ export default function Hygiene() {
   const [histDays, setHistDays]         = useState<Record<string, { total: number; done: number } | null>>({})
   const [histHebdo, setHistHebdo]       = useState<{ total: number; done: number } | null>(null)
   const [histMensuel, setHistMensuel]   = useState<{ total: number; done: number } | null>(null)
+  const [respHist, setRespHist]         = useState<HygieneResponsable[]>([])
+  const [respHistOpen, setRespHistOpen] = useState(false)
+  const [respHistDone, setRespHistDone] = useState<Record<string, { done: number; total: number }>>({})
+  const [respHistLoaded, setRespHistLoaded] = useState(false)
+  const [respHistErreur, setRespHistErreur] = useState('')
 
   async function loadTab(type: CheckType, dateStr: string) {
     setLoadingTab(true); setSaved(null); setChecked({})
@@ -182,7 +206,65 @@ export default function Hygiene() {
     }
   }
 
+  // Historique des responsables : indépendant de la semaine affichée (les
+  // désignations couvrent 12 périodes glissantes, pas la semaine du
+  // sélecteur ← →). Chargé une seule fois à l'ouverture de l'onglet
+  // Historique — jamais relancé sur simple navigation de semaine, pour ne
+  // pas clignoter une section déjà dépliée ni refaire ~24 lectures inutiles.
+  async function loadResponsableHistorique() {
+    setRespHistErreur('')
+    try {
+      const [histH, histM] = await Promise.all([
+        loadResponsableHistory('hebdo', 12),
+        loadResponsableHistory('mensuel', 12),
+      ])
+      const toutes = [...histH, ...histM].sort(
+        (a, b) => b.periodStart.toMillis() - a.periodStart.toMillis()
+      )
+      setRespHist(toutes)
+
+      // Statut de chaque période : lecture des documents hygiene_corner
+      // correspondants. Chaque lecture est isolée via allSettled — l'échec
+      // d'UNE période ne doit jamais faire disparaître le statut des
+      // ~23 autres (Promise.all aurait rejeté en bloc et laissé
+      // respHistDone vide, affichant à tort ❌ partout). Une période dont
+      // la lecture échoue reste simplement absente de `statuts` : le
+      // rendu la traite comme "statut indisponible", pas comme "non fait".
+      const statuts: Record<string, { done: number; total: number }> = {}
+      const results = await Promise.allSettled(toutes.map(async r => {
+        const ids = r.kind === 'hebdo' ? HEBDO_IDS : MENSUEL_IDS
+        const snap = await getDoc(doc(db, 'hygiene_corner', r.periodId))
+        const items = snap.exists() ? (snap.data() as SavedCheck).items : undefined
+        return {
+          periodId: r.periodId,
+          done: ids.filter(id => items?.[id]).length,
+          total: ids.length,
+        }
+      }))
+      for (const res of results) {
+        if (res.status === 'fulfilled') {
+          statuts[res.value.periodId] = { done: res.value.done, total: res.value.total }
+        }
+        // rejected → aucune entrée pour cette période, rendu neutre côté UI
+      }
+      setRespHistDone(statuts)
+      setRespHistLoaded(true)
+    } catch (e: any) {
+      // Même principe que « – statut indisponible » plus bas : une donnée
+      // illisible ne doit pas se faire passer pour une donnée absente.
+      // « Aucune désignation enregistrée » sur un index composite pas encore
+      // construit répondait au patron qu'aucun responsable n'a jamais existé.
+      console.error('loadResponsableHistorique: historique des responsables illisible', e)
+      setRespHist([]); setRespHistDone({})
+      setRespHistErreur(e?.message || 'lecture impossible')
+      // respHistLoaded reste false : revenir sur l'onglet Historique réessaie
+      // (l'index composite finit par être construit). Pas de boucle : l'effet
+      // ne dépend que de `tab` et `respHistLoaded`, tous deux inchangés ici.
+    }
+  }
+
   useEffect(() => { if (tab === 'historique') loadHistorique(weekOffset) }, [tab, weekOffset])
+  useEffect(() => { if (tab === 'historique' && !respHistLoaded) loadResponsableHistorique() }, [tab, respHistLoaded])
 
   function toggle(id: string) { setChecked(p => ({ ...p, [id]: !p[id] })) }
 
@@ -330,6 +412,16 @@ export default function Hygiene() {
                     <div style={{ fontSize: 12, color: 'var(--on-surface-2)', marginTop: 4 }}>{histHebdo.done}/{histHebdo.total}</div>
                   </>
                 ) : <div style={{ fontSize: 22 }}>❌</div>}
+                {(() => {
+                  // Le responsable est désigné indépendamment de l'existence
+                  // d'une checklist — l'afficher même quand rien n'est
+                  // encore coché (l'état le plus fréquent en début de
+                  // période) : ne dépend donc PAS de histHebdo.
+                  const r = respHist.find(x => x.kind === 'hebdo' && x.periodId === getDocId('hebdo', histWeekDates[0]))
+                  return r ? (
+                    <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 4 }}>{r.assigneeName}</div>
+                  ) : null
+                })()}
               </div>
               <div className="card" style={{ padding: '14px 16px', textAlign: 'center' }}>
                 <p className="section-label" style={{ marginBottom: 8 }}>Mensuel</p>
@@ -339,7 +431,101 @@ export default function Hygiene() {
                     <div style={{ fontSize: 12, color: 'var(--on-surface-2)', marginTop: 4 }}>{histMensuel.done}/{histMensuel.total}</div>
                   </>
                 ) : <div style={{ fontSize: 22 }}>❌</div>}
+                {(() => {
+                  // Idem : indépendant de l'existence d'un document mensuel.
+                  const r = respHist.find(x => x.kind === 'mensuel' && x.periodId === getDocId('mensuel', histWeekDates[0]))
+                  return r ? (
+                    <div style={{ fontSize: 11, color: 'var(--on-surface-3)', marginTop: 4 }}>{r.assigneeName}</div>
+                  ) : null
+                })()}
               </div>
+            </div>
+
+            {/* Historique des responsables */}
+            <div className="card" style={{ padding: '12px 14px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <p className="section-label" style={{ margin: 0 }}>Historique des responsables</p>
+                <button
+                  onClick={() => setRespHistOpen(o => !o)}
+                  style={{
+                    minHeight: 44, padding: '0 12px', border: 'none', background: 'transparent',
+                    color: 'var(--primary)', fontSize: 12, fontWeight: 700, cursor: 'pointer',
+                    fontFamily: 'Manrope, sans-serif',
+                  }}
+                >
+                  {respHistOpen ? '▲ Rétracter' : respHistErreur ? '▼ Afficher' : `▼ Afficher (${respHist.length})`}
+                </button>
+              </div>
+
+              {respHistOpen && (
+                respHistErreur ? (
+                  // Échec de lecture : ni « aucune désignation » (faux), ni
+                  // silence. L'historique sert de preuve — il doit dire quand
+                  // il ne peut pas répondre.
+                  <p style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 600, margin: '8px 0 0' }}>
+                    ⚠️ Historique des responsables indisponible — {respHistErreur}
+                  </p>
+                ) : respHist.length === 0 ? (
+                  <p style={{ fontSize: 12, color: 'var(--on-surface-3)', margin: '8px 0 0' }}>
+                    Aucune désignation enregistrée.
+                  </p>
+                ) : (
+                  <div style={{ overflowX: 'auto', marginTop: 10 }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ color: 'var(--on-surface-3)', textAlign: 'left' }}>
+                          <th style={{ padding: '6px 8px', fontWeight: 700 }}>Période</th>
+                          <th style={{ padding: '6px 8px', fontWeight: 700 }}>Responsable</th>
+                          <th style={{ padding: '6px 8px', fontWeight: 700 }}>Statut</th>
+                          <th style={{ padding: '6px 8px', fontWeight: 700 }}>Suivi</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {respHist.map(r => {
+                          const s = respHistDone[r.periodId]
+                          const complet = !!s && s.done === s.total
+                          const rappels = r.remindersSent ?? []
+                          return (
+                            <tr key={r.periodId} style={{ borderTop: '1px solid var(--border-soft)' }}>
+                              <td style={{ padding: '8px', color: 'var(--on-surface-2)', whiteSpace: 'nowrap' }}>
+                                {r.periodId.replace('_hebdo', '').replace('_mensuel', '')}
+                                <span style={{ color: 'var(--on-surface-3)', marginLeft: 4 }}>
+                                  {r.kind === 'hebdo' ? 'hebdo' : 'mensuel'}
+                                </span>
+                              </td>
+                              <td style={{ padding: '8px', color: 'var(--on-surface)', fontWeight: 600 }}>
+                                {r.assigneeName}
+                                {(r.previousAssignees?.length ?? 0) > 0 && (
+                                  <span style={{ fontSize: 10, color: 'var(--on-surface-3)', marginLeft: 5 }}>
+                                    (réaffecté)
+                                  </span>
+                                )}
+                              </td>
+                              <td style={{ padding: '8px', whiteSpace: 'nowrap', color: s ? undefined : 'var(--on-surface-3)' }}>
+                                {/* s absent = lecture du statut échouée pour CETTE période
+                                    uniquement (isolée via allSettled dans loadResponsableHistorique) —
+                                    rendu neutre qui n'affirme ni "fait" ni "pas fait". */}
+                                {s ? `${complet ? '✅' : '❌'} ${s.done}/${s.total}` : '– statut indisponible'}
+                              </td>
+                              <td style={{ padding: '8px', color: 'var(--on-surface-3)' }}>
+                                {/* Libellés lisibles plutôt que les clés stockées
+                                    (« rappel1 ») : ce tableau sert de preuve qu'un
+                                    salarié a bien été prévenu, il doit se lire sans
+                                    connaître le code. Repli sur la clé brute si une
+                                    valeur inconnue apparaît. */}
+                                {rappels.length === 0
+                                  ? '—'
+                                  : rappels.map(r => JALON_LABELS[r as JalonKey] ?? r).join(', ')}
+                                {r.escalatedAt ? ' · escaladé' : ''}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )
+              )}
             </div>
           </>
         )
@@ -352,6 +538,19 @@ export default function Hygiene() {
         </div>
       ) : tab !== 'historique' ? (
         <>
+          {(tab === 'hebdo' || tab === 'mensuel') && (
+            <ResponsableSelector
+              kind={tab}
+              date={new Date(selectedDate + 'T12:00:00')}
+              canEdit={canEditResponsable}
+              currentUserName={currentUserName}
+              // Une réaffectation périme l'historique déjà chargé : sans ce
+              // reset, l'onglet Historique continuait d'afficher l'ancien nom
+              // jusqu'au rechargement complet de la page.
+              onAssigned={() => setRespHistLoaded(false)}
+            />
+          )}
+
           {/* ── Barre de progression ─────────────────────────────── */}
           <div className="card" style={{ padding: '14px 16px' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>

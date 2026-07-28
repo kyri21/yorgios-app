@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { collection, getDocFromServer, getDocsFromServer, doc, orderBy, query, where, limit } from 'firebase/firestore'
-import { db } from '../../../firebase/config'
+import { db, auth } from '../../../firebase/config'
 import { SkeletonList } from '../../../components/Skeleton'
+import { QUOTIDIEN_IDS, HEBDO_IDS, MENSUEL_IDS, isHygieneDone, getPeriodId } from '../utils/hygiene'
+import { loadResponsable, type HygieneResponsable } from '../firebase/hygieneResponsables'
 
 // Codes météo WMO → emoji
 function wmoToEmoji(code: number): { emoji: string } {
@@ -57,20 +59,6 @@ function endOfWeekISO() {
   d.setDate(d.getDate() + (6 - dow))
   const p = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
-}
-function getISOWeek(d: Date) {
-  const date = new Date(d); date.setHours(0, 0, 0, 0)
-  date.setDate(date.getDate() + 3 - (date.getDay() + 6) % 7)
-  const w1 = new Date(date.getFullYear(), 0, 4)
-  return 1 + Math.round(((date.getTime() - w1.getTime()) / 86400000 - 3 + (w1.getDay() + 6) % 7) / 7)
-}
-function hygieneHebdoId(): string {
-  const d = new Date(); const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-W${p(getISOWeek(d))}_hebdo`
-}
-function hygieneMensuelId(): string {
-  const d = new Date(); const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}_mensuel`
 }
 function todayStart() { const d = new Date(); d.setHours(0,0,0,0); return d }
 function tomorrowStart() { const d = todayStart(); d.setDate(d.getDate() + 1); return d }
@@ -132,7 +120,37 @@ function saveChecks(checks: Record<TaskKey, boolean>) {
   localStorage.setItem('dashboard_checks', JSON.stringify({ date: todayISO(), checks }))
 }
 
-type TaskItem = { label: string; status: string; nav: string; checkKey: TaskKey | null }
+type TaskItem = {
+  label: string
+  status: string
+  nav: string
+  checkKey: TaskKey | null
+  /** Seconde ligne, hors zone tronquée : nom du responsable ou « non attribuée ». */
+  sub?: string
+  /** L'utilisateur connecté est le responsable — accent visuel. */
+  estMoi?: boolean
+}
+
+/** Trois états, pas deux : « aucun responsable » est une affirmation
+ *  (quelqu'un a oublié de désigner), « inconnu » veut seulement dire que la
+ *  lecture a échoué. Les confondre faisait afficher « non attribuée » en
+ *  rouge sur un simple hors-ligne ou une règle Firestore non déployée. */
+type EtatResponsable =
+  | { statut: 'connu'; resp: HygieneResponsable }
+  | { statut: 'aucun' }
+  | { statut: 'inconnu' }
+
+/** Lecture d'une désignation, l'échec restant distinct de l'absence.
+ *  L'erreur n'est jamais avalée : elle part dans la console. */
+async function etatResponsable(kind: 'hebdo' | 'mensuel', ref: Date): Promise<EtatResponsable> {
+  try {
+    const resp = await loadResponsable(kind, ref)
+    return resp ? { statut: 'connu', resp } : { statut: 'aucun' }
+  } catch (e) {
+    console.error(`[Dashboard corner] responsable ${kind} illisible`, e)
+    return { statut: 'inconnu' }
+  }
+}
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -140,6 +158,9 @@ export default function Dashboard() {
   const [hygieneOk, setHygieneOk] = useState<boolean | null>(null)
   const [hygieneHebdoOk, setHygieneHebdoOk] = useState<boolean | null>(null)
   const [hygieneMensuelOk, setHygieneMensuelOk] = useState<boolean | null>(null)
+  // Avant la première lecture, rien n'est su : surtout pas « non attribuée ».
+  const [respHebdo, setRespHebdo]     = useState<EtatResponsable>({ statut: 'inconnu' })
+  const [respMensuel, setRespMensuel] = useState<EtatResponsable>({ statut: 'inconnu' })
   const [pendingLivraisons, setPendingLivraisons] = useState<Livraison[]>([])
   const [overdueLivraisons, setOverdueLivraisons] = useState<Livraison[]>([])
   const [dlcItems, setDlcItems] = useState<DlcItem[]>([])
@@ -171,10 +192,11 @@ export default function Dashboard() {
         getDocFromServer(doc(db, 'temperatures', `${today}_${id}_soir`))
       ))
 
-      const [hygieneSnap, hygieneHebdoSnap, hygieneMensuelSnap, livrSnap, stockSnap, cmdSnap] = await Promise.all([
+      const maintenant = new Date()
+      const [hygieneSnap, hygieneHebdoSnap, hygieneMensuelSnap, livrSnap, stockSnap, cmdSnap, rHebdo, rMensuel] = await Promise.all([
         getDocFromServer(doc(db, 'hygiene_corner', `${today}_quotidien`)),
-        getDocFromServer(doc(db, 'hygiene_corner', hygieneHebdoId())),
-        getDocFromServer(doc(db, 'hygiene_corner', hygieneMensuelId())),
+        getDocFromServer(doc(db, 'hygiene_corner', getPeriodId('hebdo', new Date()))),
+        getDocFromServer(doc(db, 'hygiene_corner', getPeriodId('mensuel', new Date()))),
         getDocsFromServer(query(collection(db, 'livraisons'), orderBy('departAt', 'desc'), limit(200))),
         getDocsFromServer(query(collection(db, 'corner_stock'), where('active', '==', true), limit(200))),
         // Pas de filtre 'statut' ici (évite l'index composite manquant) — filtrage côté client
@@ -182,6 +204,12 @@ export default function Dashboard() {
           where('dateLivraison', '>=', today),
           where('dateLivraison', '<=', endWeek),
           orderBy('dateLivraison', 'asc'))),
+        // Isolées : un échec de lecture des responsables (ex. permission-denied
+        // tant que les règles hygiene_responsables ne sont pas déployées) ne
+        // doit jamais faire échouer tout le Promise.all. Il ne doit pas non
+        // plus être confondu avec « aucun responsable désigné » → 'inconnu'.
+        etatResponsable('hebdo', maintenant),
+        etatResponsable('mensuel', maintenant),
       ])
 
       const tempsData = matinSnaps.map((snap, i) => {
@@ -196,9 +224,13 @@ export default function Dashboard() {
       setTemps(tempsData)
       setMatinSaisis(tempsMatinData.some(Boolean))
       setSoirSaisis(tempsSoirData.some(Boolean))
-      setHygieneOk(hygieneSnap.exists())
-      setHygieneHebdoOk(hygieneHebdoSnap.exists())
-      setHygieneMensuelOk(hygieneMensuelSnap.exists())
+      // Complétude et non existence : une checklist sauvegardée à 2/5
+      // ne doit plus compter comme faite.
+      setHygieneOk(isHygieneDone(hygieneSnap.data()?.items, QUOTIDIEN_IDS))
+      setHygieneHebdoOk(isHygieneDone(hygieneHebdoSnap.data()?.items, HEBDO_IDS))
+      setHygieneMensuelOk(isHygieneDone(hygieneMensuelSnap.data()?.items, MENSUEL_IDS))
+      setRespHebdo(rHebdo)
+      setRespMensuel(rMensuel)
 
       const allLivr = livrSnap.docs.map(d => ({ id: d.id, ...(d.data() as any) }))
       const pending = allLivr.filter((l: any) =>
@@ -277,6 +309,43 @@ export default function Dashboard() {
   const dlcExpire = dlcItems.filter(i => i.dlcStatus === 'expire').length
   const dlcStatusVal = dlcItems.length === 0 ? 'ok' : dlcExpire > 0 ? 'ko' : 'warn'
 
+  const uid = auth.currentUser?.uid
+
+  /** Une ligne d'hygiène périodique n'apparaît que si elle est attribuée
+   *  ou en retard : attribuée et faite, elle reste visible pour montrer
+   *  qui s'en est chargé ; ni attribuée ni faite, elle signale l'oubli
+   *  de désignation. Statut de désignation illisible → la ligne reste
+   *  affichée si la checklist est en retard, mais sans seconde ligne :
+   *  on n'accuse pas d'un oubli de désignation qu'on n'a pas pu vérifier,
+   *  et on ne fait pas disparaître une alerte réelle sur un simple échec
+   *  de lecture.
+   *
+   *  Le responsable part sur une seconde ligne (`sub`), hors de la zone
+   *  tronquée par l'ellipse : sur un iPhone 375 px, un libellé d'un seul
+   *  tenant coupait justement le nom et le « toi ». */
+  function ligneHygiene(
+    libelle: string,
+    fait: boolean | null,
+    etat: EtatResponsable,
+  ): TaskItem[] {
+    if (etat.statut === 'inconnu') {
+      return fait === false
+        ? [{ label: libelle, status: 'ko', nav: 'hygiene', checkKey: null }]
+        : []
+    }
+    const resp = etat.statut === 'connu' ? etat.resp : null
+    if (fait !== false && !resp) return []
+    const estMoi = !!resp && resp.assigneeUid === uid
+    return [{
+      label: libelle,
+      sub: resp ? resp.assigneeName : 'non attribuée',
+      estMoi,
+      status: fait ? 'ok' : 'ko',
+      nav: 'hygiene',
+      checkKey: null,
+    }]
+  }
+
   const taskItems: TaskItem[] = [
     { label: 'Hygiène quotidienne',   status: hygieneOk === null ? 'gray' : hygieneOk ? 'ok' : 'ko',   nav: 'hygiene',      checkKey: null },
     { label: 'Températures matin',    status: matinSaisis ? 'ok' : 'ko',                                nav: 'temperatures', checkKey: null },
@@ -285,9 +354,8 @@ export default function Dashboard() {
       label: dlcExpire > 0 ? `DLC vitrine (${dlcExpire} expirée(s))` : dlcItems.length > 0 ? `DLC vitrine (${dlcItems.length} à surveiller)` : 'DLC vitrine',
       status: dlcStatusVal, nav: 'vitrine', checkKey: null,
     },
-    // Hygiène hebdo/mensuel : seulement quand dues et non faites (sinon bruit)
-    ...(hygieneHebdoOk === false   ? [{ label: 'Hygiène hebdomadaire', status: 'ko', nav: 'hygiene', checkKey: null } as TaskItem] : []),
-    ...(hygieneMensuelOk === false ? [{ label: 'Hygiène mensuelle',    status: 'ko', nav: 'hygiene', checkKey: null } as TaskItem] : []),
+    ...ligneHygiene('Hygiène hebdomadaire', hygieneHebdoOk, respHebdo),
+    ...ligneHygiene('Hygiène mensuelle',    hygieneMensuelOk, respMensuel),
     { label: '🥡 Faire les TooGoodToGo',              status: checks.tgtg    ? 'ok' : (totalMin >= 9*60  ? 'todo' : 'gray'), nav: '', checkKey: 'tgtg' },
     { label: '📦 Vider les cartons chambre froide',  status: checks.cartons ? 'ok' : (totalMin >= 9*60+30 ? 'todo' : 'gray'), nav: '', checkKey: 'cartons' },
     { label: '🍽️ Faire les plats du jour',            status: checks.plats   ? 'ok' : (totalMin >= 11*60  ? 'todo' : 'gray'), nav: '', checkKey: 'plats' },
@@ -412,13 +480,34 @@ export default function Dashboard() {
                 }} />
               )}
 
-              <span style={{
-                flex: 1, fontSize: 13, fontWeight: 500,
-                color: item.status === 'ok' && item.checkKey ? 'var(--on-surface-3)' : 'var(--on-surface)',
-                textDecoration: item.status === 'ok' && item.checkKey ? 'line-through' : 'none',
-              }}>
-                {item.label}
-              </span>
+              {/* minWidth:0 — sans lui, un enfant flex refuse de rétrécir et
+                  l'ellipse ne se déclenche jamais. Les lignes sans `sub`
+                  rendent exactement comme avant : un seul enfant. */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <span style={{
+                  display: 'block', fontSize: 13, fontWeight: 500,
+                  color: item.status === 'ok' && item.checkKey ? 'var(--on-surface-3)' : 'var(--on-surface)',
+                  textDecoration: item.status === 'ok' && item.checkKey ? 'line-through' : 'none',
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                  {item.label}
+                </span>
+                {item.sub && (
+                  <span style={{
+                    display: 'block', fontSize: 11, marginTop: 2, lineHeight: 1.3,
+                    fontWeight: item.estMoi ? 700 : 500,
+                    color: item.estMoi ? 'var(--primary)' : 'var(--on-surface-2)',
+                  }}>
+                    {item.sub}
+                    {item.estMoi && (
+                      <span style={{
+                        marginLeft: 6, fontSize: 10, fontWeight: 700, color: 'var(--primary)',
+                        background: 'rgba(0,66,117,0.10)', padding: '1px 6px', borderRadius: 99,
+                      }}>toi</span>
+                    )}
+                  </span>
+                )}
+              </div>
 
               {!item.checkKey && (
                 <>
