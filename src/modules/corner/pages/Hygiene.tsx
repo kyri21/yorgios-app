@@ -116,7 +116,7 @@ function getDateLabel(type: CheckType, dateStr: string): string {
 
 export default function Hygiene() {
   const { show } = useToast()
-  const { user } = useAuth()
+  const { user, loading: authLoading } = useAuth()
   const { can } = usePermissions()
   // can() renvoie toujours true pour patron et administrateur ; seul le
   // manager est réglable. Le plancher de rôle ci-dessous reproduit celui de la
@@ -538,7 +538,10 @@ export default function Hygiene() {
         </div>
       ) : tab !== 'historique' ? (
         <>
-          {(tab === 'hebdo' || tab === 'mensuel') && (
+          {/* `!authLoading` : tant que le profil n'est pas résolu, `user` est
+              null et le bloc s'afficherait en lecture seule à un encadrant,
+              avant de gagner ses contrôles une fraction de seconde plus tard. */}
+          {(tab === 'hebdo' || tab === 'mensuel') && !authLoading && (
             <ResponsableSelector
               kind={tab}
               date={new Date(selectedDate + 'T12:00:00')}

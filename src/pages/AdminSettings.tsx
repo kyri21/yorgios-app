@@ -277,7 +277,7 @@ function NightlyRupturesPanel({ cfg, onChange, managers }: { cfg: NightlyRupture
             {eligibleManagers.map(u => {
               const checked = (cfg.ccEmails ?? []).includes(u.email)
               return (
-                <label key={u.email} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <label key={u.email} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', minHeight: 44 }}>
                   <input
                     type="checkbox"
                     checked={checked}
@@ -559,7 +559,7 @@ export default function AdminSettings() {
               {managers.map(u => {
                 const checked = (alertEmails.rhResponsables ?? []).includes(u.email)
                 return (
-                  <label key={u.email} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <label key={u.email} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', minHeight: 44 }}>
                     <input
                       type="checkbox" checked={checked}
                       onChange={e => {
@@ -599,7 +599,7 @@ export default function AdminSettings() {
               {[{ key: 'patron', label: 'Patron' }, { key: 'administrateur', label: 'Administrateur' }, { key: 'manager', label: 'Manager' }].map(r => {
                 const checked = (alertEmails.rhExemptRoles ?? []).includes(r.key)
                 return (
-                  <label key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <label key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', minHeight: 44 }}>
                     <input
                       type="checkbox" checked={checked}
                       onChange={e => {
@@ -637,7 +637,7 @@ export default function AdminSettings() {
               {managers.map(u => {
                 const checked = (alertEmails.responsables ?? []).includes(u.email)
                 return (
-                  <label key={u.email} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <label key={u.email} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', minHeight: 44 }}>
                     <input
                       type="checkbox" checked={checked}
                       onChange={e => {
@@ -680,7 +680,7 @@ export default function AdminSettings() {
               {managers.map(u => {
                 const checked = (alertEmails.canOverrideEmails ?? []).includes(u.email)
                 return (
-                  <label key={u.email} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <label key={u.email} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', minHeight: 44 }}>
                     <input
                       type="checkbox" checked={checked}
                       onChange={e => {
@@ -717,7 +717,7 @@ export default function AdminSettings() {
               {managers.map(u => {
                 const checked = (emails.congesDestinataires ?? []).includes(u.email)
                 return (
-                  <label key={u.email} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <label key={u.email} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', minHeight: 44 }}>
                     <input
                       type="checkbox" checked={checked}
                       onChange={e => {
@@ -1198,7 +1198,7 @@ export default function AdminSettings() {
                 {managers.map(u => {
                   const checked = (commandesEmails.destinataires ?? []).includes(u.email)
                   return (
-                    <label key={u.email} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                    <label key={u.email} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', minHeight: 44 }}>
                       <input
                         type="checkbox"
                         checked={checked}

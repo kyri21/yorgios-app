@@ -5,7 +5,24 @@ import { useNavigate } from 'react-router-dom'
 import { DEFAULT_PERMISSIONS, mergeWithDefaults, type AppPermissions, type PermKey } from '../contexts/PermissionsContext'
 
 // ─── Config du tableau ────────────────────────────────────────────
-const PERM_GROUPS: { label: string; emoji: string; items: { key: PermKey; label: string; note?: string }[] }[] = [
+
+/** Certaines permissions sont doublées d'un plancher de rôle en dur dans
+ *  `firestore.rules` : la règle refuse l'écriture quoi qu'on coche ici.
+ *  `roles` liste alors les seuls rôles pour lesquels la case a un effet réel —
+ *  les autres affichent « — » plutôt qu'un interrupteur sans conséquence.
+ *
+ *  Sans ça, cocher la case donnait un faux sentiment d'avoir accordé un droit,
+ *  et l'utilisateur concerné se heurtait ensuite à un refus incompréhensible.
+ *  Tenir cette liste à jour avec les planchers de `firestore.rules`. */
+type PermItem = {
+  key: PermKey
+  label: string
+  note?: string
+  /** Absent = configurable pour les trois rôles. */
+  roles?: (keyof AppPermissions)[]
+}
+
+const PERM_GROUPS: { label: string; emoji: string; items: PermItem[] }[] = [
   {
     label: 'Accès pages', emoji: '📄',
     items: [
@@ -25,9 +42,11 @@ const PERM_GROUPS: { label: string; emoji: string; items: { key: PermKey; label:
       { key: 'action_delete_commande',          label: 'Supprimer une commande' },
       { key: 'action_derogation_temp',          label: 'Dérogation température refusée' },
       { key: 'action_delete_lot',               label: 'Supprimer un lot cuisine' },
-      { key: 'action_delete_livraison',         label: 'Supprimer une livraison' },
-      { key: 'action_delete_ac',                label: 'Modifier / supprimer une action corrective' },
-      { key: 'action_designer_responsable_hygiene', label: 'Désigner un responsable d\'hygiène', note: 'checklists hebdo et mensuelle' },
+      // Planchers de firestore.rules : isCuisine() exclut corner ;
+      // isPatronOrManager() exclut corner et cuisine.
+      { key: 'action_delete_livraison',         label: 'Supprimer une livraison', roles: ['manager', 'cuisine'] },
+      { key: 'action_delete_ac',                label: 'Modifier / supprimer une action corrective', roles: ['manager'] },
+      { key: 'action_designer_responsable_hygiene', label: 'Désigner un responsable d\'hygiène', note: 'checklists hebdo et mensuelle', roles: ['manager'] },
     ],
   },
   {
@@ -97,6 +116,8 @@ export default function AdminPermissions() {
       {/* Légende */}
       <div style={{ padding: '10px 14px', background: 'rgba(0,66,117,0.06)', borderRadius: 12, border: '1px solid rgba(0,66,117,0.12)', fontSize: 12, color: 'var(--on-surface-2)' }}>
         <strong style={{ color: 'var(--primary)' }}>Patron</strong> et <strong style={{ color: 'var(--primary)' }}>Administrateur</strong> ont toujours accès à tout — non configurables.
+        <br />
+        Un <strong>—</strong> signale une permission que les règles de sécurité refusent de toute façon pour ce rôle : la cocher n'aurait aucun effet.
       </div>
 
       {loading ? (
@@ -139,6 +160,22 @@ export default function AdminPermissions() {
                     </div>
                     {ROLES.map(role => {
                       const checked = perms[role.key][item.key]
+                      // Rôle hors du plancher de la règle Firestore : la case
+                      // n'aurait aucun effet, on n'en propose pas.
+                      if (item.roles && !item.roles.includes(role.key)) {
+                        return (
+                          <div
+                            key={role.key}
+                            title="Non applicable — refusé par les règles de sécurité quoi qu'il arrive"
+                            style={{
+                              display: 'flex', justifyContent: 'center', alignItems: 'center',
+                              fontSize: 13, color: 'var(--on-surface-3)', height: 28,
+                            }}
+                          >
+                            —
+                          </div>
+                        )
+                      }
                       return (
                         <div key={role.key} style={{ display: 'flex', justifyContent: 'center' }}>
                           <button
