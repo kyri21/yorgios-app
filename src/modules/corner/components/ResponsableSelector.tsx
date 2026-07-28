@@ -42,21 +42,39 @@ export default function ResponsableSelector({
 
   useEffect(() => {
     if (!canEdit) return
-    loadCornerUsers().then(setUsers).catch(e => setError(e?.message || ''))
+    let annule = false
+    loadCornerUsers()
+      .then(users => { if (!annule) setUsers(users) })
+      .catch(e => { if (!annule) setError(e?.message || '') })
+    return () => { annule = true }
   }, [canEdit])
 
   async function handleAssign() {
     const assignee = users.find(u => u.uid === choix)
     if (!assignee) { setError('Sélectionnez un salarié'); return }
+
+    // Capturer la période intentionnée au moment du clic
+    // pour détecter les changements d'onglet/date pendant l'opération
+    const intentKind = kind
+    const intentDateKey = dateKey
+
     setSaving(true); setError('')
     try {
       await assignResponsable({
-        kind, ref: date, assignee,
+        kind: intentKind, ref: date, assignee,
         assignedBy: auth.currentUser?.uid || '',
         assignedByName: currentUserName,
         current: resp,
       })
-      const frais = await loadResponsable(kind, date)
+      // Vérifier que la période affichée n'a pas changé depuis le clic
+      if (intentKind !== kind || intentDateKey !== dateKey) {
+        return // Requête périmée, ne pas appliquer le résultat
+      }
+      const frais = await loadResponsable(intentKind, date)
+      // Vérifier à nouveau après le 2e await
+      if (intentKind !== kind || intentDateKey !== dateKey) {
+        return // Requête périmée, ne pas appliquer le résultat
+      }
       setResp(frais); setEditing(false)
       onAssigned?.()
     } catch (e: any) {
