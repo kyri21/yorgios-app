@@ -973,6 +973,66 @@ async function getHygieneSettings() {
     const snap = await db.doc('settings/hygiene_responsables').get();
     return (0, periods_1.mergeHygieneSettings)(snap.data());
 }
+const JALONS_ORDRE = ['rappel1', 'rappel2', 'escalade'];
+const JALONS_PAR_GRAVITE = ['escalade', 'rappel2', 'rappel1'];
+function jalonActif(config, kind, cle) {
+    return kind === 'hebdo' ? config.hebdo[cle].actif : config.mensuel[cle].actif;
+}
+/** Clé de créneau, dans la même forme que celle comparée par `resolveJalon`. */
+function creneauDe(config, kind, cle) {
+    return kind === 'hebdo'
+        ? `${config.hebdo[cle].jour}-${config.hebdo[cle].heure}`
+        : `${config.mensuel[cle].joursAvantFin}-${config.mensuel[cle].heure}`;
+}
+/** Le dispositif de rappels ciblés peut-il RÉELLEMENT envoyer quelque chose
+ *  pour ce type de période ?
+ *
+ *  Le seul témoin `config.rappelsEnabled` ne suffit plus. Depuis que chaque
+ *  jalon porte son propre `actif` et chaque type d'événement ses canaux
+ *  `email` / `push`, il existe des configurations où `rappelsEnabled` vaut
+ *  `true` alors que RIEN ne peut partir :
+ *    — les trois jalons du type décochés ;
+ *    — ou les quatre cases email/push des lignes « Rappels » et « Escalade »
+ *      décochées.
+ *  Dans ces cas, `hygieneRappelsResponsables` ne trouve aucun jalon (ou
+ *  n'ouvre aucun canal) et se tait. Si le broadcast collectif se taisait lui
+ *  aussi sur la seule présence d'un responsable + `rappelsEnabled`, une
+ *  checklist HACCP non faite ne déclencherait plus AUCUNE notification, sur
+ *  aucun canal, pour personne — pendant que la case maîtresse afficherait
+ *  toujours « Rappels automatiques activés ». C'est le risque « réglage
+ *  coupant tous les rappels sans le dire » de la section 5.3 de la spec.
+ *
+ *  Le filet collectif ne s'efface donc que devant un jalon actif ASSOCIÉ à au
+ *  moins un canal ouvert. */
+function rappelsCiblesActifs(config, kind) {
+    if (!config.rappelsEnabled)
+        return false;
+    return JALONS_ORDRE.some(cle => {
+        if (!jalonActif(config, kind, cle))
+            return false;
+        const canal = cle === 'escalade' ? config.canaux.escalade : config.canaux.rappel;
+        return canal.email || canal.push;
+    });
+}
+/** Jalon sur lequel s'accroche l'alerte « aucun responsable désigné ».
+ *
+ *  `rappel1` en dur ne convient plus : il est désactivable et déplaçable. S'il
+ *  est décoché — un encadrant qui ne veut qu'un seul rappel — une période sans
+ *  responsable n'alerterait plus jamais personne, et l'oubli d'attribution
+ *  redeviendrait invisible (section 5.2). On vise donc le premier jalon actif.
+ *
+ *  Second piège : si ce premier jalon actif partage son créneau avec un jalon
+ *  plus grave, `resolveJalon` rendra le plus grave et la comparaison échouerait
+ *  toujours. On renvoie donc le vainqueur de gravité au créneau visé — la
+ *  valeur que `resolveJalon` rendra réellement à cet instant-là. */
+function premierJalonActif(config, kind) {
+    var _a;
+    const premier = JALONS_ORDRE.find(cle => jalonActif(config, kind, cle));
+    if (!premier)
+        return null;
+    const creneau = creneauDe(config, kind, premier);
+    return (_a = JALONS_PAR_GRAVITE.find(cle => jalonActif(config, kind, cle) && creneauDe(config, kind, cle) === creneau)) !== null && _a !== void 0 ? _a : premier;
+}
 /** Destinataires de l'escalade, avec repli : une escalade ne doit jamais
  *  partir dans le vide. */
 async function getHygieneEscaladeEmails(config) {
@@ -1052,17 +1112,31 @@ exports.onHygieneResponsableAssigned = (0, firestore_2.onDocumentWritten)({ docu
     await event.data.after.ref.set({ notifiedAt: new Date() }, { merge: true });
     console.log(`[hygiene] Désignation notifiée : ${apres.assigneeName} — ${apres.periodId}`);
 });
-/** 10h et 18h — rappels ciblés au responsable, puis escalade. */
+/** Toutes les heures — rappels ciblés au responsable, puis escalade.
+ *
+ *  Chaque jalon n'a qu'un seul créneau d'une heure (correspondance exacte
+ *  jour + heure) : un incident Firestore ou SMTP de quelques dizaines de
+ *  secondes au mauvais moment supprime définitivement un rappel. Aucun
+ *  rattrapage n'est possible sans marqueur d'idempotence sur la branche
+ *  « aucun responsable désigné », qui n'en a pas — le risque de spam serait
+ *  pire que le mal. À défaut de rattraper, on rend l'échec VISIBLE : la
+ *  lecture des réglages et le calcul de l'heure sont dans le bloc protégé, et
+ *  l'exécution se termine en erreur si au moins un type de période a échoué —
+ *  après avoir traité l'autre. Sans cela, le planificateur Cloud considérait
+ *  l'exécution réussie et l'incident n'apparaissait nulle part. */
 exports.hygieneRappelsResponsables = (0, scheduler_1.onSchedule)({ schedule: '0 * * * *', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
     var _a, _b;
-    const config = await getHygieneSettings();
-    if (!config.rappelsEnabled) {
-        console.log('[hygiene] Rappels désactivés dans les paramètres.');
-        return;
-    }
-    const now = (0, periods_1.parisNow)();
+    const echecs = [];
     for (const kind of ['hebdo', 'mensuel']) {
         try {
+            // Dans le try : une lecture de settings qui échoue doit se voir, pas
+            // faire sortir la fonction en silence.
+            const config = await getHygieneSettings();
+            if (!config.rappelsEnabled) {
+                console.log('[hygiene] Rappels désactivés dans les paramètres.');
+                continue;
+            }
+            const now = (0, periods_1.parisNow)();
             const jalon = (0, periods_1.resolveJalon)(kind, now, config);
             if (!jalon)
                 continue;
@@ -1083,7 +1157,10 @@ exports.hygieneRappelsResponsables = (0, scheduler_1.onSchedule)({ schedule: '0 
             // au premier jalon. Pas de document où inscrire le jalon, l'unicité
             // repose sur la correspondance exacte jour + heure.
             if (!respSnap.exists) {
-                if (jalon !== 'rappel1' || !config.canaux.escalade.email)
+                // Premier jalon ACTIF, et non `rappel1` en dur : celui-ci est
+                // désactivable et déplaçable, et peut être supplanté par un jalon
+                // plus grave sur le même créneau (voir premierJalonActif).
+                if (jalon !== premierJalonActif(config, kind) || !config.canaux.escalade.email)
                     continue;
                 const emails = await getHygieneEscaladeEmails(config);
                 await sendHygieneMail(emails, [], `⚠️ Aucun responsable désigné — hygiène ${libelle} ${periode}`, `<p>La checklist d'hygiène <strong>${libelle}</strong> de la période
@@ -1099,9 +1176,15 @@ exports.hygieneRappelsResponsables = (0, scheduler_1.onSchedule)({ schedule: '0 
                 continue;
             }
             if (jalon === 'escalade') {
+                // Ton propre à l'escalade : ce n'est plus un rappel, c'est le
+                // constat d'une checklist restée non traitée, aligné sur le sujet
+                // de l'email ci-dessous. Réutiliser le titre du rappel ordinaire
+                // ferait passer une alerte aux encadrants pour une simple relance.
+                const titreEscalade = `🚨 Hygiène ${libelle} non faite — ${periode}`;
+                const corpsEscalade = `Fin de période : la checklist ${periode} n'a pas été complétée. Les encadrants sont informés.`;
                 if (config.canaux.escalade.email) {
                     const emails = await getHygieneEscaladeEmails(config);
-                    await sendHygieneMail(emails, resp.assigneeEmail ? [resp.assigneeEmail] : [], `🚨 Hygiène ${libelle} non faite — ${periode}`, `<p>La checklist d'hygiène <strong>${libelle}</strong> de la période
+                    await sendHygieneMail(emails, resp.assigneeEmail ? [resp.assigneeEmail] : [], titreEscalade, `<p>La checklist d'hygiène <strong>${libelle}</strong> de la période
                <strong>${periode}</strong> n'a pas été complétée.</p>
                <p>Responsable désigné : <strong>${resp.assigneeName}</strong>
                (désigné par ${resp.assignedByName}).</p>
@@ -1109,7 +1192,7 @@ exports.hygieneRappelsResponsables = (0, scheduler_1.onSchedule)({ schedule: '0 
                 }
                 if (config.canaux.escalade.push) {
                     try {
-                        await notifyUids([resp.assigneeUid], titre, corps, '/corner/hygiene');
+                        await notifyUids([resp.assigneeUid], titreEscalade, corpsEscalade, '/corner/hygiene');
                     }
                     catch (e) {
                         console.error('[hygiene] push escalade échoué', e);
@@ -1144,9 +1227,17 @@ exports.hygieneRappelsResponsables = (0, scheduler_1.onSchedule)({ schedule: '0 
         }
         catch (err) {
             // Une panne sur un type de période (hebdo/mensuel) ne doit jamais
-            // empêcher le traitement de l'autre — on logue et on continue la boucle.
+            // empêcher le traitement de l'autre — on logue, on mémorise, et on
+            // continue la boucle. L'erreur est relancée en fin d'exécution.
             console.error(`[hygiene] Erreur traitement rappels (${kind}) :`, err);
+            echecs.push(kind);
         }
+    }
+    // Un jalon manqué ne se rattrape pas : il doit au moins apparaître comme
+    // une exécution en échec dans la console Cloud, pas comme un succès muet.
+    if (echecs.length) {
+        throw new Error(`[hygiene] Rappels en échec sur : ${echecs.join(', ')}. ` +
+            `Le créneau de ce jalon est passé et ne sera pas rejoué — voir les erreurs ci-dessus.`);
     }
 });
 /** 8h30 — Rappel températures frigo si non saisies (corner + patron + manager) */
@@ -1744,14 +1835,14 @@ exports.notifHygieneHebdo = (0, scheduler_1.onSchedule)({ schedule: '0 18 * * 6'
         return;
     }
     // Le broadcast ne se tait que si le rappel ciblé prend RÉELLEMENT le
-    // relais : responsable désigné ET rappels automatiques actifs. Décocher
-    // « Rappels automatiques » dans les Paramètres coupe hygieneRappelsResponsables ;
-    // sans ce second test, ça supprimait aussi le filet collectif et plus
-    // rien ne signalait une checklist HACCP non faite.
+    // relais : responsable désigné ET dispositif ciblé capable d'envoyer.
+    // Le témoin `rappelsEnabled` seul ne suffit pas — trois jalons décochés,
+    // ou tous les canaux rappel/escalade fermés, le laissent à true pendant
+    // que plus rien ne part (voir rappelsCiblesActifs).
     const respSnap = await db.doc(`hygiene_responsables/${weekId}`).get();
     const config = await getHygieneSettings();
-    if (respSnap.exists && config.rappelsEnabled) {
-        console.log('[hebdo] Responsable désigné + rappels actifs — pas de broadcast.');
+    if (respSnap.exists && rappelsCiblesActifs(config, 'hebdo')) {
+        console.log('[hebdo] Responsable désigné + rappels ciblés actifs — pas de broadcast.');
         return;
     }
     await notifyRoles('🧼 Hygiène hebdo non faite', "La checklist d'hygiène hebdomadaire n'a pas encore été complétée cette semaine !", '/corner/hygiene', ['corner', 'patron', 'administrateur', 'manager']);
@@ -1778,11 +1869,12 @@ exports.notifHygieneMensuel = (0, scheduler_1.onSchedule)({ schedule: '0 18 28-3
         return;
     }
     // Même règle que l'hebdo : le filet collectif ne s'efface que devant un
-    // rappel ciblé qui part vraiment (responsable désigné ET rappels actifs).
+    // rappel ciblé qui peut vraiment partir — responsable désigné ET au moins
+    // un jalon mensuel actif associé à un canal ouvert.
     const respSnap = await db.doc(`hygiene_responsables/${monthId}`).get();
     const config = await getHygieneSettings();
-    if (respSnap.exists && config.rappelsEnabled) {
-        console.log('[mensuel] Responsable désigné + rappels actifs — pas de broadcast.');
+    if (respSnap.exists && rappelsCiblesActifs(config, 'mensuel')) {
+        console.log('[mensuel] Responsable désigné + rappels ciblés actifs — pas de broadcast.');
         return;
     }
     await notifyRoles('🧼 Hygiène mensuelle non faite', "La checklist d'hygiène mensuelle n'a pas encore été complétée ce mois-ci !", '/corner/hygiene', ['corner', 'patron', 'administrateur', 'manager']);

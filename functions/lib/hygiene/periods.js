@@ -48,29 +48,84 @@ exports.DEFAULT_HYGIENE_SETTINGS = {
     },
 };
 const JALONS = ['rappel1', 'rappel2', 'escalade'];
-/** Fusion champ par champ avec les défauts. Un document absent, partiel, ou
- *  écrit par la révision 1 doit produire le comportement d'origine — c'est ce
- *  qui garantit que rendre ces réglages configurables ne casse rien pour qui
- *  n'y touche jamais. */
+/** Convertit et borne une valeur numérique lue depuis Firestore.
+ *
+ *  Le document `settings/hygiene_responsables` peut être édité à la main dans
+ *  la console Firebase, ou écrit par un script qui sérialise tout en chaînes.
+ *  `heure: "10"` comparé en `===` à un nombre dans `resolveJalon` ne
+ *  correspondrait JAMAIS : le rappel ne partirait plus jamais, sans erreur,
+ *  sans log, l'interface continuant d'afficher « jeu 10h ». Un simple
+ *  étalement d'objets laissait passer cette valeur telle quelle.
+ *
+ *  ⚠️ Copie rigoureusement identique à src/utils/hygieneSettings.ts. */
+function nombreBorne(brut, min, max, defaut) {
+    const n = typeof brut === 'string' ? Number(brut.trim()) : brut;
+    if (typeof n !== 'number' || !Number.isFinite(n))
+        return defaut;
+    return Math.min(max, Math.max(min, Math.round(n)));
+}
+/** Booléen strict. `actif: "false"` sous forme de chaîne est une valeur vraie
+ *  en JavaScript : un jalon affiché comme désactivé continuerait d'envoyer.
+ *  Convention conservée de `rappelsEnabled` : absent (ou illisible) = actif,
+ *  on n'éteint jamais un rappel par omission. */
+function booleenStrict(brut, defaut) {
+    if (typeof brut === 'boolean')
+        return brut;
+    if (brut === 'true')
+        return true;
+    if (brut === 'false')
+        return false;
+    return defaut;
+}
+/** Bornes de validation. `joursAvantFin` va jusqu'à 30 : c'est le maximum de
+ *  jours restants réellement atteignable dans un mois de 31 jours. La saisie
+ *  de la section Paramètres est volontairement plus stricte (0-27, la seule
+ *  plage qui se déclenche aussi en février) — son domaine est un sous-ensemble
+ *  de celui-ci, jamais l'inverse. */
+const BORNES = {
+    jour: { min: 0, max: 6 },
+    heure: { min: 0, max: 23 },
+    joursAvantFin: { min: 0, max: 30 },
+};
+/** Fusion champ par champ avec les défauts, valeurs converties et bornées.
+ *  Un document absent, partiel, ou écrit par la révision 1 doit produire le
+ *  comportement d'origine — c'est ce qui garantit que rendre ces réglages
+ *  configurables ne casse rien pour qui n'y touche jamais. */
 function mergeHygieneSettings(data) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
+    var _a, _b, _c, _d, _e, _f, _g;
     const d = data !== null && data !== void 0 ? data : {};
     const hebdo = {};
     const mensuel = {};
     for (const cle of JALONS) {
-        hebdo[cle] = { ...exports.DEFAULT_HYGIENE_SETTINGS.hebdo[cle], ...((_b = (_a = d.hebdo) === null || _a === void 0 ? void 0 : _a[cle]) !== null && _b !== void 0 ? _b : {}) };
-        mensuel[cle] = { ...exports.DEFAULT_HYGIENE_SETTINGS.mensuel[cle], ...((_d = (_c = d.mensuel) === null || _c === void 0 ? void 0 : _c[cle]) !== null && _d !== void 0 ? _d : {}) };
+        const defH = exports.DEFAULT_HYGIENE_SETTINGS.hebdo[cle];
+        const brutH = (_b = (_a = d.hebdo) === null || _a === void 0 ? void 0 : _a[cle]) !== null && _b !== void 0 ? _b : {};
+        hebdo[cle] = {
+            actif: booleenStrict(brutH.actif, defH.actif),
+            jour: nombreBorne(brutH.jour, BORNES.jour.min, BORNES.jour.max, defH.jour),
+            heure: nombreBorne(brutH.heure, BORNES.heure.min, BORNES.heure.max, defH.heure),
+        };
+        const defM = exports.DEFAULT_HYGIENE_SETTINGS.mensuel[cle];
+        const brutM = (_d = (_c = d.mensuel) === null || _c === void 0 ? void 0 : _c[cle]) !== null && _d !== void 0 ? _d : {};
+        mensuel[cle] = {
+            actif: booleenStrict(brutM.actif, defM.actif),
+            joursAvantFin: nombreBorne(brutM.joursAvantFin, BORNES.joursAvantFin.min, BORNES.joursAvantFin.max, defM.joursAvantFin),
+            heure: nombreBorne(brutM.heure, BORNES.heure.min, BORNES.heure.max, defM.heure),
+        };
     }
+    const canal = (brut, defaut) => ({
+        email: booleenStrict(brut === null || brut === void 0 ? void 0 : brut.email, defaut.email),
+        push: booleenStrict(brut === null || brut === void 0 ? void 0 : brut.push, defaut.push),
+    });
     return {
         // Absent = actif : ne jamais éteindre des rappels par omission.
-        rappelsEnabled: d.rappelsEnabled !== false,
+        rappelsEnabled: booleenStrict(d.rappelsEnabled, true),
         escaladeDestinataires: Array.isArray(d.escaladeDestinataires) ? d.escaladeDestinataires : [],
         hebdo,
         mensuel,
         canaux: {
-            designation: { ...exports.DEFAULT_HYGIENE_SETTINGS.canaux.designation, ...((_f = (_e = d.canaux) === null || _e === void 0 ? void 0 : _e.designation) !== null && _f !== void 0 ? _f : {}) },
-            rappel: { ...exports.DEFAULT_HYGIENE_SETTINGS.canaux.rappel, ...((_h = (_g = d.canaux) === null || _g === void 0 ? void 0 : _g.rappel) !== null && _h !== void 0 ? _h : {}) },
-            escalade: { ...exports.DEFAULT_HYGIENE_SETTINGS.canaux.escalade, ...((_k = (_j = d.canaux) === null || _j === void 0 ? void 0 : _j.escalade) !== null && _k !== void 0 ? _k : {}) },
+            designation: canal((_e = d.canaux) === null || _e === void 0 ? void 0 : _e.designation, exports.DEFAULT_HYGIENE_SETTINGS.canaux.designation),
+            rappel: canal((_f = d.canaux) === null || _f === void 0 ? void 0 : _f.rappel, exports.DEFAULT_HYGIENE_SETTINGS.canaux.rappel),
+            escalade: canal((_g = d.canaux) === null || _g === void 0 ? void 0 : _g.escalade, exports.DEFAULT_HYGIENE_SETTINGS.canaux.escalade),
         },
     };
 }

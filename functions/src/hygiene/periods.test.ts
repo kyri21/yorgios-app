@@ -85,6 +85,71 @@ describe('mergeHygieneSettings', () => {
   })
 })
 
+// ⚠️ TEST MIROIR — le même existe dans src/utils/hygieneSettings.test.ts.
+// Les deux copies de mergeHygieneSettings sont dupliquées à la main (aucun
+// import cross-package dans ce projet) : ces tests cassent si elles divergent.
+describe('mergeHygieneSettings — validation des valeurs lues (miroir client)', () => {
+  // Le document peut être édité à la main dans la console Firebase, ou écrit
+  // par un script qui sérialise en chaînes. `heure: "10"` comparé en === à un
+  // nombre ne correspondrait jamais : le rappel ne partirait plus JAMAIS,
+  // sans erreur ni log, l'interface affichant toujours « jeu 10h ».
+  it('convertit une heure écrite en chaîne', () => {
+    const merged = mergeHygieneSettings({ hebdo: { rappel1: { heure: '8' } } })
+    expect(merged.hebdo.rappel1.heure).toBe(8)
+    // Et la conversion suffit pour que le jalon se déclenche à nouveau.
+    expect(resolveJalon('hebdo', at(2026, 7, 30, 8), merged)).toBe('rappel1')
+  })
+
+  it('convertit jour et joursAvantFin écrits en chaînes', () => {
+    const merged = mergeHygieneSettings({
+      hebdo:   { rappel1: { jour: '2' } },
+      mensuel: { rappel1: { joursAvantFin: '3' } },
+    })
+    expect(merged.hebdo.rappel1.jour).toBe(2)
+    expect(merged.mensuel.rappel1.joursAvantFin).toBe(3)
+  })
+
+  it('ramène les valeurs hors bornes dans leur plage', () => {
+    const merged = mergeHygieneSettings({
+      hebdo:   { rappel1: { jour: 9, heure: 42 }, rappel2: { jour: -3, heure: -1 } },
+      mensuel: { rappel1: { joursAvantFin: 99 }, rappel2: { joursAvantFin: -5 } },
+    })
+    expect(merged.hebdo.rappel1).toEqual({ actif: true, jour: 6, heure: 23 })
+    expect(merged.hebdo.rappel2).toEqual({ actif: true, jour: 0, heure: 0 })
+    expect(merged.mensuel.rappel1.joursAvantFin).toBe(30)
+    expect(merged.mensuel.rappel2.joursAvantFin).toBe(0)
+  })
+
+  it('replie sur le défaut du champ quand la conversion échoue', () => {
+    const merged = mergeHygieneSettings({
+      hebdo: { rappel1: { heure: 'dix', jour: null } },
+    })
+    expect(merged.hebdo.rappel1).toEqual(DEFAULT_HYGIENE_SETTINGS.hebdo.rappel1)
+  })
+
+  it('arrondit une valeur décimale', () => {
+    expect(mergeHygieneSettings({ hebdo: { rappel1: { heure: 10.6 } } }).hebdo.rappel1.heure).toBe(11)
+  })
+
+  // "false" est une chaîne non vide, donc vraie en JS : sans booléen strict,
+  // un jalon affiché comme désactivé continuerait d'envoyer.
+  it('traite la chaîne "false" comme un actif à false', () => {
+    const merged = mergeHygieneSettings({
+      hebdo:  { rappel1: { actif: 'false' } },
+      canaux: { rappel: { push: 'false' } },
+      rappelsEnabled: 'false',
+    })
+    expect(merged.hebdo.rappel1.actif).toBe(false)
+    expect(merged.canaux.rappel.push).toBe(false)
+    expect(merged.rappelsEnabled).toBe(false)
+    expect(resolveJalon('hebdo', at(2026, 7, 30, 10), merged)).toBeNull()
+  })
+
+  it('traite la chaîne "true" comme un actif à true', () => {
+    expect(mergeHygieneSettings({ hebdo: { rappel1: { actif: 'true' } } }).hebdo.rappel1.actif).toBe(true)
+  })
+})
+
 describe('resolveJalon — hebdo, configuration par défaut', () => {
   const CFG = DEFAULT_HYGIENE_SETTINGS
 

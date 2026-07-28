@@ -63,28 +63,84 @@ export const DEFAULT_HYGIENE_SETTINGS: HygieneSettings = {
 
 const JALONS: JalonKey[] = ['rappel1', 'rappel2', 'escalade']
 
-/** Fusion champ par champ avec les défauts. Un document absent, partiel, ou
- *  écrit par la révision 1 doit produire le comportement d'origine — c'est ce
- *  qui garantit que rendre ces réglages configurables ne casse rien pour qui
- *  n'y touche jamais. */
+/** Convertit et borne une valeur numérique lue depuis Firestore.
+ *
+ *  Le document `settings/hygiene_responsables` peut être édité à la main dans
+ *  la console Firebase, ou écrit par un script qui sérialise tout en chaînes.
+ *  `heure: "10"` comparé en `===` à un nombre dans `resolveJalon` ne
+ *  correspondrait JAMAIS : le rappel ne partirait plus jamais, sans erreur,
+ *  sans log, l'interface continuant d'afficher « jeu 10h ». Un simple
+ *  étalement d'objets laissait passer cette valeur telle quelle.
+ *
+ *  ⚠️ Copie rigoureusement identique à src/utils/hygieneSettings.ts. */
+function nombreBorne(brut: any, min: number, max: number, defaut: number): number {
+  const n = typeof brut === 'string' ? Number(brut.trim()) : brut
+  if (typeof n !== 'number' || !Number.isFinite(n)) return defaut
+  return Math.min(max, Math.max(min, Math.round(n)))
+}
+
+/** Booléen strict. `actif: "false"` sous forme de chaîne est une valeur vraie
+ *  en JavaScript : un jalon affiché comme désactivé continuerait d'envoyer.
+ *  Convention conservée de `rappelsEnabled` : absent (ou illisible) = actif,
+ *  on n'éteint jamais un rappel par omission. */
+function booleenStrict(brut: any, defaut: boolean): boolean {
+  if (typeof brut === 'boolean') return brut
+  if (brut === 'true')  return true
+  if (brut === 'false') return false
+  return defaut
+}
+
+/** Bornes de validation. `joursAvantFin` va jusqu'à 30 : c'est le maximum de
+ *  jours restants réellement atteignable dans un mois de 31 jours. La saisie
+ *  de la section Paramètres est volontairement plus stricte (0-27, la seule
+ *  plage qui se déclenche aussi en février) — son domaine est un sous-ensemble
+ *  de celui-ci, jamais l'inverse. */
+const BORNES = {
+  jour:          { min: 0, max: 6 },
+  heure:         { min: 0, max: 23 },
+  joursAvantFin: { min: 0, max: 30 },
+}
+
+/** Fusion champ par champ avec les défauts, valeurs converties et bornées.
+ *  Un document absent, partiel, ou écrit par la révision 1 doit produire le
+ *  comportement d'origine — c'est ce qui garantit que rendre ces réglages
+ *  configurables ne casse rien pour qui n'y touche jamais. */
 export function mergeHygieneSettings(data: any): HygieneSettings {
   const d = data ?? {}
   const hebdo   = {} as Record<JalonKey, JalonHebdo>
   const mensuel = {} as Record<JalonKey, JalonMensuel>
   for (const cle of JALONS) {
-    hebdo[cle]   = { ...DEFAULT_HYGIENE_SETTINGS.hebdo[cle],   ...(d.hebdo?.[cle] ?? {}) }
-    mensuel[cle] = { ...DEFAULT_HYGIENE_SETTINGS.mensuel[cle], ...(d.mensuel?.[cle] ?? {}) }
+    const defH = DEFAULT_HYGIENE_SETTINGS.hebdo[cle]
+    const brutH = d.hebdo?.[cle] ?? {}
+    hebdo[cle] = {
+      actif: booleenStrict(brutH.actif, defH.actif),
+      jour:  nombreBorne(brutH.jour,  BORNES.jour.min,  BORNES.jour.max,  defH.jour),
+      heure: nombreBorne(brutH.heure, BORNES.heure.min, BORNES.heure.max, defH.heure),
+    }
+    const defM = DEFAULT_HYGIENE_SETTINGS.mensuel[cle]
+    const brutM = d.mensuel?.[cle] ?? {}
+    mensuel[cle] = {
+      actif: booleenStrict(brutM.actif, defM.actif),
+      joursAvantFin: nombreBorne(
+        brutM.joursAvantFin, BORNES.joursAvantFin.min, BORNES.joursAvantFin.max, defM.joursAvantFin,
+      ),
+      heure: nombreBorne(brutM.heure, BORNES.heure.min, BORNES.heure.max, defM.heure),
+    }
   }
+  const canal = (brut: any, defaut: Canal): Canal => ({
+    email: booleenStrict(brut?.email, defaut.email),
+    push:  booleenStrict(brut?.push,  defaut.push),
+  })
   return {
     // Absent = actif : ne jamais éteindre des rappels par omission.
-    rappelsEnabled: d.rappelsEnabled !== false,
+    rappelsEnabled: booleenStrict(d.rappelsEnabled, true),
     escaladeDestinataires: Array.isArray(d.escaladeDestinataires) ? d.escaladeDestinataires : [],
     hebdo,
     mensuel,
     canaux: {
-      designation: { ...DEFAULT_HYGIENE_SETTINGS.canaux.designation, ...(d.canaux?.designation ?? {}) },
-      rappel:      { ...DEFAULT_HYGIENE_SETTINGS.canaux.rappel,      ...(d.canaux?.rappel ?? {}) },
-      escalade:    { ...DEFAULT_HYGIENE_SETTINGS.canaux.escalade,    ...(d.canaux?.escalade ?? {}) },
+      designation: canal(d.canaux?.designation, DEFAULT_HYGIENE_SETTINGS.canaux.designation),
+      rappel:      canal(d.canaux?.rappel,      DEFAULT_HYGIENE_SETTINGS.canaux.rappel),
+      escalade:    canal(d.canaux?.escalade,    DEFAULT_HYGIENE_SETTINGS.canaux.escalade),
     },
   }
 }

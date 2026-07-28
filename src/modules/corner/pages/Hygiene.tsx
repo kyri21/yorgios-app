@@ -10,6 +10,19 @@ import {
   getISOWeek, getPeriodId,
 } from '../utils/hygiene'
 import { loadResponsableHistory, type HygieneResponsable } from '../firebase/hygieneResponsables'
+import { JALON_LABELS, type JalonKey } from '../../../utils/hygieneSettings'
+
+/** Plancher de rôle du droit de désigner, DÉLIBÉRÉMENT dupliqué depuis la
+ *  règle Firestore (`isPatronOrManager()` sur `hygiene_responsables`).
+ *
+ *  Ce n'est pas un doublon à supprimer : la permission configurable ne peut
+ *  que RETIRER le droit au manager, jamais l'accorder à corner ou cuisine.
+ *  Sans ce plancher côté interface, cocher `action_designer_responsable_hygiene`
+ *  pour le rôle corner afficherait le sélecteur à un salarié corner, dont
+ *  l'écriture serait ensuite refusée par le serveur : il verrait un bouton,
+ *  cliquerait, et recevrait un refus incompréhensible. Les deux couches
+ *  doivent toujours rendre le même verdict. */
+const ROLES_DESIGNATION_HYGIENE = ['patron', 'administrateur', 'manager']
 
 type CheckType = 'quotidien' | 'hebdo' | 'mensuel' | 'historique' | 'historique'
 type CheckItem = { id: string; label: string }
@@ -106,8 +119,11 @@ export default function Hygiene() {
   const { user } = useAuth()
   const { can } = usePermissions()
   // can() renvoie toujours true pour patron et administrateur ; seul le
-  // manager est réglable, et corner/cuisine sont exclus par défaut.
-  const canEditResponsable = can(user?.role, 'action_designer_responsable_hygiene')
+  // manager est réglable. Le plancher de rôle ci-dessous reproduit celui de la
+  // règle Firestore : la permission peut retirer le droit, jamais l'étendre.
+  const canEditResponsable =
+    ROLES_DESIGNATION_HYGIENE.includes(user?.role ?? '') &&
+    can(user?.role, 'action_designer_responsable_hygiene')
   const currentUserName = user?.displayName || user?.email || '—'
   const today = todayISO()
   const [tab, setTab]                   = useState<CheckType>('quotidien')
@@ -492,7 +508,14 @@ export default function Hygiene() {
                                 {s ? `${complet ? '✅' : '❌'} ${s.done}/${s.total}` : '– statut indisponible'}
                               </td>
                               <td style={{ padding: '8px', color: 'var(--on-surface-3)' }}>
-                                {rappels.length === 0 ? '—' : rappels.join(', ')}
+                                {/* Libellés lisibles plutôt que les clés stockées
+                                    (« rappel1 ») : ce tableau sert de preuve qu'un
+                                    salarié a bien été prévenu, il doit se lire sans
+                                    connaître le code. Repli sur la clé brute si une
+                                    valeur inconnue apparaît. */}
+                                {rappels.length === 0
+                                  ? '—'
+                                  : rappels.map(r => JALON_LABELS[r as JalonKey] ?? r).join(', ')}
                                 {r.escalatedAt ? ' · escaladé' : ''}
                               </td>
                             </tr>
