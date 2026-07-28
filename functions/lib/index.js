@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.onCongesDemande = exports.onCongesStatutChange = exports.clearRupturesAt13h = exports.incomingSms = exports.createPointage = exports.validatePromoCodePublic = exports.validatePromoCode = exports.syncContactToBrevo = exports.previewNightlyRuptures = exports.sendNightlyRupturesNow = exports.notifNightlyRuptures = exports.gmaoWeeklyReminder = exports.sendGmaoEmail = exports.weeklyHygieneRecap = exports.notifCostas = exports.notifHygieneMensuel = exports.notifHygieneHebdo = exports.notifTemperaturesEvening = exports.notifUrgences = exports.onNonConformiteCreated = exports.onLivraisonReception = exports.onLivraisonTemperature = exports.detectNoShow = exports.autoCheckoutSortie = exports.onPointageLate = exports.notifPlatsJour = exports.notifCartonsChambrefroide = exports.notifTooGoodToGo = exports.notifTemperatures = exports.setUserDisabled = exports.updateUserEmail = exports.updateUserPassword = exports.deleteUser = exports.createUser = exports.sendPasswordReset = exports.purgeOldMessages = exports.relanceCommandes = exports.updateCommandeStatus = exports.onCommandePrete = exports.notifCommandesJ7 = exports.notifCommandesJJ = exports.notifCommandesJ2 = exports.onCommandeUpdated = exports.onNewCommande = exports.onNewMessage = void 0;
+exports.onCongesDemande = exports.onCongesStatutChange = exports.clearRupturesAt13h = exports.incomingSms = exports.createPointage = exports.validatePromoCodePublic = exports.validatePromoCode = exports.syncContactToBrevo = exports.previewNightlyRuptures = exports.sendNightlyRupturesNow = exports.notifNightlyRuptures = exports.gmaoWeeklyReminder = exports.sendGmaoEmail = exports.weeklyHygieneRecap = exports.notifCostas = exports.notifHygieneMensuel = exports.notifHygieneHebdo = exports.notifTemperaturesEvening = exports.notifUrgences = exports.onNonConformiteCreated = exports.onLivraisonReception = exports.onLivraisonTemperature = exports.detectNoShow = exports.autoCheckoutSortie = exports.onPointageLate = exports.notifPlatsJour = exports.notifCartonsChambrefroide = exports.notifTooGoodToGo = exports.notifTemperatures = exports.hygieneRappelsResponsables = exports.onHygieneResponsableAssigned = exports.setUserDisabled = exports.updateUserEmail = exports.updateUserPassword = exports.deleteUser = exports.createUser = exports.sendPasswordReset = exports.purgeOldMessages = exports.relanceCommandes = exports.updateCommandeStatus = exports.onCommandePrete = exports.notifCommandesJ7 = exports.notifCommandesJJ = exports.notifCommandesJ2 = exports.onCommandeUpdated = exports.onNewCommande = exports.onNewMessage = void 0;
 // Node.js 22
 const app_1 = require("firebase-admin/app");
 const firestore_1 = require("firebase-admin/firestore");
@@ -46,6 +46,7 @@ const googleapis_1 = require("googleapis");
 const nodemailer = __importStar(require("nodemailer"));
 const webhooks_1 = require("twilio/lib/webhooks/webhooks");
 const crypto = __importStar(require("crypto"));
+const periods_1 = require("./hygiene/periods");
 const app = (0, app_1.initializeApp)();
 // Firestore DB non-default : 'test'
 const db = (0, firestore_1.getFirestore)(app, 'test');
@@ -965,6 +966,156 @@ async function notifyUids(uids, title, body, link) {
         },
     });
 }
+/** Destinataires de l'escalade hygiène.
+ *  Repli sur settings/alert_emails.responsables puis sur la liste par
+ *  défaut : une escalade ne doit jamais partir dans le vide. */
+async function getHygieneEscaladeEmails() {
+    var _a, _b, _c, _d;
+    const snap = await db.doc('settings/hygiene_responsables').get();
+    const configures = ((_b = (_a = snap.data()) === null || _a === void 0 ? void 0 : _a.escaladeDestinataires) !== null && _b !== void 0 ? _b : []);
+    if (configures.length)
+        return configures;
+    const alertSnap = await db.doc('settings/alert_emails').get();
+    const repli = ((_d = (_c = alertSnap.data()) === null || _c === void 0 ? void 0 : _c.responsables) !== null && _d !== void 0 ? _d : []);
+    if (repli.length)
+        return repli;
+    return ['a.cozzika@gmail.com', 'kyriazis@outlook.fr'];
+}
+async function hygieneRappelsActifs() {
+    var _a;
+    const snap = await db.doc('settings/hygiene_responsables').get();
+    return ((_a = snap.data()) === null || _a === void 0 ? void 0 : _a.rappelsEnabled) !== false;
+}
+async function sendHygieneMail(to, cc, subject, html) {
+    if (!to.length)
+        return;
+    const gmailUser = process.env.GMAIL_USER;
+    const gmailPass = process.env.GMAIL_APP_PASSWORD;
+    if (!gmailUser || !gmailPass) {
+        console.error('[hygiene] GMAIL_USER ou GMAIL_APP_PASSWORD absent — email non envoyé');
+        return;
+    }
+    const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: { user: gmailUser, pass: gmailPass },
+    });
+    await transporter.sendMail({
+        from: `Yorgios <${gmailUser}>`,
+        to: to.join(','),
+        cc: cc.length ? cc.join(',') : undefined,
+        subject,
+        html,
+    });
+}
+const LIBELLE_KIND = {
+    hebdo: 'hebdomadaire',
+    mensuel: 'mensuelle',
+};
+/** Notifie le salarié qui vient d'être désigné responsable d'une checklist. */
+exports.onHygieneResponsableAssigned = (0, firestore_2.onDocumentWritten)({ document: 'hygiene_responsables/{periodId}', region: 'europe-west1' }, async (event) => {
+    var _a, _b, _c, _d;
+    const avant = (_a = event.data) === null || _a === void 0 ? void 0 : _a.before.data();
+    const apres = (_b = event.data) === null || _b === void 0 ? void 0 : _b.after.data();
+    if (!apres)
+        return;
+    // GARDE INDISPENSABLE : cette fonction écrit notifiedAt dans le document
+    // qui la déclenche. Sans cette sortie, elle se rappellerait en boucle à
+    // chaque mise à jour de remindersSent.
+    if ((avant === null || avant === void 0 ? void 0 : avant.assigneeUid) === apres.assigneeUid)
+        return;
+    const kind = apres.kind;
+    const libelle = (_c = LIBELLE_KIND[kind]) !== null && _c !== void 0 ? _c : kind;
+    const periode = String((_d = apres.periodId) !== null && _d !== void 0 ? _d : '').replace(/_hebdo|_mensuel/, '');
+    const titre = `🧼 Tu es responsable de l'hygiène ${libelle}`;
+    const corps = `Période ${periode} — checklist à compléter avant la fin de la période.`;
+    await notifyUids([apres.assigneeUid], titre, corps, '/corner/hygiene');
+    if (apres.assigneeEmail) {
+        await sendHygieneMail([apres.assigneeEmail], [], titre, `<p>Bonjour ${apres.assigneeName},</p>
+         <p>Tu as été désigné(e) responsable de la <strong>checklist d'hygiène ${libelle}</strong>
+         pour la période <strong>${periode}</strong>, par ${apres.assignedByName}.</p>
+         <p>Elle est à compléter dans l'application, onglet Nettoyage :
+         <a href="https://cuisine-yorgios.web.app/corner/hygiene">ouvrir la checklist</a>.</p>
+         <p>Merci !</p>`);
+    }
+    await event.data.after.ref.set({ notifiedAt: new Date() }, { merge: true });
+    console.log(`[hygiene] Désignation notifiée : ${apres.assigneeName} — ${apres.periodId}`);
+});
+/** 10h et 18h — rappels ciblés au responsable, puis escalade. */
+exports.hygieneRappelsResponsables = (0, scheduler_1.onSchedule)({ schedule: '0 10,18 * * *', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
+    var _a, _b;
+    if (!(await hygieneRappelsActifs())) {
+        console.log('[hygiene] Rappels désactivés dans les paramètres.');
+        return;
+    }
+    const now = (0, periods_1.parisNow)();
+    for (const kind of ['hebdo', 'mensuel']) {
+        try {
+            const jalon = (0, periods_1.resolveJalon)(kind, now);
+            if (!jalon)
+                continue;
+            const periodId = (0, periods_1.getPeriodId)(kind, now);
+            const libelle = LIBELLE_KIND[kind];
+            const periode = periodId.replace(/_hebdo|_mensuel/, '');
+            // La checklist est-elle complète ? Si oui, aucun rappel, escalade comprise.
+            const checkSnap = await db.doc(`hygiene_corner/${periodId}`).get();
+            if ((0, periods_1.isHygieneDone)((_a = checkSnap.data()) === null || _a === void 0 ? void 0 : _a.items, (0, periods_1.itemIdsFor)(kind))) {
+                console.log(`[hygiene] ${periodId} complète — pas de rappel.`);
+                continue;
+            }
+            const respRef = db.doc(`hygiene_responsables/${periodId}`);
+            const respSnap = await respRef.get();
+            // Aucun responsable désigné : on alerte les encadrants, une seule fois,
+            // au premier jalon. Pas de document où inscrire le jalon, l'unicité
+            // repose sur la correspondance exacte jour + heure.
+            if (!respSnap.exists) {
+                if (jalon !== 'j-3')
+                    continue;
+                const emails = await getHygieneEscaladeEmails();
+                await sendHygieneMail(emails, [], `⚠️ Aucun responsable désigné — hygiène ${libelle} ${periode}`, `<p>La checklist d'hygiène <strong>${libelle}</strong> de la période
+             <strong>${periode}</strong> n'a aucun responsable désigné et n'est pas faite.</p>
+             <p><a href="https://cuisine-yorgios.web.app/corner/hygiene">Désigner un responsable</a></p>`);
+                console.log(`[hygiene] ${periodId} sans responsable — encadrants alertés.`);
+                continue;
+            }
+            const resp = respSnap.data();
+            const dejaEnvoyes = ((_b = resp.remindersSent) !== null && _b !== void 0 ? _b : []);
+            if (dejaEnvoyes.includes(jalon)) {
+                console.log(`[hygiene] ${periodId} jalon ${jalon} déjà envoyé.`);
+                continue;
+            }
+            if (jalon === 'escalade') {
+                const emails = await getHygieneEscaladeEmails();
+                await sendHygieneMail(emails, resp.assigneeEmail ? [resp.assigneeEmail] : [], `🚨 Hygiène ${libelle} non faite — ${periode}`, `<p>La checklist d'hygiène <strong>${libelle}</strong> de la période
+             <strong>${periode}</strong> n'a pas été complétée.</p>
+             <p>Responsable désigné : <strong>${resp.assigneeName}</strong>
+             (désigné par ${resp.assignedByName}).</p>
+             <p>Rappels déjà envoyés : ${dejaEnvoyes.length ? dejaEnvoyes.join(', ') : 'aucun'}.</p>`);
+                await respRef.set({
+                    remindersSent: [...dejaEnvoyes, jalon],
+                    escalatedAt: new Date(),
+                }, { merge: true });
+                console.log(`[hygiene] ${periodId} escaladé.`);
+                continue;
+            }
+            const titre = `🧼 Rappel — hygiène ${libelle}`;
+            const corps = `La checklist ${periode} n'est pas terminée.`;
+            await notifyUids([resp.assigneeUid], titre, corps, '/corner/hygiene');
+            if (resp.assigneeEmail) {
+                await sendHygieneMail([resp.assigneeEmail], [], titre, `<p>Bonjour ${resp.assigneeName},</p>
+             <p>La <strong>checklist d'hygiène ${libelle}</strong> de la période
+             <strong>${periode}</strong> n'est pas encore terminée.</p>
+             <p><a href="https://cuisine-yorgios.web.app/corner/hygiene">Compléter la checklist</a></p>`);
+            }
+            await respRef.set({ remindersSent: [...dejaEnvoyes, jalon] }, { merge: true });
+            console.log(`[hygiene] ${periodId} rappel ${jalon} envoyé à ${resp.assigneeName}.`);
+        }
+        catch (err) {
+            // Une panne sur un type de période (hebdo/mensuel) ne doit jamais
+            // empêcher le traitement de l'autre — on logue et on continue la boucle.
+            console.error(`[hygiene] Erreur traitement rappels (${kind}) :`, err);
+        }
+    }
+});
 /** 8h30 — Rappel températures frigo si non saisies (corner + patron + manager) */
 exports.notifTemperatures = (0, scheduler_1.onSchedule)({ schedule: '30 8 * * *', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
     const today = new Date().toLocaleDateString('fr-CA', { timeZone: 'Europe/Paris' });
@@ -1042,7 +1193,7 @@ async function getEmployeeShift(dateISO, employeeId) {
 // POINTAGE — Retard → email HTML tous responsables + event planning
 // ─────────────────────────────────────────────────────────────────
 exports.onPointageLate = (0, firestore_2.onDocumentCreated)({ document: 'pointages/{id}', region: 'europe-west1', database: 'test' }, async (event) => {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e;
     const data = (_a = event.data) === null || _a === void 0 ? void 0 : _a.data();
     if (!data)
         return;
@@ -1052,6 +1203,12 @@ exports.onPointageLate = (0, firestore_2.onDocumentCreated)({ document: 'pointag
     const employeeId = (_b = userSnap.data()) === null || _b === void 0 ? void 0 : _b.employeeId;
     if (!employeeId) {
         console.log(`[retard] ${data.userName} sans lien planning — ignoré.`);
+        return;
+    }
+    // Rôles qui ne pointent pas (patron/admin/manager par défaut) → exemptés de retard (réglable).
+    const exemptRoles = await getExemptRoles();
+    if (exemptRoles.includes(String(((_c = userSnap.data()) === null || _c === void 0 ? void 0 : _c.role) || ''))) {
+        console.log(`[retard] ${data.userName} — rôle exempté de pointage, ignoré.`);
         return;
     }
     const shift = await getEmployeeShift(data.date, employeeId);
@@ -1077,13 +1234,14 @@ exports.onPointageLate = (0, firestore_2.onDocumentCreated)({ document: 'pointag
     // Créer / mettre à jour l'event retard dans le planning
     const eventsRef = db.doc(`planningWeeks/${shift.weekId}/events/${data.date}`);
     const eventsSnap = await eventsRef.get();
-    const existingEvents = eventsSnap.exists ? ((_d = (_c = eventsSnap.data()) === null || _c === void 0 ? void 0 : _c.events) !== null && _d !== void 0 ? _d : []) : [];
+    const existingEvents = eventsSnap.exists ? ((_e = (_d = eventsSnap.data()) === null || _d === void 0 ? void 0 : _d.events) !== null && _e !== void 0 ? _e : []) : [];
     const filtered = existingEvents.filter((e) => !(e.empId === employeeId && e.type === 'retard'));
     filtered.push({ empId: employeeId, type: 'retard', minutes: lateMinutes });
     await eventsRef.set({ date: data.date, events: filtered, updatedAt: firestore_1.Timestamp.now(), updatedBy: 'system' }, { merge: true });
-    // Push FCM aux responsables
-    await notifyRoles(`⏰ Retard — ${data.userName}`, `Prévu ${shift.firstHour}h00, pointé ${parisLocale} (+${lateMinutes} min)`, '/admin/pointages', ['patron', 'administrateur', 'manager']);
-    // Email HTML à tous les responsables
+    // Destinataires configurables dans Paramètres → « Alertes RH » (push + email)
+    const { emails: alertTo, tokens: rhTokens } = await getRhAlertTargets();
+    await notifyTokens(`⏰ Retard — ${data.userName}`, `Prévu ${shift.firstHour}h00, pointé ${parisLocale} (+${lateMinutes} min)`, '/admin/pointages', rhTokens);
+    // Email HTML aux mêmes destinataires
     const gmailUser = process.env.GMAIL_USER;
     const gmailPass = process.env.GMAIL_APP_PASSWORD;
     if (!gmailUser || !gmailPass)
@@ -1107,7 +1265,6 @@ exports.onPointageLate = (0, firestore_2.onDocumentCreated)({ document: 'pointag
           <p style="margin:0;font-size:12px;color:#999">Ce retard a été automatiquement enregistré dans le récapitulatif mensuel.</p>
         </div>
       </div>`;
-    const alertTo = await getAlertEmails();
     await transporter.sendMail({
         from: `"Matias" <${gmailUser}>`,
         to: alertTo,
@@ -1189,7 +1346,7 @@ exports.autoCheckoutSortie = (0, scheduler_1.onSchedule)({ schedule: '*/30 7-23 
 // ─────────────────────────────────────────────────────────────────
 const NO_SHOW_GRACE_MIN = 30;
 exports.detectNoShow = (0, scheduler_1.onSchedule)({ schedule: '*/30 7-23 * * *', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d, _e, _f;
     const today = new Date().toLocaleDateString('fr-CA', { timeZone: 'Europe/Paris' });
     const parisNow = new Date().toLocaleString('fr-FR', {
         timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit', hour12: false,
@@ -1227,6 +1384,7 @@ exports.detectNoShow = (0, scheduler_1.onSchedule)({ schedule: '*/30 7-23 * * *'
     const coveredEmps = new Set(dayEvents
         .filter((e) => ['conge', 'malade', 'absence', 'sans_solde', 'jour_off'].includes(e.type))
         .map((e) => e.empId));
+    const exemptRoles = await getExemptRoles();
     for (const empId of scheduledEmpIds) {
         if (coveredEmps.has(empId))
             continue;
@@ -1246,6 +1404,11 @@ exports.detectNoShow = (0, scheduler_1.onSchedule)({ schedule: '*/30 7-23 * * *'
             continue;
         }
         const userId = usersSnap.docs[0].id;
+        // Rôles qui ne pointent pas (patron/admin/manager par défaut) → exemptés (réglable).
+        if (exemptRoles.includes(String(((_d = usersSnap.docs[0].data()) === null || _d === void 0 ? void 0 : _d.role) || ''))) {
+            console.log(`[no-show] ${empId} — rôle exempté de pointage, ignoré.`);
+            continue;
+        }
         // A-t-il pointé son arrivée aujourd'hui ?
         const arrSnap = await db.collection('pointages')
             .where('userId', '==', userId)
@@ -1258,15 +1421,16 @@ exports.detectNoShow = (0, scheduler_1.onSchedule)({ schedule: '*/30 7-23 * * *'
             continue; // présent → onPointageLate gère l'éventuel retard
         // → NO-SHOW confirmé. Nom de l'employé pour l'alerte.
         const empSnap = await db.doc(`employees/${empId}`).get();
-        const empName = ((_d = empSnap.data()) === null || _d === void 0 ? void 0 : _d.name) || ((_e = usersSnap.docs[0].data()) === null || _e === void 0 ? void 0 : _e.displayName) || 'Employé';
+        const empName = ((_e = empSnap.data()) === null || _e === void 0 ? void 0 : _e.name) || ((_f = usersSnap.docs[0].data()) === null || _f === void 0 ? void 0 : _f.displayName) || 'Employé';
         const dayLabel = new Date(today + 'T12:00:00Z').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
         // Marqueur AVANT l'envoi (évite double alerte si l'envoi traîne sur deux ticks)
         await markerRef.set({
             date: today, employeeId: empId, employeeName: empName,
             plannedStartHour: firstHour, alertedAt: firestore_1.Timestamp.now(),
         });
-        // No-show : réservé patron/admin — le manager n'est PAS alerté (décision Arthur 2026-06-27)
-        await notifyRoles(`🚫 Absent non pointé — ${empName}`, `Prévu ${firstHour}h00, toujours pas pointé (+${nowTotalMin - firstHour * 60} min). À vérifier.`, '/admin/pointages', ['patron', 'administrateur']);
+        // Destinataires configurables dans Paramètres → « Alertes RH » (email + push).
+        const { emails: alertTo, tokens: rhTokens } = await getRhAlertTargets();
+        await notifyTokens(`🚫 Absent non pointé — ${empName}`, `Prévu ${firstHour}h00, toujours pas pointé (+${nowTotalMin - firstHour * 60} min). À vérifier.`, '/admin/pointages', rhTokens);
         const gmailUser = process.env.GMAIL_USER;
         const gmailPass = process.env.GMAIL_APP_PASSWORD;
         if (!gmailUser || !gmailPass) {
@@ -1289,12 +1453,8 @@ exports.detectNoShow = (0, scheduler_1.onSchedule)({ schedule: '*/30 7-23 * * *'
             <p style="margin:0;font-size:12px;color:#999">Alerte automatique. Aucune absence n'a été inscrite au planning — à qualifier manuellement (absence, congé, ou simple oubli de pointage).</p>
           </div>
         </div>`;
-        // Exclure les managers des destinataires email (no-show réservé patron/admin)
-        const mgrSnap = await db.collection('users').where('role', '==', 'manager').get();
-        const mgrEmails = new Set(mgrSnap.docs.map(d => String(d.data().email || '').toLowerCase()));
-        const alertTo = (await getAlertEmails()).filter(e => !mgrEmails.has(String(e).toLowerCase()));
         if (!alertTo.length) {
-            console.log(`[no-show] ${empName} — aucun destinataire patron/admin pour l'email.`);
+            console.log(`[no-show] ${empName} — aucun destinataire RH pour l'email.`);
             continue;
         }
         await transporter.sendMail({
@@ -1335,6 +1495,60 @@ async function getAlertEmails() {
     const snap = await db.doc('settings/alert_emails').get();
     const list = (_b = (_a = snap.data()) === null || _a === void 0 ? void 0 : _a.responsables) !== null && _b !== void 0 ? _b : [];
     return list.length > 0 ? list : RESPONSABLES_EMAILS_FALLBACK;
+}
+// Rôles exemptés des règles de pointage (retard + no-show) car ils ne pointent pas.
+// Défaut : patron/admin/manager. Réglable dans Paramètres → Alertes RH (rhExemptRoles).
+async function getExemptRoles() {
+    const cfg = (await db.doc('settings/alert_emails').get()).data();
+    return Array.isArray(cfg === null || cfg === void 0 ? void 0 : cfg.rhExemptRoles) ? cfg.rhExemptRoles : ['patron', 'administrateur', 'manager'];
+}
+// Destinataires des alertes RH (retard + no-show) — email + tokens FCM.
+// Configurables dans Paramètres → « Alertes RH ». Priorité de repli :
+// rhResponsables → responsables → liste par défaut. Zéro régression si non configuré.
+async function getRhAlertTargets() {
+    const cfg = (await db.doc('settings/alert_emails').get()).data();
+    const list = Array.isArray(cfg === null || cfg === void 0 ? void 0 : cfg.rhResponsables) && cfg.rhResponsables.length ? cfg.rhResponsables
+        : Array.isArray(cfg === null || cfg === void 0 ? void 0 : cfg.responsables) && cfg.responsables.length ? cfg.responsables
+            : RESPONSABLES_EMAILS_FALLBACK;
+    const emailsLower = new Set(list.map((e) => String(e).toLowerCase()));
+    const usersSnap = await db.collection('users').get();
+    const tokens = [];
+    for (const u of usersSnap.docs) {
+        const d = u.data();
+        if (d.fcmToken && emailsLower.has(String(d.email || '').toLowerCase()))
+            tokens.push(d.fcmToken);
+    }
+    return { emails: list, tokens };
+}
+// Envoie une notif FCM à des tokens précis + purge ceux qui sont périmés (NotRegistered).
+// Évite le piège « token mort = silence permanent » (cas Arthur, 2026-07-12).
+async function notifyTokens(title, body, link, tokens) {
+    if (!tokens.length)
+        return;
+    const resp = await (0, messaging_1.getMessaging)().sendEachForMulticast({
+        tokens,
+        notification: { title, body },
+        data: { link },
+        webpush: {
+            notification: { icon: '/icons/icon-192.png', badge: '/icons/icon-192.png', tag: 'yorgios-rh', renotify: true },
+            fcmOptions: { link },
+        },
+    });
+    const dead = [];
+    resp.responses.forEach((r, i) => {
+        var _a;
+        const code = (_a = r.error) === null || _a === void 0 ? void 0 : _a.code;
+        if (!r.success && (code === 'messaging/registration-token-not-registered' || code === 'messaging/invalid-registration-token')) {
+            dead.push(tokens[i]);
+        }
+    });
+    if (dead.length) {
+        const usersSnap = await db.collection('users').get();
+        await Promise.all(usersSnap.docs
+            .filter(u => dead.includes(u.data().fcmToken))
+            .map(u => u.ref.update({ fcmToken: firestore_1.FieldValue.delete() }).catch(() => { })));
+        console.log(`[rh-alert] ${dead.length} token(s) FCM périmé(s) purgé(s).`);
+    }
 }
 exports.onLivraisonReception = (0, firestore_2.onDocumentUpdated)({ document: 'livraisons/{livId}', region: 'europe-west1', database: 'test' }, async (event) => {
     var _a, _b, _c, _d;
@@ -1482,6 +1696,7 @@ exports.notifTemperaturesEvening = (0, scheduler_1.onSchedule)({ schedule: '0 22
 });
 /** Samedi 18h00 — Rappel hygiène hebdo si non faite (corner + patron + manager) */
 exports.notifHygieneHebdo = (0, scheduler_1.onSchedule)({ schedule: '0 18 * * 6', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
+    var _a;
     const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Paris' }));
     // Calcul ISO week
     const date = new Date(now);
@@ -1491,8 +1706,15 @@ exports.notifHygieneHebdo = (0, scheduler_1.onSchedule)({ schedule: '0 18 * * 6'
     const isoWeek = 1 + Math.round(((date.getTime() - w1.getTime()) / 86400000 - 3 + (w1.getDay() + 6) % 7) / 7);
     const weekId = `${date.getFullYear()}-W${String(isoWeek).padStart(2, '0')}_hebdo`;
     const snap = await db.doc(`hygiene_corner/${weekId}`).get();
-    if (snap.exists) {
-        console.log('[hebdo] Hygiène hebdo déjà faite, pas de notif.');
+    if ((0, periods_1.isHygieneDone)((_a = snap.data()) === null || _a === void 0 ? void 0 : _a.items, (0, periods_1.itemIdsFor)('hebdo'))) {
+        console.log('[hebdo] Hygiène hebdo complète, pas de notif.');
+        return;
+    }
+    // Un responsable désigné reçoit déjà ses rappels ciblés : le broadcast
+    // collectif ne sert que de filet quand personne n'est désigné.
+    const respSnap = await db.doc(`hygiene_responsables/${weekId}`).get();
+    if (respSnap.exists) {
+        console.log('[hebdo] Responsable désigné, rappel ciblé — pas de broadcast.');
         return;
     }
     await notifyRoles('🧼 Hygiène hebdo non faite', "La checklist d'hygiène hebdomadaire n'a pas encore été complétée cette semaine !", '/corner/hygiene', ['corner', 'patron', 'administrateur', 'manager']);
@@ -1500,6 +1722,7 @@ exports.notifHygieneHebdo = (0, scheduler_1.onSchedule)({ schedule: '0 18 * * 6'
 });
 /** Avant-dernier jour du mois à 18h — Rappel hygiène mensuelle si non faite */
 exports.notifHygieneMensuel = (0, scheduler_1.onSchedule)({ schedule: '0 18 28-31 * *', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
+    var _a;
     const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Paris' }));
     // Vérifier que demain est bien le dernier jour du mois
     const tomorrow = new Date(now);
@@ -1513,8 +1736,13 @@ exports.notifHygieneMensuel = (0, scheduler_1.onSchedule)({ schedule: '0 18 28-3
     const p = (n) => String(n).padStart(2, '0');
     const monthId = `${now.getFullYear()}-${p(now.getMonth() + 1)}_mensuel`;
     const snap = await db.doc(`hygiene_corner/${monthId}`).get();
-    if (snap.exists) {
-        console.log('[mensuel] Hygiène mensuelle déjà faite, pas de notif.');
+    if ((0, periods_1.isHygieneDone)((_a = snap.data()) === null || _a === void 0 ? void 0 : _a.items, (0, periods_1.itemIdsFor)('mensuel'))) {
+        console.log('[mensuel] Hygiène mensuelle complète, pas de notif.');
+        return;
+    }
+    const respSnap = await db.doc(`hygiene_responsables/${monthId}`).get();
+    if (respSnap.exists) {
+        console.log('[mensuel] Responsable désigné, rappel ciblé — pas de broadcast.');
         return;
     }
     await notifyRoles('🧼 Hygiène mensuelle non faite', "La checklist d'hygiène mensuelle n'a pas encore été complétée ce mois-ci !", '/corner/hygiene', ['corner', 'patron', 'administrateur', 'manager']);

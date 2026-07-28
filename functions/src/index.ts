@@ -3,13 +3,17 @@ import { initializeApp } from 'firebase-admin/app'
 import { getFirestore, Timestamp, FieldValue } from 'firebase-admin/firestore'
 import { getMessaging } from 'firebase-admin/messaging'
 import { getAuth } from 'firebase-admin/auth'
-import { onDocumentCreated, onDocumentUpdated } from 'firebase-functions/v2/firestore'
+import { onDocumentCreated, onDocumentUpdated, onDocumentWritten } from 'firebase-functions/v2/firestore'
 import { onSchedule } from 'firebase-functions/v2/scheduler'
 import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https'
 import { google } from 'googleapis'
 import * as nodemailer from 'nodemailer'
 import { validateRequest as twilioValidate } from 'twilio/lib/webhooks/webhooks'
 import * as crypto from 'crypto'
+import {
+  getPeriodId, resolveJalon, isHygieneDone, itemIdsFor, parisNow,
+  type HygieneKind,
+} from './hygiene/periods'
 
 const app = initializeApp()
 // Firestore DB non-default : 'test'
@@ -1123,6 +1127,190 @@ async function notifyUids(uids: string[], title: string, body: string, link: str
   })
 }
 
+/** Destinataires de l'escalade hygiène.
+ *  Repli sur settings/alert_emails.responsables puis sur la liste par
+ *  défaut : une escalade ne doit jamais partir dans le vide. */
+async function getHygieneEscaladeEmails(): Promise<string[]> {
+  const snap = await db.doc('settings/hygiene_responsables').get()
+  const configures = (snap.data()?.escaladeDestinataires ?? []) as string[]
+  if (configures.length) return configures
+
+  const alertSnap = await db.doc('settings/alert_emails').get()
+  const repli = (alertSnap.data()?.responsables ?? []) as string[]
+  if (repli.length) return repli
+
+  return ['a.cozzika@gmail.com', 'kyriazis@outlook.fr']
+}
+
+async function hygieneRappelsActifs(): Promise<boolean> {
+  const snap = await db.doc('settings/hygiene_responsables').get()
+  return snap.data()?.rappelsEnabled !== false
+}
+
+async function sendHygieneMail(to: string[], cc: string[], subject: string, html: string) {
+  if (!to.length) return
+  const gmailUser = process.env.GMAIL_USER
+  const gmailPass = process.env.GMAIL_APP_PASSWORD
+  if (!gmailUser || !gmailPass) {
+    console.error('[hygiene] GMAIL_USER ou GMAIL_APP_PASSWORD absent — email non envoyé')
+    return
+  }
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user: gmailUser, pass: gmailPass },
+  })
+  await transporter.sendMail({
+    from: `Yorgios <${gmailUser}>`,
+    to: to.join(','),
+    cc: cc.length ? cc.join(',') : undefined,
+    subject,
+    html,
+  })
+}
+
+const LIBELLE_KIND: Record<HygieneKind, string> = {
+  hebdo: 'hebdomadaire',
+  mensuel: 'mensuelle',
+}
+
+/** Notifie le salarié qui vient d'être désigné responsable d'une checklist. */
+export const onHygieneResponsableAssigned = onDocumentWritten(
+  { document: 'hygiene_responsables/{periodId}', region: 'europe-west1' },
+  async (event) => {
+    const avant = event.data?.before.data()
+    const apres = event.data?.after.data()
+    if (!apres) return
+
+    // GARDE INDISPENSABLE : cette fonction écrit notifiedAt dans le document
+    // qui la déclenche. Sans cette sortie, elle se rappellerait en boucle à
+    // chaque mise à jour de remindersSent.
+    if (avant?.assigneeUid === apres.assigneeUid) return
+
+    const kind = apres.kind as HygieneKind
+    const libelle = LIBELLE_KIND[kind] ?? kind
+    const periode = String(apres.periodId ?? '').replace(/_hebdo|_mensuel/, '')
+
+    const titre = `🧼 Tu es responsable de l'hygiène ${libelle}`
+    const corps = `Période ${periode} — checklist à compléter avant la fin de la période.`
+
+    await notifyUids([apres.assigneeUid], titre, corps, '/corner/hygiene')
+
+    if (apres.assigneeEmail) {
+      await sendHygieneMail(
+        [apres.assigneeEmail],
+        [],
+        titre,
+        `<p>Bonjour ${apres.assigneeName},</p>
+         <p>Tu as été désigné(e) responsable de la <strong>checklist d'hygiène ${libelle}</strong>
+         pour la période <strong>${periode}</strong>, par ${apres.assignedByName}.</p>
+         <p>Elle est à compléter dans l'application, onglet Nettoyage :
+         <a href="https://cuisine-yorgios.web.app/corner/hygiene">ouvrir la checklist</a>.</p>
+         <p>Merci !</p>`,
+      )
+    }
+
+    await event.data!.after.ref.set({ notifiedAt: new Date() }, { merge: true })
+    console.log(`[hygiene] Désignation notifiée : ${apres.assigneeName} — ${apres.periodId}`)
+  }
+)
+
+/** 10h et 18h — rappels ciblés au responsable, puis escalade. */
+export const hygieneRappelsResponsables = onSchedule(
+  { schedule: '0 10,18 * * *', timeZone: 'Europe/Paris', region: 'europe-west1' },
+  async () => {
+    if (!(await hygieneRappelsActifs())) {
+      console.log('[hygiene] Rappels désactivés dans les paramètres.')
+      return
+    }
+
+    const now = parisNow()
+
+    for (const kind of ['hebdo', 'mensuel'] as HygieneKind[]) {
+      try {
+        const jalon = resolveJalon(kind, now)
+        if (!jalon) continue
+
+        const periodId = getPeriodId(kind, now)
+        const libelle = LIBELLE_KIND[kind]
+        const periode = periodId.replace(/_hebdo|_mensuel/, '')
+
+        // La checklist est-elle complète ? Si oui, aucun rappel, escalade comprise.
+        const checkSnap = await db.doc(`hygiene_corner/${periodId}`).get()
+        if (isHygieneDone(checkSnap.data()?.items, itemIdsFor(kind))) {
+          console.log(`[hygiene] ${periodId} complète — pas de rappel.`)
+          continue
+        }
+
+        const respRef = db.doc(`hygiene_responsables/${periodId}`)
+        const respSnap = await respRef.get()
+
+        // Aucun responsable désigné : on alerte les encadrants, une seule fois,
+        // au premier jalon. Pas de document où inscrire le jalon, l'unicité
+        // repose sur la correspondance exacte jour + heure.
+        if (!respSnap.exists) {
+          if (jalon !== 'j-3') continue
+          const emails = await getHygieneEscaladeEmails()
+          await sendHygieneMail(
+            emails, [],
+            `⚠️ Aucun responsable désigné — hygiène ${libelle} ${periode}`,
+            `<p>La checklist d'hygiène <strong>${libelle}</strong> de la période
+             <strong>${periode}</strong> n'a aucun responsable désigné et n'est pas faite.</p>
+             <p><a href="https://cuisine-yorgios.web.app/corner/hygiene">Désigner un responsable</a></p>`,
+          )
+          console.log(`[hygiene] ${periodId} sans responsable — encadrants alertés.`)
+          continue
+        }
+
+        const resp = respSnap.data()!
+        const dejaEnvoyes = (resp.remindersSent ?? []) as string[]
+        if (dejaEnvoyes.includes(jalon)) {
+          console.log(`[hygiene] ${periodId} jalon ${jalon} déjà envoyé.`)
+          continue
+        }
+
+        if (jalon === 'escalade') {
+          const emails = await getHygieneEscaladeEmails()
+          await sendHygieneMail(
+            emails,
+            resp.assigneeEmail ? [resp.assigneeEmail] : [],
+            `🚨 Hygiène ${libelle} non faite — ${periode}`,
+            `<p>La checklist d'hygiène <strong>${libelle}</strong> de la période
+             <strong>${periode}</strong> n'a pas été complétée.</p>
+             <p>Responsable désigné : <strong>${resp.assigneeName}</strong>
+             (désigné par ${resp.assignedByName}).</p>
+             <p>Rappels déjà envoyés : ${dejaEnvoyes.length ? dejaEnvoyes.join(', ') : 'aucun'}.</p>`,
+          )
+          await respRef.set({
+            remindersSent: [...dejaEnvoyes, jalon],
+            escalatedAt: new Date(),
+          }, { merge: true })
+          console.log(`[hygiene] ${periodId} escaladé.`)
+          continue
+        }
+
+        const titre = `🧼 Rappel — hygiène ${libelle}`
+        const corps = `La checklist ${periode} n'est pas terminée.`
+        await notifyUids([resp.assigneeUid], titre, corps, '/corner/hygiene')
+        if (resp.assigneeEmail) {
+          await sendHygieneMail(
+            [resp.assigneeEmail], [], titre,
+            `<p>Bonjour ${resp.assigneeName},</p>
+             <p>La <strong>checklist d'hygiène ${libelle}</strong> de la période
+             <strong>${periode}</strong> n'est pas encore terminée.</p>
+             <p><a href="https://cuisine-yorgios.web.app/corner/hygiene">Compléter la checklist</a></p>`,
+          )
+        }
+        await respRef.set({ remindersSent: [...dejaEnvoyes, jalon] }, { merge: true })
+        console.log(`[hygiene] ${periodId} rappel ${jalon} envoyé à ${resp.assigneeName}.`)
+      } catch (err) {
+        // Une panne sur un type de période (hebdo/mensuel) ne doit jamais
+        // empêcher le traitement de l'autre — on logue et on continue la boucle.
+        console.error(`[hygiene] Erreur traitement rappels (${kind}) :`, err)
+      }
+    }
+  }
+)
+
 /** 8h30 — Rappel températures frigo si non saisies (corner + patron + manager) */
 export const notifTemperatures = onSchedule(
   { schedule: '30 8 * * *', timeZone: 'Europe/Paris', region: 'europe-west1' },
@@ -1831,8 +2019,15 @@ export const notifHygieneHebdo = onSchedule(
     const isoWeek = 1 + Math.round(((date.getTime() - w1.getTime()) / 86400000 - 3 + (w1.getDay() + 6) % 7) / 7)
     const weekId = `${date.getFullYear()}-W${String(isoWeek).padStart(2, '0')}_hebdo`
     const snap = await db.doc(`hygiene_corner/${weekId}`).get()
-    if (snap.exists) {
-      console.log('[hebdo] Hygiène hebdo déjà faite, pas de notif.')
+    if (isHygieneDone(snap.data()?.items, itemIdsFor('hebdo'))) {
+      console.log('[hebdo] Hygiène hebdo complète, pas de notif.')
+      return
+    }
+    // Un responsable désigné reçoit déjà ses rappels ciblés : le broadcast
+    // collectif ne sert que de filet quand personne n'est désigné.
+    const respSnap = await db.doc(`hygiene_responsables/${weekId}`).get()
+    if (respSnap.exists) {
+      console.log('[hebdo] Responsable désigné, rappel ciblé — pas de broadcast.')
       return
     }
     await notifyRoles(
@@ -1860,8 +2055,13 @@ export const notifHygieneMensuel = onSchedule(
     const p = (n: number) => String(n).padStart(2, '0')
     const monthId = `${now.getFullYear()}-${p(now.getMonth() + 1)}_mensuel`
     const snap = await db.doc(`hygiene_corner/${monthId}`).get()
-    if (snap.exists) {
-      console.log('[mensuel] Hygiène mensuelle déjà faite, pas de notif.')
+    if (isHygieneDone(snap.data()?.items, itemIdsFor('mensuel'))) {
+      console.log('[mensuel] Hygiène mensuelle complète, pas de notif.')
+      return
+    }
+    const respSnap = await db.doc(`hygiene_responsables/${monthId}`).get()
+    if (respSnap.exists) {
+      console.log('[mensuel] Responsable désigné, rappel ciblé — pas de broadcast.')
       return
     }
     await notifyRoles(
