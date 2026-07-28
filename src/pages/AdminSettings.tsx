@@ -9,6 +9,10 @@ import {
   DEFAULT_HYGIENE_SETTINGS, mergeHygieneSettings,
   type HygieneSettings,
 } from '../utils/hygieneSettings'
+import HygieneItemsSection from '../components/settings/HygieneItemsSection'
+import {
+  ITEMS_ORIGINE, mergeHygieneItems, type HygieneItemsSettings,
+} from '../utils/hygieneItems'
 
 /* ─── Types ─────────────────────────────────────────── */
 interface NotifConfig {
@@ -335,6 +339,7 @@ export default function AdminSettings() {
   const [nightlyCfg, setNightlyCfg] = useState<NightlyRupturesConfig>({ enabled: true, pauseFrom: '', pauseTo: '', ccEmails: [] })
   const [alertEmails, setAlertEmails] = useState<AlertEmailsSettings>(DEFAULT_ALERT_EMAILS)
   const [hygieneResp, setHygieneResp] = useState<HygieneSettings>(DEFAULT_HYGIENE_SETTINGS)
+  const [hygieneItems, setHygieneItems] = useState<HygieneItemsSettings>(ITEMS_ORIGINE)
   const [historyLimits, setHistoryLimits] = useState<HistoryLimitsSettings>(DEFAULT_HISTORY_LIMITS)
   const [commandesEmails, setCommandesEmails] = useState<CommandesEmailsSettings>(DEFAULT_COMMANDES_EMAILS)
   const [managers, setManagers] = useState<ManagerUser[]>([])
@@ -412,7 +417,7 @@ export default function AdminSettings() {
   useEffect(() => {
     async function load() {
       try {
-        const [nSnap, eSnap, xSnap, rSnap, tSnap, rupSnap, plSnap, catSnap, nrSnap, aeSnap, hlSnap, ceSnap, hygieneRespSnap] = await Promise.all([
+        const [nSnap, eSnap, xSnap, rSnap, tSnap, rupSnap, plSnap, catSnap, nrSnap, aeSnap, hlSnap, ceSnap, hygieneRespSnap, hygieneItemsSnap] = await Promise.all([
           getDoc(doc(db, 'settings', 'notifications')),
           getDoc(doc(db, 'settings', 'emails')),
           getDoc(doc(db, 'settings', 'exports')),
@@ -426,6 +431,7 @@ export default function AdminSettings() {
           getDoc(doc(db, 'settings', 'history_limits')),
           getDoc(doc(db, 'settings', 'commandes_emails')),
           getDoc(doc(db, 'settings', 'hygiene_responsables')),
+          getDoc(doc(db, 'settings', 'hygiene_items')),
         ])
         if (nSnap.exists()) setNotifs({ ...DEFAULT_NOTIFS, ...nSnap.data() } as NotificationsSettings)
         if (eSnap.exists()) {
@@ -445,6 +451,9 @@ export default function AdminSettings() {
         if (ceSnap.exists()) setCommandesEmails({ ...DEFAULT_COMMANDES_EMAILS, ...ceSnap.data() } as CommandesEmailsSettings)
         if (hygieneRespSnap.exists()) {
           setHygieneResp(mergeHygieneSettings(hygieneRespSnap.data()))
+        }
+        if (hygieneItemsSnap.exists()) {
+          setHygieneItems(mergeHygieneItems(hygieneItemsSnap.data()))
         }
         if (plSnap.exists()) {
           const lvls = (plSnap.data() as any).levels
@@ -479,6 +488,7 @@ export default function AdminSettings() {
         setDoc(doc(db, 'settings', 'history_limits'), historyLimits),
         setDoc(doc(db, 'settings', 'commandes_emails'), commandesEmails),
         setDoc(doc(db, 'settings', 'hygiene_responsables'), hygieneResp),
+        setDoc(doc(db, 'settings', 'hygiene_items'), hygieneItems),
       ])
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
@@ -624,6 +634,8 @@ export default function AdminSettings() {
         onChange={setHygieneResp}
         managers={managers}
       />
+
+      <HygieneItemsSection value={hygieneItems} onChange={setHygieneItems} />
 
       {/* ── Section : Alertes email — responsables ── */}
       <div>
