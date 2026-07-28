@@ -6,7 +6,7 @@ import { useAuth } from '../../../auth/useAuth'
 import { usePermissions } from '../../../contexts/PermissionsContext'
 import ResponsableSelector from '../components/ResponsableSelector'
 import {
-  QUOTIDIEN_IDS, HEBDO_IDS, MENSUEL_IDS,
+  ITEMS_ORIGINE_IDS,
   getISOWeek, getPeriodId,
 } from '../utils/hygiene'
 import { loadResponsableHistory, type HygieneResponsable } from '../firebase/hygieneResponsables'
@@ -171,8 +171,8 @@ export default function Hygiene() {
         if (snap.exists()) {
           const data = snap.data() as SavedCheck
           const items = data.items || {}
-          const total = QUOTIDIEN_IDS.length
-          const done = QUOTIDIEN_IDS.filter(id => items[id]).length
+          const total = ITEMS_ORIGINE_IDS.quotidien.length
+          const done = ITEMS_ORIGINE_IDS.quotidien.filter(id => items[id]).length
           dayResults[dateStr] = { total, done }
         } else {
           dayResults[dateStr] = null
@@ -186,7 +186,7 @@ export default function Hygiene() {
       if (hebdoSnap.exists()) {
         const data = hebdoSnap.data() as SavedCheck
         const items = data.items || {}
-        setHistHebdo({ total: HEBDO_IDS.length, done: HEBDO_IDS.filter(id => items[id]).length })
+        setHistHebdo({ total: ITEMS_ORIGINE_IDS.hebdo.length, done: ITEMS_ORIGINE_IDS.hebdo.filter(id => items[id]).length })
       } else {
         setHistHebdo(null)
       }
@@ -197,7 +197,7 @@ export default function Hygiene() {
       if (mensuelSnap.exists()) {
         const data = mensuelSnap.data() as SavedCheck
         const items = data.items || {}
-        setHistMensuel({ total: MENSUEL_IDS.length, done: MENSUEL_IDS.filter(id => items[id]).length })
+        setHistMensuel({ total: ITEMS_ORIGINE_IDS.mensuel.length, done: ITEMS_ORIGINE_IDS.mensuel.filter(id => items[id]).length })
       } else {
         setHistMensuel(null)
       }
@@ -232,7 +232,7 @@ export default function Hygiene() {
       // rendu la traite comme "statut indisponible", pas comme "non fait".
       const statuts: Record<string, { done: number; total: number }> = {}
       const results = await Promise.allSettled(toutes.map(async r => {
-        const ids = r.kind === 'hebdo' ? HEBDO_IDS : MENSUEL_IDS
+        const ids = r.kind === 'hebdo' ? ITEMS_ORIGINE_IDS.hebdo : ITEMS_ORIGINE_IDS.mensuel
         const snap = await getDoc(doc(db, 'hygiene_corner', r.periodId))
         const items = snap.exists() ? (snap.data() as SavedCheck).items : undefined
         return {

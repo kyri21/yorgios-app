@@ -1129,7 +1129,7 @@ exports.onHygieneResponsableAssigned = (0, firestore_2.onDocumentWritten)(
  *  après avoir traité l'autre. Sans cela, le planificateur Cloud considérait
  *  l'exécution réussie et l'incident n'apparaissait nulle part. */
 exports.hygieneRappelsResponsables = (0, scheduler_1.onSchedule)({ schedule: '0 * * * *', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
-    var _a, _b;
+    var _a;
     const echecs = [];
     for (const kind of ['hebdo', 'mensuel']) {
         try {
@@ -1151,7 +1151,7 @@ exports.hygieneRappelsResponsables = (0, scheduler_1.onSchedule)({ schedule: '0 
             const corps = `La checklist ${periode} n'est pas terminée.`;
             // La checklist est-elle complète ? Si oui, aucun rappel, escalade comprise.
             const checkSnap = await db.doc(`hygiene_corner/${periodId}`).get();
-            if ((0, periods_1.isHygieneDone)((_a = checkSnap.data()) === null || _a === void 0 ? void 0 : _a.items, (0, periods_1.itemIdsFor)(kind))) {
+            if ((0, periods_1.estComplete)(checkSnap.data(), kind)) {
                 console.log(`[hygiene] ${periodId} complète — pas de rappel.`);
                 continue;
             }
@@ -1174,7 +1174,7 @@ exports.hygieneRappelsResponsables = (0, scheduler_1.onSchedule)({ schedule: '0 
                 continue;
             }
             const resp = respSnap.data();
-            const dejaEnvoyes = ((_b = resp.remindersSent) !== null && _b !== void 0 ? _b : []);
+            const dejaEnvoyes = ((_a = resp.remindersSent) !== null && _a !== void 0 ? _a : []);
             if (dejaEnvoyes.includes(jalon)) {
                 console.log(`[hygiene] ${periodId} jalon ${jalon} déjà envoyé.`);
                 continue;
@@ -1824,7 +1824,6 @@ exports.notifTemperaturesEvening = (0, scheduler_1.onSchedule)({ schedule: '0 22
 });
 /** Samedi 18h00 — Rappel hygiène hebdo si non faite (corner + patron + manager) */
 exports.notifHygieneHebdo = (0, scheduler_1.onSchedule)({ schedule: '0 18 * * 6', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
-    var _a;
     const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Paris' }));
     // Calcul ISO week
     const date = new Date(now);
@@ -1834,7 +1833,7 @@ exports.notifHygieneHebdo = (0, scheduler_1.onSchedule)({ schedule: '0 18 * * 6'
     const isoWeek = 1 + Math.round(((date.getTime() - w1.getTime()) / 86400000 - 3 + (w1.getDay() + 6) % 7) / 7);
     const weekId = `${date.getFullYear()}-W${String(isoWeek).padStart(2, '0')}_hebdo`;
     const snap = await db.doc(`hygiene_corner/${weekId}`).get();
-    if ((0, periods_1.isHygieneDone)((_a = snap.data()) === null || _a === void 0 ? void 0 : _a.items, (0, periods_1.itemIdsFor)('hebdo'))) {
+    if ((0, periods_1.estComplete)(snap.data(), 'hebdo')) {
         console.log('[hebdo] Hygiène hebdo complète, pas de notif.');
         return;
     }
@@ -1854,7 +1853,6 @@ exports.notifHygieneHebdo = (0, scheduler_1.onSchedule)({ schedule: '0 18 * * 6'
 });
 /** Avant-dernier jour du mois à 18h — Rappel hygiène mensuelle si non faite */
 exports.notifHygieneMensuel = (0, scheduler_1.onSchedule)({ schedule: '0 18 28-31 * *', timeZone: 'Europe/Paris', region: 'europe-west1' }, async () => {
-    var _a;
     const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Paris' }));
     // Vérifier que demain est bien le dernier jour du mois
     const tomorrow = new Date(now);
@@ -1868,7 +1866,7 @@ exports.notifHygieneMensuel = (0, scheduler_1.onSchedule)({ schedule: '0 18 28-3
     const p = (n) => String(n).padStart(2, '0');
     const monthId = `${now.getFullYear()}-${p(now.getMonth() + 1)}_mensuel`;
     const snap = await db.doc(`hygiene_corner/${monthId}`).get();
-    if ((0, periods_1.isHygieneDone)((_a = snap.data()) === null || _a === void 0 ? void 0 : _a.items, (0, periods_1.itemIdsFor)('mensuel'))) {
+    if ((0, periods_1.estComplete)(snap.data(), 'mensuel')) {
         console.log('[mensuel] Hygiène mensuelle complète, pas de notif.');
         return;
     }
@@ -1947,10 +1945,10 @@ exports.weeklyHygieneRecap = (0, scheduler_1.onSchedule)({ schedule: '0 8 * * 1'
     const missingHygiene = [];
     for (const day of days) {
         const snap = await db.doc(`hygiene_corner/${day}_quotidien`).get();
-        const items = (_c = snap.data()) === null || _c === void 0 ? void 0 : _c.items;
-        if (!(0, periods_1.isHygieneDone)(items, periods_1.QUOTIDIEN_IDS)) {
-            const coches = periods_1.QUOTIDIEN_IDS.filter(id => (items === null || items === void 0 ? void 0 : items[id]) === true).length;
-            missingHygiene.push(`  ${day} — ${coches}/${periods_1.QUOTIDIEN_IDS.length} coché(s)`);
+        if (!(0, periods_1.estComplete)(snap.data(), 'quotidien')) {
+            const attendus = (_d = (_c = snap.data()) === null || _c === void 0 ? void 0 : _c.itemsAttendus) !== null && _d !== void 0 ? _d : periods_1.ITEMS_ORIGINE_IDS.quotidien;
+            const coches = attendus.filter((id) => { var _a, _b; return ((_b = (_a = snap.data()) === null || _a === void 0 ? void 0 : _a.items) === null || _b === void 0 ? void 0 : _b[id]) === true; }).length;
+            missingHygiene.push(`  ${day} — ${coches}/${attendus.length} coché(s)`);
         }
     }
     // Vérifier hygiène hebdo — identifiant produit par getPeriodId (année ISO,
@@ -1959,11 +1957,7 @@ exports.weeklyHygieneRecap = (0, scheduler_1.onSchedule)({ schedule: '0 8 * * 1'
     // un document qui n'existe pas, là où le client écrit 2026-W01_hebdo.
     const weekId = (0, periods_1.getPeriodId)('hebdo', lastMonday);
     const hebdoSnap = await db.doc(`hygiene_corner/${weekId}`).get();
-    const hebdoItems = (_d = hebdoSnap.data()) === null || _d === void 0 ? void 0 : _d.items;
-    const hebdoIds = (0, periods_1.itemIdsFor)('hebdo');
-    const missingHebdo = (0, periods_1.isHygieneDone)(hebdoItems, hebdoIds)
-        ? null
-        : `  ${weekId} — ${hebdoIds.filter(id => (hebdoItems === null || hebdoItems === void 0 ? void 0 : hebdoItems[id]) === true).length}/${hebdoIds.length} coché(s)`;
+    const missingHebdo = !(0, periods_1.estComplete)(hebdoSnap.data(), 'hebdo') ? `  ${weekId}_hebdo` : null;
     // Si rien à signaler
     if (missingTemps.length === 0 && missingHygiene.length === 0 && !missingHebdo) {
         console.log('[weeklyRecap] Tout est complet, aucun email envoyé.');

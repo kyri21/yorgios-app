@@ -21,22 +21,40 @@ export type HygieneSettings = {
   canaux:  { designation: Canal; rappel: Canal; escalade: Canal }
 }
 
-/** Checklist quotidienne — 13 items, recopiés à l'identique de
- *  src/modules/corner/utils/hygiene.ts. Le récapitulatif du lundi en a
- *  besoin pour rendre le même verdict que le Dashboard : sans cette liste
- *  il retombait sur « le document existe = c'est fait ». */
-export const QUOTIDIEN_IDS = [
-  'plats_service', 'int_vitrines', 'ustensiles', 'meuble_vente',
-  'comptoir_balance', 'micro_ondes', 'evier_papier', 'etiquettes',
-  'plan_travail', 'ext_placards', 'ext_frigo', 'poubelle', 'vitres',
-]
+/** Identifiants des items d'ORIGINE, GELÉS.
+ *
+ *  Ne jamais les modifier : les items évoluent désormais dans
+ *  `settings/hygiene_items`. Ils servent uniquement de repli pour les
+ *  documents `hygiene_corner` antérieurs, qui ne portent pas `itemsAttendus`.
+ *  Les juger sur la liste courante rendrait tout l'historique incomplet au
+ *  premier ajout d'item. */
+export const ITEMS_ORIGINE_IDS: Record<'quotidien' | 'hebdo' | 'mensuel', string[]> = {
+  quotidien: [
+    'plats_service', 'int_vitrines', 'ustensiles', 'meuble_vente',
+    'comptoir_balance', 'micro_ondes', 'evier_papier', 'etiquettes',
+    'plan_travail', 'ext_placards', 'ext_frigo', 'poubelle', 'vitres',
+  ],
+  hebdo: [
+    'int_frigos', 'etageres_materiels', 'support_papier',
+    'placard_hygiene', 'machine_glacon',
+  ],
+  mensuel: ['placard_rangement'],
+}
 
-export const HEBDO_IDS = [
-  'int_frigos', 'etageres_materiels', 'support_papier',
-  'placard_hygiene', 'machine_glacon',
-]
-
-export const MENSUEL_IDS = ['placard_rangement']
+/** Une période est faite quand tous les items QUI LUI ÉTAIENT DEMANDÉS sont
+ *  cochés. Le document porte lui-même sa référence (`itemsAttendus`), donc
+ *  aucune lecture supplémentaire n'est nécessaire ici. */
+export function estComplete(
+  docData: any,
+  kind: 'quotidien' | 'hebdo' | 'mensuel',
+): boolean {
+  if (!docData) return false
+  const attendus: string[] = Array.isArray(docData.itemsAttendus) && docData.itemsAttendus.length
+    ? docData.itemsAttendus
+    : ITEMS_ORIGINE_IDS[kind]
+  const items = docData.items ?? {}
+  return attendus.every(id => items[id] === true)
+}
 
 /** Ces valeurs reproduisent exactement le comportement figé de la révision 1.
  *  Elles sont dupliquées dans src/utils/hygieneSettings.ts — les tests des
@@ -145,10 +163,6 @@ export function mergeHygieneSettings(data: any): HygieneSettings {
   }
 }
 
-export function itemIdsFor(kind: HygieneKind): string[] {
-  return kind === 'hebdo' ? HEBDO_IDS : MENSUEL_IDS
-}
-
 const pad = (n: number) => String(n).padStart(2, '0')
 
 function thursdayOfISOWeek(d: Date): Date {
@@ -213,14 +227,6 @@ export function resolveJalon(
     if (j.actif && j.joursAvantFin === restants && j.heure === heure) return cle
   }
   return null
-}
-
-export function isHygieneDone(
-  items: Record<string, boolean> | undefined | null,
-  ids: string[],
-): boolean {
-  if (!items) return false
-  return ids.every(id => items[id] === true)
 }
 
 /** Heure murale de Paris, quel que soit le fuseau du conteneur.

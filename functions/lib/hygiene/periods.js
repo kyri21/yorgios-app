@@ -4,27 +4,44 @@
  *  ce projet n'a pas d'import cross-package entre le client et les fonctions.
  *  Les tests des deux côtés vérifient les mêmes identifiants. */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DEFAULT_HYGIENE_SETTINGS = exports.MENSUEL_IDS = exports.HEBDO_IDS = exports.QUOTIDIEN_IDS = void 0;
+exports.DEFAULT_HYGIENE_SETTINGS = exports.ITEMS_ORIGINE_IDS = void 0;
+exports.estComplete = estComplete;
 exports.mergeHygieneSettings = mergeHygieneSettings;
-exports.itemIdsFor = itemIdsFor;
 exports.getPeriodId = getPeriodId;
 exports.resolveJalon = resolveJalon;
-exports.isHygieneDone = isHygieneDone;
 exports.parisNow = parisNow;
-/** Checklist quotidienne — 13 items, recopiés à l'identique de
- *  src/modules/corner/utils/hygiene.ts. Le récapitulatif du lundi en a
- *  besoin pour rendre le même verdict que le Dashboard : sans cette liste
- *  il retombait sur « le document existe = c'est fait ». */
-exports.QUOTIDIEN_IDS = [
-    'plats_service', 'int_vitrines', 'ustensiles', 'meuble_vente',
-    'comptoir_balance', 'micro_ondes', 'evier_papier', 'etiquettes',
-    'plan_travail', 'ext_placards', 'ext_frigo', 'poubelle', 'vitres',
-];
-exports.HEBDO_IDS = [
-    'int_frigos', 'etageres_materiels', 'support_papier',
-    'placard_hygiene', 'machine_glacon',
-];
-exports.MENSUEL_IDS = ['placard_rangement'];
+/** Identifiants des items d'ORIGINE, GELÉS.
+ *
+ *  Ne jamais les modifier : les items évoluent désormais dans
+ *  `settings/hygiene_items`. Ils servent uniquement de repli pour les
+ *  documents `hygiene_corner` antérieurs, qui ne portent pas `itemsAttendus`.
+ *  Les juger sur la liste courante rendrait tout l'historique incomplet au
+ *  premier ajout d'item. */
+exports.ITEMS_ORIGINE_IDS = {
+    quotidien: [
+        'plats_service', 'int_vitrines', 'ustensiles', 'meuble_vente',
+        'comptoir_balance', 'micro_ondes', 'evier_papier', 'etiquettes',
+        'plan_travail', 'ext_placards', 'ext_frigo', 'poubelle', 'vitres',
+    ],
+    hebdo: [
+        'int_frigos', 'etageres_materiels', 'support_papier',
+        'placard_hygiene', 'machine_glacon',
+    ],
+    mensuel: ['placard_rangement'],
+};
+/** Une période est faite quand tous les items QUI LUI ÉTAIENT DEMANDÉS sont
+ *  cochés. Le document porte lui-même sa référence (`itemsAttendus`), donc
+ *  aucune lecture supplémentaire n'est nécessaire ici. */
+function estComplete(docData, kind) {
+    var _a;
+    if (!docData)
+        return false;
+    const attendus = Array.isArray(docData.itemsAttendus) && docData.itemsAttendus.length
+        ? docData.itemsAttendus
+        : exports.ITEMS_ORIGINE_IDS[kind];
+    const items = (_a = docData.items) !== null && _a !== void 0 ? _a : {};
+    return attendus.every(id => items[id] === true);
+}
 /** Ces valeurs reproduisent exactement le comportement figé de la révision 1.
  *  Elles sont dupliquées dans src/utils/hygieneSettings.ts — les tests des
  *  deux côtés assertent les mêmes littéraux pour verrouiller cet accord. */
@@ -129,9 +146,6 @@ function mergeHygieneSettings(data) {
         },
     };
 }
-function itemIdsFor(kind) {
-    return kind === 'hebdo' ? exports.HEBDO_IDS : exports.MENSUEL_IDS;
-}
 const pad = (n) => String(n).padStart(2, '0');
 function thursdayOfISOWeek(d) {
     const date = new Date(d);
@@ -185,11 +199,6 @@ function resolveJalon(kind, now, config) {
             return cle;
     }
     return null;
-}
-function isHygieneDone(items, ids) {
-    if (!items)
-        return false;
-    return ids.every(id => items[id] === true);
 }
 /** Heure murale de Paris, quel que soit le fuseau du conteneur.
  *  Même approche que les fonctions planifiées déjà en place. */

@@ -11,8 +11,8 @@ import * as nodemailer from 'nodemailer'
 import { validateRequest as twilioValidate } from 'twilio/lib/webhooks/webhooks'
 import * as crypto from 'crypto'
 import {
-  getPeriodId, resolveJalon, isHygieneDone, itemIdsFor, parisNow,
-  mergeHygieneSettings, QUOTIDIEN_IDS,
+  getPeriodId, resolveJalon, estComplete, ITEMS_ORIGINE_IDS, parisNow,
+  mergeHygieneSettings,
   type HygieneKind, type HygieneSettings, type JalonKey,
 } from './hygiene/periods'
 
@@ -1327,7 +1327,7 @@ export const hygieneRappelsResponsables = onSchedule(
 
         // La checklist est-elle complète ? Si oui, aucun rappel, escalade comprise.
         const checkSnap = await db.doc(`hygiene_corner/${periodId}`).get()
-        if (isHygieneDone(checkSnap.data()?.items, itemIdsFor(kind))) {
+        if (estComplete(checkSnap.data(), kind)) {
           console.log(`[hygiene] ${periodId} complète — pas de rappel.`)
           continue
         }
@@ -2141,7 +2141,7 @@ export const notifHygieneHebdo = onSchedule(
     const isoWeek = 1 + Math.round(((date.getTime() - w1.getTime()) / 86400000 - 3 + (w1.getDay() + 6) % 7) / 7)
     const weekId = `${date.getFullYear()}-W${String(isoWeek).padStart(2, '0')}_hebdo`
     const snap = await db.doc(`hygiene_corner/${weekId}`).get()
-    if (isHygieneDone(snap.data()?.items, itemIdsFor('hebdo'))) {
+    if (estComplete(snap.data(), 'hebdo')) {
       console.log('[hebdo] Hygiène hebdo complète, pas de notif.')
       return
     }
@@ -2181,7 +2181,7 @@ export const notifHygieneMensuel = onSchedule(
     const p = (n: number) => String(n).padStart(2, '0')
     const monthId = `${now.getFullYear()}-${p(now.getMonth() + 1)}_mensuel`
     const snap = await db.doc(`hygiene_corner/${monthId}`).get()
-    if (isHygieneDone(snap.data()?.items, itemIdsFor('mensuel'))) {
+    if (estComplete(snap.data(), 'mensuel')) {
       console.log('[mensuel] Hygiène mensuelle complète, pas de notif.')
       return
     }
@@ -2278,10 +2278,10 @@ export const weeklyHygieneRecap = onSchedule(
     const missingHygiene: string[] = []
     for (const day of days) {
       const snap = await db.doc(`hygiene_corner/${day}_quotidien`).get()
-      const items = snap.data()?.items as Record<string, boolean> | undefined
-      if (!isHygieneDone(items, QUOTIDIEN_IDS)) {
-        const coches = QUOTIDIEN_IDS.filter(id => items?.[id] === true).length
-        missingHygiene.push(`  ${day} — ${coches}/${QUOTIDIEN_IDS.length} coché(s)`)
+      if (!estComplete(snap.data(), 'quotidien')) {
+        const attendus = snap.data()?.itemsAttendus ?? ITEMS_ORIGINE_IDS.quotidien
+        const coches = attendus.filter((id: string) => snap.data()?.items?.[id] === true).length
+        missingHygiene.push(`  ${day} — ${coches}/${attendus.length} coché(s)`)
       }
     }
 
@@ -2291,11 +2291,7 @@ export const weeklyHygieneRecap = onSchedule(
     // un document qui n'existe pas, là où le client écrit 2026-W01_hebdo.
     const weekId = getPeriodId('hebdo', lastMonday)
     const hebdoSnap = await db.doc(`hygiene_corner/${weekId}`).get()
-    const hebdoItems = hebdoSnap.data()?.items as Record<string, boolean> | undefined
-    const hebdoIds = itemIdsFor('hebdo')
-    const missingHebdo = isHygieneDone(hebdoItems, hebdoIds)
-      ? null
-      : `  ${weekId} — ${hebdoIds.filter(id => hebdoItems?.[id] === true).length}/${hebdoIds.length} coché(s)`
+    const missingHebdo = !estComplete(hebdoSnap.data(), 'hebdo') ? `  ${weekId}_hebdo` : null
 
     // Si rien à signaler
     if (missingTemps.length === 0 && missingHygiene.length === 0 && !missingHebdo) {

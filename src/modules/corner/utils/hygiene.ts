@@ -1,20 +1,26 @@
+import { ITEMS_ORIGINE, type ChecklistKind } from '../../../utils/hygieneItems'
+
 export type HygieneKind = 'hebdo' | 'mensuel'
 
-export const QUOTIDIEN_IDS = [
-  'plats_service', 'int_vitrines', 'ustensiles', 'meuble_vente',
-  'comptoir_balance', 'micro_ondes', 'evier_papier', 'etiquettes',
-  'plan_travail', 'ext_placards', 'ext_frigo', 'poubelle', 'vitres',
-]
+/** Identifiants des items d'origine, dérivés de la définition unique du
+ *  client. Côté fonctions Cloud ils sont redéclarés — aucun import n'existe
+ *  entre les deux packages — mais côté client une seule source suffit. */
+export const ITEMS_ORIGINE_IDS: Record<ChecklistKind, string[]> = {
+  quotidien: ITEMS_ORIGINE.quotidien.map(i => i.id),
+  hebdo:     ITEMS_ORIGINE.hebdo.map(i => i.id),
+  mensuel:   ITEMS_ORIGINE.mensuel.map(i => i.id),
+}
 
-export const HEBDO_IDS = [
-  'int_frigos', 'etageres_materiels', 'support_papier',
-  'placard_hygiene', 'machine_glacon',
-]
-
-export const MENSUEL_IDS = ['placard_rangement']
-
-export function itemIdsFor(kind: HygieneKind): string[] {
-  return kind === 'hebdo' ? HEBDO_IDS : MENSUEL_IDS
+/** Une période est faite quand tous les items QUI LUI ÉTAIENT DEMANDÉS sont
+ *  cochés. Le document porte lui-même sa référence (`itemsAttendus`), donc
+ *  aucune lecture supplémentaire n'est nécessaire ici. */
+export function estComplete(docData: any, kind: ChecklistKind): boolean {
+  if (!docData) return false
+  const attendus: string[] = Array.isArray(docData.itemsAttendus) && docData.itemsAttendus.length
+    ? docData.itemsAttendus
+    : ITEMS_ORIGINE_IDS[kind]
+  const items = docData.items ?? {}
+  return attendus.every(id => items[id] === true)
 }
 
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -65,15 +71,4 @@ export function getPeriodBounds(kind: HygieneKind, ref: Date): { start: Date; en
   // Jour 0 du mois suivant = dernier jour du mois courant.
   const end = new Date(ref.getFullYear(), ref.getMonth() + 1, 0, 23, 59, 59, 999)
   return { start, end }
-}
-
-/** Une période est faite quand TOUS ses items sont cochés.
- *  L'ancienne convention « le document existe » comptait une checklist
- *  remplie à 2/5 comme terminée. */
-export function isHygieneDone(
-  items: Record<string, boolean> | undefined | null,
-  ids: string[],
-): boolean {
-  if (!items) return false
-  return ids.every(id => items[id] === true)
 }

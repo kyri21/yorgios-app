@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
-  QUOTIDIEN_IDS, HEBDO_IDS, MENSUEL_IDS,
-  itemIdsFor, getISOWeek, getISOWeekYear,
-  getPeriodId, getPeriodBounds, isHygieneDone,
+  ITEMS_ORIGINE_IDS, estComplete, getISOWeek, getISOWeekYear,
+  getPeriodId, getPeriodBounds,
 } from './hygiene'
 
 // Construit une date locale à midi : évite qu'un décalage de fuseau
@@ -11,14 +10,9 @@ const at = (y: number, m: number, d: number) => new Date(y, m - 1, d, 12, 0, 0)
 
 describe('listes d\'items', () => {
   it('contient 13 items quotidiens, 5 hebdo, 1 mensuel', () => {
-    expect(QUOTIDIEN_IDS).toHaveLength(13)
-    expect(HEBDO_IDS).toHaveLength(5)
-    expect(MENSUEL_IDS).toHaveLength(1)
-  })
-
-  it('itemIdsFor renvoie la bonne liste', () => {
-    expect(itemIdsFor('hebdo')).toEqual(HEBDO_IDS)
-    expect(itemIdsFor('mensuel')).toEqual(MENSUEL_IDS)
+    expect(ITEMS_ORIGINE_IDS.quotidien).toHaveLength(13)
+    expect(ITEMS_ORIGINE_IDS.hebdo).toHaveLength(5)
+    expect(ITEMS_ORIGINE_IDS.mensuel).toHaveLength(1)
   })
 })
 
@@ -102,31 +96,47 @@ describe('getPeriodBounds', () => {
   })
 })
 
-describe('isHygieneDone', () => {
-  it('est faux si aucun item', () => {
-    expect(isHygieneDone(undefined, HEBDO_IDS)).toBe(false)
-    expect(isHygieneDone(null, HEBDO_IDS)).toBe(false)
+describe('estComplete', () => {
+  const tousCoches = (ids: string[]) => Object.fromEntries(ids.map(id => [id, true]))
+
+  it('est faux sur un document absent', () => {
+    expect(estComplete(undefined, 'hebdo')).toBe(false)
+    expect(estComplete(null, 'hebdo')).toBe(false)
   })
 
-  it('est faux si la checklist est partielle', () => {
-    const items = { int_frigos: true, support_papier: true }
-    expect(isHygieneDone(items, HEBDO_IDS)).toBe(false)
+  // La protection décisive : un document antérieur à l'édition des items
+  // se juge sur les items d'ORIGINE, jamais sur une liste courante qui aurait
+  // pu s'allonger depuis. Sans ça, le premier ajout d'item aurait basculé
+  // tout l'historique en incomplet.
+  it('juge un document sans itemsAttendus sur les items d’origine', () => {
+    const doc = { items: tousCoches(ITEMS_ORIGINE_IDS.hebdo) }
+    expect(estComplete(doc, 'hebdo')).toBe(true)
   })
 
-  it('est vrai si tous les items sont cochés', () => {
-    const items = Object.fromEntries(HEBDO_IDS.map(id => [id, true]))
-    expect(isHygieneDone(items, HEBDO_IDS)).toBe(true)
+  it('est faux si un item d’origine manque', () => {
+    const items = tousCoches(ITEMS_ORIGINE_IDS.hebdo)
+    delete items[ITEMS_ORIGINE_IDS.hebdo[0]]
+    expect(estComplete({ items }, 'hebdo')).toBe(false)
   })
 
-  it('ignore les items décochés explicitement', () => {
-    const items = Object.fromEntries(HEBDO_IDS.map(id => [id, true]))
-    items[HEBDO_IDS[0]] = false
-    expect(isHygieneDone(items, HEBDO_IDS)).toBe(false)
+  it('juge sur itemsAttendus quand il est présent', () => {
+    const doc = { items: { a: true, b: true }, itemsAttendus: ['a', 'b'] }
+    expect(estComplete(doc, 'hebdo')).toBe(true)
   })
 
-  it('ignore les clés étrangères à la liste', () => {
-    const items = Object.fromEntries(HEBDO_IDS.map(id => [id, true]))
-    items.item_inconnu = false
-    expect(isHygieneDone(items, HEBDO_IDS)).toBe(true)
+  it('ignore les items cochés hors de itemsAttendus', () => {
+    const doc = { items: { a: true, vieux: true }, itemsAttendus: ['a'] }
+    expect(estComplete(doc, 'hebdo')).toBe(true)
+  })
+
+  it('est faux si un item attendu manque', () => {
+    const doc = { items: { a: true }, itemsAttendus: ['a', 'b'] }
+    expect(estComplete(doc, 'hebdo')).toBe(false)
+  })
+
+  it('couvre le quotidien', () => {
+    const doc = { items: tousCoches(ITEMS_ORIGINE_IDS.quotidien) }
+    expect(estComplete(doc, 'quotidien')).toBe(true)
+    expect(ITEMS_ORIGINE_IDS.quotidien).toHaveLength(13)
   })
 })

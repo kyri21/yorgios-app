@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { collection, getDocFromServer, getDocsFromServer, doc, orderBy, query, where, limit } from 'firebase/firestore'
 import { db, auth } from '../../../firebase/config'
 import { SkeletonList } from '../../../components/Skeleton'
-import { QUOTIDIEN_IDS, HEBDO_IDS, MENSUEL_IDS, isHygieneDone, getPeriodId } from '../utils/hygiene'
+import { estComplete, getPeriodId } from '../utils/hygiene'
 import { loadResponsable, type HygieneResponsable } from '../firebase/hygieneResponsables'
 
 // Codes météo WMO → emoji
@@ -226,9 +226,9 @@ export default function Dashboard() {
       setSoirSaisis(tempsSoirData.some(Boolean))
       // Complétude et non existence : une checklist sauvegardée à 2/5
       // ne doit plus compter comme faite.
-      setHygieneOk(isHygieneDone(hygieneSnap.data()?.items, QUOTIDIEN_IDS))
-      setHygieneHebdoOk(isHygieneDone(hygieneHebdoSnap.data()?.items, HEBDO_IDS))
-      setHygieneMensuelOk(isHygieneDone(hygieneMensuelSnap.data()?.items, MENSUEL_IDS))
+      setHygieneOk(estComplete(hygieneSnap.data(), 'quotidien'))
+      setHygieneHebdoOk(estComplete(hygieneHebdoSnap.data(), 'hebdo'))
+      setHygieneMensuelOk(estComplete(hygieneMensuelSnap.data(), 'mensuel'))
       setRespHebdo(rHebdo)
       setRespMensuel(rMensuel)
 
