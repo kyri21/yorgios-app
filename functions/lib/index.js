@@ -1957,7 +1957,9 @@ exports.weeklyHygieneRecap = (0, scheduler_1.onSchedule)({ schedule: '0 8 * * 1'
     // un document qui n'existe pas, là où le client écrit 2026-W01_hebdo.
     const weekId = (0, periods_1.getPeriodId)('hebdo', lastMonday);
     const hebdoSnap = await db.doc(`hygiene_corner/${weekId}`).get();
-    const missingHebdo = !(0, periods_1.estComplete)(hebdoSnap.data(), 'hebdo') ? `  ${weekId}_hebdo` : null;
+    // `weekId` porte déjà le suffixe `_hebdo` (getPeriodId le produit) : le
+    // rajouter donnait « 2026-W31_hebdo_hebdo » dans l'email du lundi.
+    const missingHebdo = !(0, periods_1.estComplete)(hebdoSnap.data(), 'hebdo') ? `  ${weekId}` : null;
     // Si rien à signaler
     if (missingTemps.length === 0 && missingHygiene.length === 0 && !missingHebdo) {
         console.log('[weeklyRecap] Tout est complet, aucun email envoyé.');
