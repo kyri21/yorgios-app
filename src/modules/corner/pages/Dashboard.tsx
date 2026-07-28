@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { collection, getDocFromServer, getDocsFromServer, doc, orderBy, query, where, limit } from 'firebase/firestore'
-import { db } from '../../../firebase/config'
+import { db, auth } from '../../../firebase/config'
 import { SkeletonList } from '../../../components/Skeleton'
+import { QUOTIDIEN_IDS, HEBDO_IDS, MENSUEL_IDS, isHygieneDone, getPeriodId } from '../utils/hygiene'
+import { loadResponsable, type HygieneResponsable } from '../firebase/hygieneResponsables'
 
 // Codes météo WMO → emoji
 function wmoToEmoji(code: number): { emoji: string } {
@@ -57,20 +59,6 @@ function endOfWeekISO() {
   d.setDate(d.getDate() + (6 - dow))
   const p = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
-}
-function getISOWeek(d: Date) {
-  const date = new Date(d); date.setHours(0, 0, 0, 0)
-  date.setDate(date.getDate() + 3 - (date.getDay() + 6) % 7)
-  const w1 = new Date(date.getFullYear(), 0, 4)
-  return 1 + Math.round(((date.getTime() - w1.getTime()) / 86400000 - 3 + (w1.getDay() + 6) % 7) / 7)
-}
-function hygieneHebdoId(): string {
-  const d = new Date(); const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-W${p(getISOWeek(d))}_hebdo`
-}
-function hygieneMensuelId(): string {
-  const d = new Date(); const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}_mensuel`
 }
 function todayStart() { const d = new Date(); d.setHours(0,0,0,0); return d }
 function tomorrowStart() { const d = todayStart(); d.setDate(d.getDate() + 1); return d }
@@ -140,6 +128,8 @@ export default function Dashboard() {
   const [hygieneOk, setHygieneOk] = useState<boolean | null>(null)
   const [hygieneHebdoOk, setHygieneHebdoOk] = useState<boolean | null>(null)
   const [hygieneMensuelOk, setHygieneMensuelOk] = useState<boolean | null>(null)
+  const [respHebdo, setRespHebdo]     = useState<HygieneResponsable | null>(null)
+  const [respMensuel, setRespMensuel] = useState<HygieneResponsable | null>(null)
   const [pendingLivraisons, setPendingLivraisons] = useState<Livraison[]>([])
   const [overdueLivraisons, setOverdueLivraisons] = useState<Livraison[]>([])
   const [dlcItems, setDlcItems] = useState<DlcItem[]>([])
@@ -173,8 +163,8 @@ export default function Dashboard() {
 
       const [hygieneSnap, hygieneHebdoSnap, hygieneMensuelSnap, livrSnap, stockSnap, cmdSnap] = await Promise.all([
         getDocFromServer(doc(db, 'hygiene_corner', `${today}_quotidien`)),
-        getDocFromServer(doc(db, 'hygiene_corner', hygieneHebdoId())),
-        getDocFromServer(doc(db, 'hygiene_corner', hygieneMensuelId())),
+        getDocFromServer(doc(db, 'hygiene_corner', getPeriodId('hebdo', new Date()))),
+        getDocFromServer(doc(db, 'hygiene_corner', getPeriodId('mensuel', new Date()))),
         getDocsFromServer(query(collection(db, 'livraisons'), orderBy('departAt', 'desc'), limit(200))),
         getDocsFromServer(query(collection(db, 'corner_stock'), where('active', '==', true), limit(200))),
         // Pas de filtre 'statut' ici (évite l'index composite manquant) — filtrage côté client
@@ -196,9 +186,19 @@ export default function Dashboard() {
       setTemps(tempsData)
       setMatinSaisis(tempsMatinData.some(Boolean))
       setSoirSaisis(tempsSoirData.some(Boolean))
-      setHygieneOk(hygieneSnap.exists())
-      setHygieneHebdoOk(hygieneHebdoSnap.exists())
-      setHygieneMensuelOk(hygieneMensuelSnap.exists())
+      // Complétude et non existence : une checklist sauvegardée à 2/5
+      // ne doit plus compter comme faite.
+      setHygieneOk(isHygieneDone(hygieneSnap.data()?.items, QUOTIDIEN_IDS))
+      setHygieneHebdoOk(isHygieneDone(hygieneHebdoSnap.data()?.items, HEBDO_IDS))
+      setHygieneMensuelOk(isHygieneDone(hygieneMensuelSnap.data()?.items, MENSUEL_IDS))
+
+      const maintenant = new Date()
+      const [rHebdo, rMensuel] = await Promise.all([
+        loadResponsable('hebdo', maintenant),
+        loadResponsable('mensuel', maintenant),
+      ])
+      setRespHebdo(rHebdo)
+      setRespMensuel(rMensuel)
 
       const allLivr = livrSnap.docs.map(d => ({ id: d.id, ...(d.data() as any) }))
       const pending = allLivr.filter((l: any) =>
@@ -277,6 +277,28 @@ export default function Dashboard() {
   const dlcExpire = dlcItems.filter(i => i.dlcStatus === 'expire').length
   const dlcStatusVal = dlcItems.length === 0 ? 'ok' : dlcExpire > 0 ? 'ko' : 'warn'
 
+  const uid = auth.currentUser?.uid
+
+  /** Une ligne d'hygiène périodique n'apparaît que si elle est attribuée
+   *  ou en retard : attribuée et faite, elle reste visible pour montrer
+   *  qui s'en est chargé ; ni attribuée ni faite, elle signale l'oubli
+   *  de désignation. */
+  function ligneHygiene(
+    libelle: string,
+    fait: boolean | null,
+    resp: HygieneResponsable | null,
+  ): TaskItem[] {
+    if (fait !== false && !resp) return []
+    const estMoi = !!resp && resp.assigneeUid === uid
+    const suffixe = resp ? ` — ${resp.assigneeName}${estMoi ? ' · toi' : ''}` : ' — non attribuée'
+    return [{
+      label: `${libelle}${suffixe}`,
+      status: fait ? 'ok' : 'ko',
+      nav: 'hygiene',
+      checkKey: null,
+    } as TaskItem]
+  }
+
   const taskItems: TaskItem[] = [
     { label: 'Hygiène quotidienne',   status: hygieneOk === null ? 'gray' : hygieneOk ? 'ok' : 'ko',   nav: 'hygiene',      checkKey: null },
     { label: 'Températures matin',    status: matinSaisis ? 'ok' : 'ko',                                nav: 'temperatures', checkKey: null },
@@ -285,9 +307,8 @@ export default function Dashboard() {
       label: dlcExpire > 0 ? `DLC vitrine (${dlcExpire} expirée(s))` : dlcItems.length > 0 ? `DLC vitrine (${dlcItems.length} à surveiller)` : 'DLC vitrine',
       status: dlcStatusVal, nav: 'vitrine', checkKey: null,
     },
-    // Hygiène hebdo/mensuel : seulement quand dues et non faites (sinon bruit)
-    ...(hygieneHebdoOk === false   ? [{ label: 'Hygiène hebdomadaire', status: 'ko', nav: 'hygiene', checkKey: null } as TaskItem] : []),
-    ...(hygieneMensuelOk === false ? [{ label: 'Hygiène mensuelle',    status: 'ko', nav: 'hygiene', checkKey: null } as TaskItem] : []),
+    ...ligneHygiene('Hygiène hebdomadaire', hygieneHebdoOk, respHebdo),
+    ...ligneHygiene('Hygiène mensuelle',    hygieneMensuelOk, respMensuel),
     { label: '🥡 Faire les TooGoodToGo',              status: checks.tgtg    ? 'ok' : (totalMin >= 9*60  ? 'todo' : 'gray'), nav: '', checkKey: 'tgtg' },
     { label: '📦 Vider les cartons chambre froide',  status: checks.cartons ? 'ok' : (totalMin >= 9*60+30 ? 'todo' : 'gray'), nav: '', checkKey: 'cartons' },
     { label: '🍽️ Faire les plats du jour',            status: checks.plats   ? 'ok' : (totalMin >= 11*60  ? 'todo' : 'gray'), nav: '', checkKey: 'plats' },
