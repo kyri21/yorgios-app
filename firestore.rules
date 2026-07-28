@@ -124,6 +124,14 @@ service cloud.firestore {
     match /hygiene_corner/{doc} {
       allow read, write: if isCorner();
     }
+    match /hygiene_responsables/{doc} {
+      // Lecture ouverte : le salarié doit voir qui est responsable
+      // depuis son tableau de bord.
+      allow read: if isAnyRole();
+      allow create, update: if isPatronOrManager();
+      // Historique inviolable, même pour le patron — comme planning_audit.
+      allow delete: if false;
+    }
     match /corner_stock/{doc} {
       allow read, write: if isCorner();
     }
