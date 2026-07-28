@@ -184,4 +184,168 @@ describe("slugPourLabel", () => {
   it("rend un identifiant utilisable même pour un libellé vide", () => {
     expect(slugPourLabel('   ', []).length).toBeGreaterThan(0)
   })
+
+  // Correctif 5 : la troncature à 40 caractères doit précéder le nettoyage
+  // des underscores de bord, sinon la coupe peut laisser un `_` final.
+  it("ne se termine jamais par un underscore après troncature d'un libellé long", () => {
+    const label = 'a'.repeat(39) + ' extra texte bien plus long que la limite autorisée'
+    const slug = slugPourLabel(label, [])
+    expect(slug.length).toBeLessThanOrEqual(40)
+    expect(slug.endsWith('_')).toBe(false)
+  })
+})
+
+describe("creeLeMs — correctif 1 : distinguer absent et illisible", () => {
+  // Le scénario exact que la fonctionnalité existe pour empêcher : une date
+  // corrompue (édition manuelle Firestore, migration ratée) ne doit JAMAIS
+  // rendre un item éligible pour une période qu'il n'a pas pu voir passer.
+  const avecCreeLeCorrompu = (creeLe: any) => ({
+    ...ITEMS_ORIGINE,
+    mensuel: [
+      ...ITEMS_ORIGINE.mensuel,
+      { id: 'corrompu', label: 'Corrompu', actif: true, ordre: 1, creeLe },
+    ],
+  })
+
+  it.each([
+    ['objet vide', {}],
+    ['chaîne invalide', 'pas-une-date'],
+    ['objet inattendu', { foo: 'bar' }],
+  ])("une date illisible (%s) n'apparaît pour aucune période, courante ou passée", (_label, creeLe) => {
+    const s = avecCreeLeCorrompu(creeLe)
+    // Période "courante" au sens de l'appel — jamais éligible pour elle-même.
+    expect(idsAttendus(s, 'mensuel', at(2026, 7, 29))).not.toContain('corrompu')
+    // Ni pour un mois antérieur : aucune application rétroactive.
+    expect(idsAttendus(s, 'mensuel', at(2026, 6, 15))).not.toContain('corrompu')
+    expect(idsAttendus(s, 'mensuel', at(2020, 1, 1))).not.toContain('corrompu')
+  })
+
+  it("un `creeLe` absent reste toujours éligible (item d'origine)", () => {
+    // Non-régression : absent ≠ illisible, les deux ne doivent pas être
+    // traités pareil.
+    expect(idsAttendus(ITEMS_ORIGINE, 'mensuel', at(2020, 1, 1))).toContain('placard_rangement')
+  })
+})
+
+describe("desactiveLe — correctif 2 : retirer un item n'allège pas une période commencée", () => {
+  it("un item désactivé après le début de la période compte encore pour cette période", () => {
+    // Checklist mensuelle à un seul item, désactivé le 5 — avant toute
+    // sauvegarde de la période. Le mois doit rester exigeant, pas retomber
+    // à zéro item.
+    const s = { ...ITEMS_ORIGINE, mensuel: [
+      { ...ITEMS_ORIGINE.mensuel[0], actif: false, desactiveLe: at(2026, 7, 5) },
+    ] }
+    expect(idsAttendus(s, 'mensuel', at(2026, 7, 31))).toContain('placard_rangement')
+  })
+
+  it("mais plus pour la période suivante", () => {
+    const s = { ...ITEMS_ORIGINE, mensuel: [
+      { ...ITEMS_ORIGINE.mensuel[0], actif: false, desactiveLe: at(2026, 7, 5) },
+    ] }
+    expect(idsAttendus(s, 'mensuel', at(2026, 8, 3))).not.toContain('placard_rangement')
+  })
+
+  it("désactivé exactement au début de la période → n'est plus compté", () => {
+    // Symétrique de la règle de création (`creeLe < debut` strict) : ici
+    // `desactiveLe >= debut` compte encore, donc une désactivation pile au
+    // début de la période suivante l'exclut bien de celle-ci.
+    const s = { ...ITEMS_ORIGINE, mensuel: [
+      { ...ITEMS_ORIGINE.mensuel[0], actif: false, desactiveLe: at(2026, 8, 1, 0) },
+    ] }
+    expect(idsAttendus(s, 'mensuel', at(2026, 8, 15))).toContain('placard_rangement')
+    expect(idsAttendus(s, 'mensuel', at(2026, 9, 1))).not.toContain('placard_rangement')
+  })
+
+  it("réactiver (desactiveLe effacé) rend l'item de nouveau pleinement éligible", () => {
+    const s = { ...ITEMS_ORIGINE, mensuel: [
+      { ...ITEMS_ORIGINE.mensuel[0], actif: true }, // desactiveLe absent = réactivé
+    ] }
+    expect(idsAttendus(s, 'mensuel', at(2026, 7, 31))).toContain('placard_rangement')
+  })
+
+  it("inactif sans desactiveLe connu (donnée antérieure au champ) reste exclu — non-régression", () => {
+    const s = { ...ITEMS_ORIGINE, mensuel: [
+      { ...ITEMS_ORIGINE.mensuel[0], actif: false },
+    ] }
+    expect(idsAttendus(s, 'mensuel', at(2026, 7, 15))).toEqual([])
+  })
+
+  it("desactiveLe illisible ne retire jamais rétroactivement l'item (traité comme maintenant)", () => {
+    // Miroir du correctif 1 : une désactivation dont l'instant est inconnu
+    // doit rester prudente dans l'autre sens — ne jamais alléger une
+    // période, ni la courante ni une passée.
+    const s = { ...ITEMS_ORIGINE, mensuel: [
+      { ...ITEMS_ORIGINE.mensuel[0], actif: false, desactiveLe: {} },
+    ] }
+    expect(idsAttendus(s, 'mensuel', at(2026, 7, 29))).toContain('placard_rangement')
+    expect(idsAttendus(s, 'mensuel', at(2026, 6, 15))).toContain('placard_rangement')
+  })
+})
+
+describe("itemsAttendus / merge — correctif 3 : distinguer absent et vide", () => {
+  it("respecte une liste attendue explicitement vide, sans repli sur le calcul par date", () => {
+    const s = mergeHygieneItems({})
+    const items = itemsPourPeriode(s, 'quotidien', new Date(), [])
+    expect(items).toEqual([])
+  })
+
+  it("mergeHygieneItems respecte une liste explicitement vidée par l'utilisateur", () => {
+    const merged = mergeHygieneItems({ quotidien: [] })
+    expect(merged.quotidien).toEqual([])
+    // Les autres checklists non fournies gardent leur repli normal.
+    expect(merged.hebdo).toEqual(ITEMS_ORIGINE.hebdo)
+  })
+})
+
+describe("formes de date — correctif 4 : Timestamp Firestore, objet sérialisé, Date", () => {
+  const timestampLike = (ms: number) => ({ toMillis: () => ms })
+  const serialise = (ms: number) => ({ seconds: Math.floor(ms / 1000) })
+
+  it("creeLe en Timestamp Firestore (toMillis) est respecté", () => {
+    const creeLe = timestampLike(at(2026, 7, 29).getTime())
+    const s = { ...ITEMS_ORIGINE, mensuel: [
+      ...ITEMS_ORIGINE.mensuel,
+      { id: 'via_timestamp', label: 'Via Timestamp', actif: true, ordre: 1, creeLe },
+    ] }
+    expect(idsAttendus(s, 'mensuel', at(2026, 7, 31))).not.toContain('via_timestamp')
+    expect(idsAttendus(s, 'mensuel', at(2026, 8, 3))).toContain('via_timestamp')
+  })
+
+  it("creeLe en objet sérialisé { seconds } est respecté", () => {
+    const creeLe = serialise(at(2026, 7, 29).getTime())
+    const s = { ...ITEMS_ORIGINE, mensuel: [
+      ...ITEMS_ORIGINE.mensuel,
+      { id: 'via_seconds', label: 'Via seconds', actif: true, ordre: 1, creeLe },
+    ] }
+    expect(idsAttendus(s, 'mensuel', at(2026, 7, 31))).not.toContain('via_seconds')
+    expect(idsAttendus(s, 'mensuel', at(2026, 8, 3))).toContain('via_seconds')
+  })
+
+  it("creeLe en Date native est respecté (cas déjà couvert, gardé pour symétrie)", () => {
+    const creeLe = at(2026, 7, 29)
+    const s = { ...ITEMS_ORIGINE, mensuel: [
+      ...ITEMS_ORIGINE.mensuel,
+      { id: 'via_date', label: 'Via Date', actif: true, ordre: 1, creeLe },
+    ] }
+    expect(idsAttendus(s, 'mensuel', at(2026, 7, 31))).not.toContain('via_date')
+    expect(idsAttendus(s, 'mensuel', at(2026, 8, 3))).toContain('via_date')
+  })
+
+  it("desactiveLe en Timestamp Firestore (toMillis) est respecté", () => {
+    const desactiveLe = timestampLike(at(2026, 7, 5).getTime())
+    const s = { ...ITEMS_ORIGINE, mensuel: [
+      { ...ITEMS_ORIGINE.mensuel[0], actif: false, desactiveLe },
+    ] }
+    expect(idsAttendus(s, 'mensuel', at(2026, 7, 31))).toContain('placard_rangement')
+    expect(idsAttendus(s, 'mensuel', at(2026, 8, 3))).not.toContain('placard_rangement')
+  })
+
+  it("desactiveLe en objet sérialisé { seconds } est respecté", () => {
+    const desactiveLe = serialise(at(2026, 7, 5).getTime())
+    const s = { ...ITEMS_ORIGINE, mensuel: [
+      { ...ITEMS_ORIGINE.mensuel[0], actif: false, desactiveLe },
+    ] }
+    expect(idsAttendus(s, 'mensuel', at(2026, 7, 31))).toContain('placard_rangement')
+    expect(idsAttendus(s, 'mensuel', at(2026, 8, 3))).not.toContain('placard_rangement')
+  })
 })
