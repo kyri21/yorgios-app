@@ -128,7 +128,12 @@ service cloud.firestore {
       // Lecture ouverte : le salarié doit voir qui est responsable
       // depuis son tableau de bord.
       allow read: if isAnyRole();
-      allow create, update: if isPatronOrManager();
+      // Le plancher isPatronOrManager() rend le fail-open de permAllows()
+      // inoffensif : même si la clé manque dans settings/permissions, corner
+      // et cuisine restent bloqués. La permission ne peut que retirer le
+      // droit au manager, jamais l'accorder à un salarié.
+      allow create, update: if isPatronOrManager()
+                            && permAllows('action_designer_responsable_hygiene');
       // Historique inviolable, même pour le patron — comme planning_audit.
       allow delete: if false;
     }

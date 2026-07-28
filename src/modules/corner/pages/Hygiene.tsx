@@ -3,6 +3,7 @@ import { Timestamp, doc, getDoc, setDoc } from 'firebase/firestore'
 import { db, auth } from '../../../firebase/config'
 import { useToast } from '../../../hooks/useToast'
 import { useAuth } from '../../../auth/useAuth'
+import { usePermissions } from '../../../contexts/PermissionsContext'
 import ResponsableSelector from '../components/ResponsableSelector'
 import {
   QUOTIDIEN_IDS, HEBDO_IDS, MENSUEL_IDS,
@@ -103,7 +104,10 @@ function getDateLabel(type: CheckType, dateStr: string): string {
 export default function Hygiene() {
   const { show } = useToast()
   const { user } = useAuth()
-  const canEditResponsable = ['patron', 'administrateur', 'manager'].includes(user?.role ?? '')
+  const { can } = usePermissions()
+  // can() renvoie toujours true pour patron et administrateur ; seul le
+  // manager est réglable, et corner/cuisine sont exclus par défaut.
+  const canEditResponsable = can(user?.role, 'action_designer_responsable_hygiene')
   const currentUserName = user?.displayName || user?.email || '—'
   const today = todayISO()
   const [tab, setTab]                   = useState<CheckType>('quotidien')
