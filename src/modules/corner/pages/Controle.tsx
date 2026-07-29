@@ -142,16 +142,20 @@ function buildHygieneTable(
   const attendusDe = (h: HygieneDoc): string[] =>
     Array.isArray(h.itemsAttendus) ? h.itemsAttendus : origine
 
-  // Colonnes = union des items attendus sur la période, dans l'ordre des
-  // réglages. Les identifiants inconnus des réglages ferment la marche
-  // plutôt que de disparaître.
+  // Colonnes = ordre des items tel que vécu au fil des documents, du plus
+  // ancien au plus récent (`docs` est déjà trié par id, donc chronologique) —
+  // pas l'ordre des réglages courants. Chaque document porte l'ordre de son
+  // époque via `itemsAttendus` ; un item retiré depuis n'est donc plus rejeté
+  // en fin de tableau, et un rapport sur un mois passé retrouve l'organisation
+  // réelle du travail à ce moment-là. Les points ajoutés après coup arrivent
+  // naturellement à la suite, portés par les documents plus récents.
   const vus = new Set<string>()
-  for (const h of docs) attendusDe(h).forEach(id => vus.add(id))
-  const ordre = itemsSettings[type].map(i => i.id)
-  const colonnes = [
-    ...ordre.filter(id => vus.has(id)),
-    ...[...vus].filter(id => !ordre.includes(id)),
-  ]
+  const colonnes: string[] = []
+  for (const h of docs) {
+    for (const id of attendusDe(h)) {
+      if (!vus.has(id)) { vus.add(id); colonnes.push(id) }
+    }
+  }
 
   const labels = new Map(itemsSettings[type].map(i => [i.id, i.label]))
   const head = ['Période', ...colonnes.map(id => labels.get(id) ?? id)]
@@ -384,11 +388,15 @@ export default function Controle() {
   const [generating, setGenerating] = useState(false)
   const [error, setError]       = useState<string | null>(null)
   const [itemsSettings, setItemsSettings] = useState<HygieneItemsSettings>(ITEMS_ORIGINE)
+  const [itemsSettingsError, setItemsSettingsError] = useState(false)
 
   useEffect(() => {
     getDoc(doc(db, 'settings', 'hygiene_items'))
       .then(snap => { if (snap.exists()) setItemsSettings(mergeHygieneItems(snap.data())) })
-      .catch(e => console.error('[controle] réglages des items illisibles', e))
+      .catch(e => {
+        console.error('[controle] réglages des items illisibles', e)
+        setItemsSettingsError(true)
+      })
   }, [])
 
   async function generateReport() {
@@ -565,6 +573,17 @@ export default function Controle() {
               </div>
             )
           })()}
+
+          {/* Réglages des points de contrôle illisibles — le rapport reste
+              généré (repli sur les items d'origine), mais un point ajouté
+              récemment s'affichera avec son identifiant brut au lieu de son
+              libellé : l'opérateur doit le savoir avant d'exporter et de
+              transmettre le document. */}
+          {itemsSettingsError && (
+            <div style={{ background: 'rgba(180,83,9,0.08)', border: '1px solid rgba(180,83,9,0.25)', borderRadius: 12, padding: '12px 16px', fontSize: 12, fontWeight: 700, color: 'var(--warning)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              ⚠️ Réglages des points de contrôle indisponibles — libellés d'origine utilisés
+            </div>
+          )}
 
           {/* Boutons export */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
