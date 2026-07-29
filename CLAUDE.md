@@ -44,9 +44,10 @@ Un dossier `shared/` à la racine, compilé par les deux paquets. Une seule sour
 
 ### État à la reprise
 
-- **Vague 3 « items de checklist modifiables » : terminée, commitée, poussée, NON DÉPLOYÉE.** 124 tests verts.
-- L'application en production tourne sur la version précédente, qui fonctionne.
-- Une fois la déduplication faite : déployer **fonctions puis hosting**, ensemble. Ne jamais déployer le hosting seul — le client jugerait une période sur 14 items pendant que les fonctions la jugeraient sur 13, et le tableau de bord contredirait l'email du lundi.
+- **Tout est déployé en production au 2026-07-29** : responsable désigné + réglages des rappels + items de checklist modifiables. 124 tests verts, dépôt propre, poussé sur `origin/main`.
+- Arthur a testé la section Paramètres sur iPhone : fonctionnelle. Un seul défaut trouvé (champ d'ajout écrasé par le bouton), corrigé et redéployé.
+- **La déduplication n'est PAS un préalable au déploiement** — c'est une correction que j'avais mal formulée. Les deux copies sont aujourd'hui vérifiées identiques (valeurs par `diff`, tests miroirs). La déduplication protège des dérives **futures**, elle ne corrige aucun problème présent.
+- ⚠️ **Ce qui est un vrai préalable, en revanche** : déployer **fonctions ET hosting ensemble**. Le hosting seul ferait diverger le client et le serveur dès le premier item ajouté — le tableau de bord dirait « pas fait » pendant que le rappel resterait muet et que l'email du lundi ne signalerait rien.
 - Aucune règle Firestore ni index à redéployer.
 - Journal complet, décisions et constats reportés : `.superpowers/sdd/progress.md`
 - Specs : `docs/superpowers/specs/2026-07-28-hygiene-*.md` · Plans : `docs/superpowers/plans/2026-07-28-hygiene-*.md`
