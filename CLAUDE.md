@@ -4,7 +4,58 @@
 
 ---
 
-# CLAUDE.md — Matias PWA (mis à jour 2026-06-12)
+# CLAUDE.md — Matias PWA (mis à jour 2026-07-29)
+
+---
+
+# 🚧 PROCHAINE SESSION — À FAIRE EN PREMIER
+
+## Supprimer la duplication client ↔ Cloud Functions (décision Arthur, 2026-07-29)
+
+**Arthur, textuellement** : « Je ne veux pas de doublon de règle ni de code qui risque un bug ou un dysfonctionnement. »
+
+### Le problème
+
+Six éléments vivent aujourd'hui **en double**, dans deux paquets npm distincts :
+
+| Élément | Client | Fonctions |
+|---|---|---|
+| `ITEMS_ORIGINE` — les 19 points de contrôle | `src/utils/hygieneItems.ts` | `functions/src/hygiene/periods.ts` |
+| `estComplete` — « la checklist est-elle complète ? » | `src/modules/corner/utils/hygiene.ts` | idem |
+| `DEFAULT_HYGIENE_SETTINGS` — horaires de rappel | `src/utils/hygieneSettings.ts` | idem |
+| `mergeHygieneSettings` — lecture des réglages | `src/utils/hygieneSettings.ts` | idem |
+| `getPeriodId` / `thursdayOfISOWeek` — semaines ISO | `src/modules/corner/utils/hygiene.ts` | idem |
+
+**Cause** : `functions/` est un paquet npm séparé, avec sa propre configuration TypeScript et son propre build. Aucun chemin n'existe aujourd'hui pour qu'il importe du code de `src/`.
+
+**Ce qui protège déjà** : des tests miroirs verrouillent les *valeurs* (les 19 identifiants et les horaires par défaut sont assertés littéralement des deux côtés, dans la même exécution de `npm test`). Vérifié mécaniquement par `diff` : identiques.
+
+**Ce qui ne protège pas** : les *implémentations*. Rien ne prouve que les deux versions de `estComplete` ou de `getPeriodId` se comportent pareil sur une entrée inattendue. Chaque copie a ses tests, aucun ne compare les deux copies entre elles.
+
+### Le correctif attendu
+
+Un dossier `shared/` à la racine, compilé par les deux paquets. Une seule source de vérité, plus aucun miroir à maintenir.
+
+⚠️ **Ça touche le build ET le déploiement des fonctions Cloud.** Points de vigilance :
+- `functions/tsconfig.json` doit inclure `shared/` sans casser `rootDir`/`outDir` ni le champ `main` de `functions/package.json`.
+- `firebase deploy --only functions` n'envoie que le dossier `functions/` : le code partagé doit se retrouver compilé **dans** `functions/lib/`.
+- Vérifier après build qu'aucun `.test.js` n'atterrit dans `functions/lib/`.
+- Le client importe directement les `.ts` de `shared/` (Vite les résout nativement).
+
+### État à la reprise
+
+- **Vague 3 « items de checklist modifiables » : terminée, commitée, poussée, NON DÉPLOYÉE.** 124 tests verts.
+- L'application en production tourne sur la version précédente, qui fonctionne.
+- Une fois la déduplication faite : déployer **fonctions puis hosting**, ensemble. Ne jamais déployer le hosting seul — le client jugerait une période sur 14 items pendant que les fonctions la jugeraient sur 13, et le tableau de bord contredirait l'email du lundi.
+- Aucune règle Firestore ni index à redéployer.
+- Journal complet, décisions et constats reportés : `.superpowers/sdd/progress.md`
+- Specs : `docs/superpowers/specs/2026-07-28-hygiene-*.md` · Plans : `docs/superpowers/plans/2026-07-28-hygiene-*.md`
+
+### Vérifications manuelles en attente (jamais vues dans un navigateur)
+
+Section Paramètres → « Nettoyage — items des checklists » : ajout, renommage, réordonnancement, retrait, réactivation, et le cycle Firestore complet (`desactiveLe` posé au retrait, absent après réactivation). Plus les 8 points listés en fin de `docs/superpowers/plans/2026-07-28-hygiene-items-editables.md`.
+
+---
 
 ## ✅ AUDIT COMPLET — CLOS 2026-06-13
 
