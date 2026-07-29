@@ -139,10 +139,13 @@ export default function HygieneItemsSection({ value, onChange }: Props) {
                 </div>
               ))}
 
-              <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
+              {/* Empilés, pas côte à côte : `.btn-secondary` prend toute la
+                  largeur disponible et écrasait le champ de saisie à quelques
+                  pixels — on ne voyait plus que le curseur. */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
                 <input
                   className="input-filled"
-                  style={{ flex: 1, minHeight: 44 }}
+                  style={{ width: '100%', minHeight: 44 }}
                   placeholder="Nouveau point de contrôle…"
                   value={nouveaux[kind] ?? ''}
                   onChange={e => setNouveaux(n => ({ ...n, [kind]: e.target.value }))}
@@ -152,7 +155,7 @@ export default function HygieneItemsSection({ value, onChange }: Props) {
                   onClick={() => ajouter(kind)}
                   disabled={!(nouveaux[kind] ?? '').trim()}
                   className="btn-secondary"
-                  style={{ minHeight: 44, whiteSpace: 'nowrap' }}
+                  style={{ width: '100%', minHeight: 44, whiteSpace: 'nowrap' }}
                 >+ Ajouter</button>
               </div>
 
