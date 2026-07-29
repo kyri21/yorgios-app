@@ -36,7 +36,7 @@ function estComplete(docData, kind) {
     var _a;
     if (!docData)
         return false;
-    const attendus = Array.isArray(docData.itemsAttendus) && docData.itemsAttendus.length
+    const attendus = Array.isArray(docData.itemsAttendus)
         ? docData.itemsAttendus
         : exports.ITEMS_ORIGINE_IDS[kind];
     const items = (_a = docData.items) !== null && _a !== void 0 ? _a : {};
