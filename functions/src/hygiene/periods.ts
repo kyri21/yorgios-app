@@ -49,7 +49,7 @@ export function estComplete(
   kind: 'quotidien' | 'hebdo' | 'mensuel',
 ): boolean {
   if (!docData) return false
-  const attendus: string[] = Array.isArray(docData.itemsAttendus) && docData.itemsAttendus.length
+  const attendus: string[] = Array.isArray(docData.itemsAttendus)
     ? docData.itemsAttendus
     : ITEMS_ORIGINE_IDS[kind]
   const items = docData.items ?? {}

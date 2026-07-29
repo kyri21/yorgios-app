@@ -16,7 +16,7 @@ export const ITEMS_ORIGINE_IDS: Record<ChecklistKind, string[]> = {
  *  aucune lecture supplémentaire n'est nécessaire ici. */
 export function estComplete(docData: any, kind: ChecklistKind): boolean {
   if (!docData) return false
-  const attendus: string[] = Array.isArray(docData.itemsAttendus) && docData.itemsAttendus.length
+  const attendus: string[] = Array.isArray(docData.itemsAttendus)
     ? docData.itemsAttendus
     : ITEMS_ORIGINE_IDS[kind]
   const items = docData.items ?? {}

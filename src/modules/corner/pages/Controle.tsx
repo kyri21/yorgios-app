@@ -28,7 +28,7 @@ type StockDoc = {
 }
 type HygieneDoc = {
   id: string; type: 'quotidien' | 'hebdo' | 'mensuel'
-  items: Record<string, boolean>; createdAt?: any
+  items: Record<string, boolean>; itemsAttendus?: string[]; createdAt?: any
 }
 type AcDoc = {
   id: string; type: string; date: string; problem: string; action: string
@@ -59,6 +59,13 @@ const FRIDGES: { id: string; name: string }[] = [
 const TYPE_LABELS: Record<string, string> = {
   quotidien: 'Quotidien', hebdo: 'Hebdomadaire', mensuel: 'Mensuel',
 }
+
+// Le tiret des tableaux d'hygiène est déjà utilisé ailleurs dans ce rapport
+// (vitrine, livraisons, actions correctives) pour « donnée absente » — sans
+// cette légende, un contrôleur ne peut pas deviner qu'ici il signifie
+// « non exigé sur cette période ». Affichée aux trois endroits : aperçu
+// écran, feuille Excel, page PDF.
+const HYGIENE_LEGEND = '✓ fait · ✗ non fait · — non exigé sur cette période'
 
 // ─── Helpers ──────────────────────────────────────────────────────
 function todayISO() {
@@ -129,8 +136,11 @@ function buildHygieneTable(
     .sort((a, b) => a.id.localeCompare(b.id))
 
   const origine = ITEMS_ORIGINE[type].map(i => i.id)
-  const attendusDe = (h: any): string[] =>
-    Array.isArray(h.itemsAttendus) && h.itemsAttendus.length ? h.itemsAttendus : origine
+  // Existence, pas longueur : une période dont la liste attendue est
+  // légitimement vide (tous les items retirés) doit rester vide, pas
+  // retomber sur les items d'origine — voir src/utils/hygieneItems.ts.
+  const attendusDe = (h: HygieneDoc): string[] =>
+    Array.isArray(h.itemsAttendus) ? h.itemsAttendus : origine
 
   // Colonnes = union des items attendus sur la période, dans l'ordre des
   // réglages. Les identifiants inconnus des réglages ferment la marche
@@ -219,38 +229,39 @@ function buildLivraisonsTable(report: Report): { head: string[]; rows: string[][
 
 // ─── Export Excel ──────────────────────────────────────────────────
 
-/** Neutralise l'interprétation d'une cellule comme formule par Excel.
- *
- *  Une chaîne commençant par `=`, `+`, `-` ou `@` est exécutée à l'ouverture
- *  du fichier. Ce rapport contient désormais du texte librement saisi —
- *  libellés des points de contrôle, noms de produits, fournisseurs, actions
- *  correctives — et il est remis à un contrôleur sanitaire, qui l'ouvrira sur
- *  sa machine. Un libellé commençant par `=` y déclencherait un calcul, voire
- *  un appel réseau via une fonction de lien externe.
- *
- *  Le préfixe apostrophe force Excel à traiter la valeur comme du texte ; il
- *  n'apparaît pas dans la cellule affichée.
- *
- *  Les nombres négatifs écrits sous forme de chaîne sont épargnés : les
- *  relevés de température en contiennent (« -18 »), et les préfixer les
- *  transformerait en texte, ce qui casserait tri et mise en forme. */
-function neutraliserFormule(v: string | number): string | number {
-  if (typeof v !== 'string' || !v) return v
-  if (/^-?\d+([.,]\d+)?$/.test(v.trim())) return v
-  return /^[=+\-@\t\r]/.test(v) ? `'${v}` : v
-}
-
+// Pas de neutralisation de formule ici (pas de préfixe apostrophe) — et
+// c'est délibéré, pas un oubli.
+//
+// Cet export écrit du `.xlsx` typé via la bibliothèque `xlsx` du projet,
+// pas du CSV. Vérifié empiriquement : une cellule contenant la chaîne
+// "=1+1" est écrite avec type=s (string) et aucune formule — Excel ne la
+// réinterprète jamais comme un calcul, parce que le fichier déclare
+// explicitement le type de la cellule. Le risque d'injection de formule
+// que ce préfixe visait à parer n'existe donc pas dans ce format : le CSV
+// est vulnérable parce que chaque champ y est ré-analysé au moment de
+// l'import, l'XLSX ne l'est pas.
+//
+// Pire, le préfixe est actif : la bibliothèque ne le convertit pas en
+// attribut de style « texte forcé », elle le stocke tel quel dans la
+// valeur de la cellule — donc il s'affichait littéralement dans le
+// document, sur un rapport remis à un contrôleur sanitaire (une action
+// corrective saisie « = trop chaud, jeté » apparaissait
+// « '= trop chaud, jeté »).
+//
+// ⚠️ Si cet export passe un jour au CSV, la neutralisation redevient
+// nécessaire — la réintroduire spécifiquement pour ce format à ce moment-là.
 function exportExcel(report: Report, itemsSettings: HygieneItemsSettings) {
   const wb = XLSX.utils.book_new()
   const periodLabel = `${fmtDate(report.dateFrom)} au ${fmtDate(report.dateTo)}`
 
-  function addSheet(name: string, head: string[], rows: (string | number)[][]) {
+  function addSheet(name: string, head: string[], rows: (string | number)[][], footer?: string) {
     const ws = XLSX.utils.aoa_to_sheet([
       [`Export Contrôle Hygiène Matias — ${name}`],
       [`Période : ${periodLabel}`],
       [],
-      head.map(neutraliserFormule),
-      ...rows.map(r => r.map(neutraliserFormule)),
+      head,
+      ...rows,
+      ...(footer ? [[], [footer]] : []),
     ])
     XLSX.utils.book_append_sheet(wb, ws, name)
   }
@@ -258,14 +269,17 @@ function exportExcel(report: Report, itemsSettings: HygieneItemsSettings) {
   const temp = buildTempTable(report)
   addSheet('Températures frigos', temp.head, temp.rows)
 
+  // Aucun document pour un type sur la période → ni feuille ni page (même
+  // traitement que les actions correctives ci-dessous) : émettre une feuille
+  // réduite à la seule colonne « Période » serait pire que ne rien émettre.
   const hyqDaily = buildHygieneTable(report, 'quotidien', itemsSettings)
-  addSheet('Hygiène Quotidien', hyqDaily.head, hyqDaily.rows)
+  if (hyqDaily.rows.length > 0) addSheet('Hygiène Quotidien', hyqDaily.head, hyqDaily.rows, HYGIENE_LEGEND)
 
   const hyqHebdo = buildHygieneTable(report, 'hebdo', itemsSettings)
-  addSheet('Hygiène Hebdo', hyqHebdo.head, hyqHebdo.rows)
+  if (hyqHebdo.rows.length > 0) addSheet('Hygiène Hebdo', hyqHebdo.head, hyqHebdo.rows, HYGIENE_LEGEND)
 
   const hyqMensuel = buildHygieneTable(report, 'mensuel', itemsSettings)
-  addSheet('Hygiène Mensuel', hyqMensuel.head, hyqMensuel.rows)
+  if (hyqMensuel.rows.length > 0) addSheet('Hygiène Mensuel', hyqMensuel.head, hyqMensuel.rows, HYGIENE_LEGEND)
 
   const vit = buildVitrineTable(report)
   addSheet('Vitrine', vit.head, vit.rows)
@@ -308,7 +322,7 @@ function exportPDF(report: Report, itemsSettings: HygieneItemsSettings) {
     doc.line(14, 28, pageW - 14, 28)
   }
 
-  function addTable(title: string, head: string[], rows: (string | number)[][], isFirst: boolean) {
+  function addTable(title: string, head: string[], rows: (string | number)[][], isFirst: boolean, legend?: string) {
     addSectionHeader(title, isFirst)
     autoTable(doc, {
       head: [head],
@@ -331,6 +345,13 @@ function exportPDF(report: Report, itemsSettings: HygieneItemsSettings) {
         doc.text(`Page ${pageNum}`, pageW / 2, doc.internal.pageSize.height - 5, { align: 'center' })
       },
     })
+    if (legend) {
+      const finalY = (doc as any).lastAutoTable?.finalY ?? 32
+      doc.setFontSize(7.5)
+      doc.setFont('helvetica', 'italic')
+      doc.setTextColor(...PDF_GRAY)
+      doc.text(legend, 14, finalY + 5)
+    }
   }
 
   const temp  = buildTempTable(report)
@@ -341,9 +362,11 @@ function exportPDF(report: Report, itemsSettings: HygieneItemsSettings) {
   const liv   = buildLivraisonsTable(report)
 
   addTable('🌡️ Températures frigos',        temp.head, temp.rows, true)
-  addTable('✅ Hygiène Quotidien',           hyqD.head, hyqD.rows, false)
-  addTable('✅ Hygiène Hebdomadaire',        hyqH.head, hyqH.rows, false)
-  addTable('✅ Hygiène Mensuel',             hyqM.head, hyqM.rows, false)
+  // Aucun document pour un type sur la période → ni feuille ni page (même
+  // traitement que les actions correctives ci-dessous).
+  if (hyqD.rows.length > 0) addTable('✅ Hygiène Quotidien',    hyqD.head, hyqD.rows, false, HYGIENE_LEGEND)
+  if (hyqH.rows.length > 0) addTable('✅ Hygiène Hebdomadaire', hyqH.head, hyqH.rows, false, HYGIENE_LEGEND)
+  if (hyqM.rows.length > 0) addTable('✅ Hygiène Mensuel',      hyqM.head, hyqM.rows, false, HYGIENE_LEGEND)
   addTable('🫙 Vitrine',                     vit.head,  vit.rows,  false)
   addTable('🚚 Températures livraisons',     liv.head,  liv.rows,  false)
 
@@ -587,6 +610,7 @@ export default function Controle() {
                     {TYPE_LABELS[type]}
                   </div>
                   <PreviewTable head={t.head} rows={t.rows} maxRows={3} />
+                  <div style={{ fontSize: 10, color: 'var(--on-surface-3)', marginTop: 4 }}>{HYGIENE_LEGEND}</div>
                 </div>
               )
             })}
