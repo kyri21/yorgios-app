@@ -218,6 +218,28 @@ function buildLivraisonsTable(report: Report): { head: string[]; rows: string[][
 }
 
 // ─── Export Excel ──────────────────────────────────────────────────
+
+/** Neutralise l'interprétation d'une cellule comme formule par Excel.
+ *
+ *  Une chaîne commençant par `=`, `+`, `-` ou `@` est exécutée à l'ouverture
+ *  du fichier. Ce rapport contient désormais du texte librement saisi —
+ *  libellés des points de contrôle, noms de produits, fournisseurs, actions
+ *  correctives — et il est remis à un contrôleur sanitaire, qui l'ouvrira sur
+ *  sa machine. Un libellé commençant par `=` y déclencherait un calcul, voire
+ *  un appel réseau via une fonction de lien externe.
+ *
+ *  Le préfixe apostrophe force Excel à traiter la valeur comme du texte ; il
+ *  n'apparaît pas dans la cellule affichée.
+ *
+ *  Les nombres négatifs écrits sous forme de chaîne sont épargnés : les
+ *  relevés de température en contiennent (« -18 »), et les préfixer les
+ *  transformerait en texte, ce qui casserait tri et mise en forme. */
+function neutraliserFormule(v: string | number): string | number {
+  if (typeof v !== 'string' || !v) return v
+  if (/^-?\d+([.,]\d+)?$/.test(v.trim())) return v
+  return /^[=+\-@\t\r]/.test(v) ? `'${v}` : v
+}
+
 function exportExcel(report: Report, itemsSettings: HygieneItemsSettings) {
   const wb = XLSX.utils.book_new()
   const periodLabel = `${fmtDate(report.dateFrom)} au ${fmtDate(report.dateTo)}`
@@ -227,8 +249,8 @@ function exportExcel(report: Report, itemsSettings: HygieneItemsSettings) {
       [`Export Contrôle Hygiène Matias — ${name}`],
       [`Période : ${periodLabel}`],
       [],
-      head,
-      ...rows,
+      head.map(neutraliserFormule),
+      ...rows.map(r => r.map(neutraliserFormule)),
     ])
     XLSX.utils.book_append_sheet(wb, ws, name)
   }
